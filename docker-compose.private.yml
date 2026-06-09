@@ -1,0 +1,18 @@
+# Owner / live-routing overlay. Layer on top of the base compose:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
+#
+# Flips the engine into owner mode (order-submission endpoints enabled) and supplies
+# broker order-routing credentials from a gitignored .env. NEVER commit .env.
+#
+# SAFETY: even in owner mode the rollout stage defaults to `sim`; live broker routing
+# requires EXECUTION_ENGINE_STAGE=live (set in .env) AND the kill-switch disengaged.
+# This service is the SOLE holder of broker credentials — the gateway holds none.
+services:
+  execution-engine:
+    # .env supplies broker secrets (Liberator PIN, Settrade app_id/app_secret/app_code)
+    # + EXECUTION_ENGINE_API_KEY. See .env.example. NEVER commit .env.
+    env_file: .env
+    environment:
+      # Owner mode: order-submission endpoints + adapters are enabled.
+      EXECUTION_ENGINE_PUBLIC_MODE: "false"

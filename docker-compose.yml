@@ -1,0 +1,53 @@
+services:
+  execution-engine:
+    build: .
+    container_name: quant-execution-engine
+    restart: always
+    ports:
+      # Host-side port overridable via EXECUTION_ENGINE_HOST_PORT (defaults 8400).
+      - "${EXECUTION_ENGINE_HOST_PORT:-8400}:8000"
+    environment:
+      # Public-safe defaults: read-only, NO broker credentials, safest stage,
+      # kill-switch disengaged but order routing inert (PUBLIC_MODE blocks submits).
+      # Owner/live-routing mode is the docker-compose.private.yml overlay.
+      EXECUTION_ENGINE_PUBLIC_MODE: "true"
+      EXECUTION_ENGINE_STAGE: "sim"
+      EXECUTION_ENGINE_KILL_SWITCH_ENGAGED: "false"
+      EXECUTION_ENGINE_PG_DSN: "postgresql://quant:quant@quant-postgres:5432/db_execution"
+      EXECUTION_ENGINE_REDIS_URL: "redis://execution-redis:6379/0"
+      EXECUTION_ENGINE_LOG_LEVEL: "INFO"
+    depends_on:
+      execution-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # The engine's OWN Redis sidecar (dedupe / single-flight submit lock / rate-limit)
+  # — distinct from the gateway's quant-redis. Internal-only (no host port).
+  execution-redis:
+    image: redis:7-alpine
+    container_name: quant-execution-redis
+    restart: always
+    volumes:
+      - execution_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  execution_redis_data:
+
+networks:
+  default:
+    name: quant-network
+    external: true

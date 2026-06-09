@@ -57,8 +57,8 @@ wrote the change.
 ## 8. Verify in Docker
 
 ```bash
-docker build -t python-template:dev .
-docker run --rm python-template:dev
+docker compose up --build          # public mode, host :8400
+curl http://localhost:8400/health
 ```
 
-Ensure the container starts cleanly and produces the expected output.
+Ensure the container starts cleanly and `/health` returns 200.
