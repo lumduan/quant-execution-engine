@@ -1,0 +1,57 @@
+name: Security
+
+on:
+  schedule:
+    - cron: "23 3 * * 3"  # Wednesdays at 03:23 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bandit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Run Bandit
+        run: uv run bandit -r src -f json -o bandit-results.json || true
+
+      - name: Upload Bandit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-results
+          path: bandit-results.json
+          retention-days: 7
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Run pip-audit
+        run: uv run pip-audit
