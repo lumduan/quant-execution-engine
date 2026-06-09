@@ -33,7 +33,7 @@ Canonical commands. Every Python invocation is prefixed with `uv run`.
 
 | Task | Command |
 |---|---|
-| Main entrypoint | `uv run python -m src.main` |
+| Run the API | `uv run uvicorn src.quant_execution_engine.api.main:app --port 8000` |
 | Run a script | `uv run python scripts/<name>.py` |
 | Run an example | `uv run python examples/<name>.py` |
 

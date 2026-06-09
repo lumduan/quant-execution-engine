@@ -22,7 +22,7 @@ ENV PYTHONPATH=/app \
     PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1
 
-# Default port reserved for forward compatibility (e.g. when adding a web framework).
+# Container port for the FastAPI app; mapped to host :8400 in compose.
 EXPOSE 8000
 
-CMD ["python", "-m", "src.main"]
+CMD ["uvicorn", "src.quant_execution_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

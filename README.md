@@ -1,161 +1,103 @@
-# python-template
+# quant-execution-engine
 
-> Universal Python project template — uv-native, Docker-ready, AI-agent enabled.
+> Execution engine — canonical order router + **sole owner of broker order-routing
+> credentials**; gateway-proxied (host `:8400`).
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-[![Docker Publish](https://github.com/OWNER/REPO/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/docker-publish.yml)
-[![Security Scan](https://github.com/OWNER/REPO/actions/workflows/security.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/security.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A fork-ready Python project template with dependency management via [uv](https://docs.astral.sh/uv/),
-Docker support for containerized execution, CI/CD workflows, and a `.claude/`
-directory that AI coding agents use for project context and standards.
+`quant-execution-engine` is the [quant-trading-system](https://github.com/lumduan/quant-trading-system)
+platform's **Execution engine**: a standalone `EXTERNAL` FastAPI service that is the **only**
+thing that sends orders to brokers. Every strategy submits one canonical `NormalizedOrder`; the
+engine routes it to a broker adapter (Liberator, Settrade) or the `SimAdapter`. Strategies
+**never** speak a broker's native order API and **never** hold a broker credential.
 
-## Features
+> **Status: scaffolded — all phases Proposed (2026-06-09).** This repo is a FastAPI skeleton
+> exposing only `GET /health`. The order-routing surface, adapters, durable state machine, and
+> reconciliation are **not implemented yet**. The build sequence is
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md).
 
-- **uv-native** — single `pyproject.toml` as the source of truth.
-- **Docker** — multi-stage build with `uv`, Python 3.11-slim, ready to deploy.
-- **Type-safe** — `mypy --strict` on all source and test code.
-- **Linted & formatted** — `ruff` with E, F, I, UP, B, SIM rules.
-- **≥80% coverage** — `pytest` + `pytest-asyncio` + `pytest-cov` enforced in CI.
-- **Security scanning** — weekly `bandit` and `pip-audit` runs.
-- **Pre-commit hooks** — ruff-check, ruff-format, mypy on every commit.
-- **AI agent ready** — `.claude/` directory with knowledge, playbooks, and prompt
-  engineering guidance.
-
-## Directory structure
+## Role in the engine-based architecture
 
 ```
-.
-├── .claude/                       # AI agent context & playbooks
-│   ├── knowledge/project-skill.md # Master rules for all code
-│   ├── playbooks/                 # Step-by-step workflow guides
-│   └── prompts/                   # Prompt engineering instructions
-├── .github/                       # CI/CD, issue/PR templates
-│   ├── workflows/                 # ci.yml, docker-publish.yml, security.yml
-│   ├── ISSUE_TEMPLATE/
-│   ├── PULL_REQUEST_TEMPLATE.md
-│   └── FUNDING.yml
-├── src/                           # Application source
-│   └── main.py                    # Entrypoint
-├── tests/                         # Test suite
-├── docs/                          # Documentation
-├── Dockerfile                     # Multi-stage container build
-├── pyproject.toml                 # uv project config + tool settings
-├── uv.lock                        # Locked dependency versions
-├── .pre-commit-config.yaml
-├── .env.example
-├── CHANGELOG.md
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── LICENSE
-└── SECURITY.md
+strategies ──NormalizedOrder──► quant-api-gateway (proxy, no credential)
+                                      │  /api/v2/engines/execution/*
+                                      ▼
+                            quant-execution-engine  (host :8400, container :8000)
+                               BrokerAdapter ┌─ SimAdapter
+                               + state machine ├─ LiberatorAdapter ─HTTP─► liberator-trading-api
+                               + idempotency   └─ SettradeAdapter ─SDK──► Settrade Open API
+                                      │ durable order store
+                                      ▼
+                            quant-infra-db (execution.orders / fills / order_events)
 ```
 
-## Prerequisites
+It follows the same standalone, gateway-proxied, **sole-credential-owner** pattern as
+`quant-marketdata-engine` — but for the **execution plane** (orders), never the streaming plane.
 
-- Python 3.11 or 3.12
-- [uv](https://docs.astral.sh/uv/) (install with `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+## Network & ports
 
-## Installation
+| Item | Value |
+|---|---|
+| Container port | `:8000` |
+| Host port | `:8400` |
+| Docker network | external **`quant-network`** (created by `quant-infra-db`) |
+| Own Redis sidecar | `quant-execution-redis` (dedupe / single-flight submit lock / rate-limit) |
+| Durable order store | `quant-postgres` → `db_execution` (`execution.*`) |
+| Gateway proxy surface | `/api/v2/engines/execution/*` (orders, status, capabilities, order-update WS) |
+| Health check | `curl http://localhost:8400/health` |
+
+## Safety first
+
+Order routing is irreversible. The `EXECUTION_ENGINE_STAGE` ladder
+(`sim` → `paper` → `micro_live` → `live`, **default `sim`**) gates real-money routing; the
+global kill-switch (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides every stage; public mode
+(Docker default) disables all order-submission endpoints. Broker secrets live **only** in a
+gitignored `.env` — never committed, never logged. See the ROADMAP's "Safety ladder" section
+and [`.claude/playbooks/order-routing-safety.md`](.claude/playbooks/order-routing-safety.md).
+
+## Bring-up order
 
 ```bash
-git clone https://github.com/OWNER/REPO.git
-cd REPO
+# from the umbrella repo
+cd quant-infra-db        && docker compose up -d   # creates quant-network + Postgres
+cd ../quant-execution-engine && docker compose up -d   # this service + own Redis (host :8400)
+cd ../quant-api-gateway  && docker compose up -d   # proxies /api/v2/engines/execution/*
 
-# Install all dependencies (dev group included by default)
+# owner mode (broker creds via gitignored .env; live routing still stage-gated):
+docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
+
+curl http://localhost:8400/health
+```
+
+## Development
+
+```bash
 uv sync --all-groups
-
-# Install pre-commit hooks
-uv run pre-commit install
+uv run uvicorn src.quant_execution_engine.api.main:app --port 8000
 ```
 
-## Running locally
-
-```bash
-uv run python -m src.main
-# Output: hello from python-template
-```
-
-## Running with Docker
-
-```bash
-# Build
-docker build -t python-template:dev .
-
-# Run
-docker run --rm python-template:dev
-# Output: hello from python-template
-```
-
-## Testing
-
-```bash
-# Run all tests
-uv run pytest
-
-# With verbosity and coverage
-uv run pytest -v --cov=src --cov-report=term-missing
-```
-
-Coverage must stay ≥80%. The threshold is enforced in CI and in `pyproject.toml`
-(`tool.pytest.ini_options.addopts`).
-
-## Linting, formatting, and type checking
-
-```bash
-uv run ruff check .               # Lint
-uv run ruff format --check .      # Format check (passive)
-uv run ruff format .              # Auto-format (apply)
-uv run mypy src tests             # Type check
-```
-
-Run all quality gates together:
+Quality gate (matches CI — must pass before every push):
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest
 ```
 
-## Using `.claude/` for AI agent workflows
+`ruff` (E, F, I, UP, B, SIM) · `mypy --strict` · `pytest` with **≥90% coverage** on core
+modules (`adapters/` + the order state machine as they land).
 
-This project is designed to work with AI coding agents like Claude Code.
-The `.claude/` directory provides agents with project context and enforceable
-standards:
+## Documentation
 
-| File | Purpose |
-|------|---------|
-| `.claude/knowledge/project-skill.md` | **Start here.** Hard rules, soft conventions, and quality gates. Agents load this first. |
-| `.claude/playbooks/feature-development.md` | Repeatable 8-step workflow: read → design → test-first → implement → quality gate → document → commit → verify. |
-| `.claude/prompts/Prompt-Engineer.prompt.md` | How to write effective prompts for AI agents on this project. Includes good and bad examples. |
-
-When you open this repo in Claude Code (or any agent that reads `.claude/`),
-the agent will automatically pick up these files. You can also ask it explicitly:
-> *"Read `.claude/knowledge/project-skill.md` and then follow
-> `.claude/playbooks/feature-development.md` to add a new feature."*
-
-## Security scanning
-
-```bash
-# Static analysis for common Python security issues
-uv run bandit -r src
-
-# Check dependencies for known CVEs
-uv run pip-audit
-```
-
-Both run automatically on a weekly CI schedule (`.github/workflows/security.yml`).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide,
-conventional commit format, and quality gate expectations. Pull requests are
-welcome — use the PR template to provide context.
+- **Roadmap (8 phases, 0–7):** [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md)
+- **Agent guide:** [`CLAUDE.md`](CLAUDE.md)
+- **Architecture ADR (Phase-0 gate, D1–D13):** umbrella
+  `.claude/knowledge/feature-execution-engine.md`
+- **Broker research + capability matrix + contract + state machine:** [`.claude/knowledge/`](.claude/knowledge/)
 
 ## Security
 
-Report vulnerabilities privately to **bad.sonsuk@gmail.com** rather than
-opening a public issue. See [SECURITY.md](SECURITY.md) for the full policy.
+Broker credentials are never committed or logged. Report vulnerabilities privately to
+**bad.sonsuk@gmail.com** rather than opening a public issue. See [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
