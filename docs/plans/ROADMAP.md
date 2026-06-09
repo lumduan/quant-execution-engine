@@ -187,7 +187,7 @@ PENDING_NEW ───────────────► NEW ──fill(part
 | **`quant-execution-engine`** (this repo) | The engine: `BrokerAdapter` interface, `NormalizedOrder` contract + capability matrix, order state machine + idempotency, reconciliation loop, pre-trade risk gate + kill-switch, order-update stream, `SimAdapter`, `LiberatorAdapter`, `SettradeAdapter`. |
 | **`quant-infra-db`** | New `execution` schema (Phase 1): `orders` / `fills` / append-only `order_events`. Its own PR. |
 | **`quant-api-gateway`** | Proxy route `/api/v2/engines/execution/*` → `:8400` + register the 5th engine (Phase 2). Its own PR. **No broker credential.** |
-| **`liberator-trading-api`** (existing) | Becomes a `LiberatorAdapter` **target** over HTTP (Phase 3). May add a normalized order-update hook. No strategy calls it directly anymore. |
+| **`liberator-trading-api`** (existing) | Becomes a `LiberatorAdapter` **target** over HTTP (Phase 3), **vendored as a git submodule** under `third_party/liberator-trading-api/` and bundled into this repo's owner-mode bring-up (`docker-compose.liberator.yml`) as an **internal-only** upstream (no host port). May add a normalized order-update hook. No strategy calls it directly anymore. |
 | **`strategies/csm-set`, `strategies/tfex-s50-multi-tf-swing`** | Gain an execution path behind `*_EXECUTION_MODE = off\|sim\|live` (Phase 5). Submit `NormalizedOrder`s; never speak a broker API. |
 
 ---
@@ -268,6 +268,24 @@ PENDING_NEW ───────────────► NEW ──fill(part
   (Liberator has no amend route — declared in its capability set); reconciliation loop v1
   against `GET /orders` to repair submit/ack drift. Validate in **`paper` / `micro_live`
   smallest size** behind the kill-switch.
+- **Deployment (bundled upstream).** `liberator-trading-api` is vendored as a **git submodule**
+  at `third_party/liberator-trading-api/` (its own repo, pinned commit, untouched — D9 says the
+  adapter *composes* it, never re-implements it). It is an **internal piece of the execution
+  plane, not a platform peer**: **no host port**, **not** registered in the umbrella network
+  table, and **no independent bring-up** — its lifecycle is bundled with owner mode via the
+  `docker-compose.liberator.yml` overlay:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-compose.liberator.yml up -d
+  ```
+  The public/sim default (`docker compose up`) stays **broker-free** — liberator only joins when
+  the overlay is layered. Wiring notes: liberator listens on internal port **8200** (its
+  `config/system.yaml api.port`), so the adapter target is `http://liberator-trading-api:8200/api/v1`;
+  it gets its **own** Redis sidecar (`liberator-redis`, distinct from `execution-redis`); and
+  because its settings loader merges YAML **over** env vars, the container's Redis host/port are
+  pinned via a mounted `docker/liberator/system.yaml` (env `REDIS_HOST` would be ignored). The
+  submodule ships only stub `Dockerfile`/`compose`, so the image is built from this repo's
+  `docker/liberator/Dockerfile` (Python ≥3.13). Broker creds live only in this repo's gitignored
+  `.env`. Fresh checkouts need `git submodule update --init`.
 - **Non-goals:** no Settrade; no streaming push yet (Phase 5); `live` stage stays gated.
 - **Acceptance:** a normalized order reaches Liberator and the round-trip (ack → fills →
   status) reconciles; re-submission is idempotent; the capability matrix reflects Liberator's

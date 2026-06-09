@@ -1,0 +1,79 @@
+# Liberator upstream overlay — bundles the `liberator-trading-api` service the
+# LiberatorAdapter composes over HTTP (Decision D9). It is an INTERNAL piece of
+# the execution plane, NOT a platform peer:
+#   - no host port (only quant-execution-engine reaches it)
+#   - not registered in the umbrella network-contract table
+#   - no independent bring-up; its lifecycle is bundled with owner mode here
+#
+# Layer it AFTER the owner overlay so it only comes up when you are actually
+# routing to a real broker (public/sim default stays broker-free):
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.private.yml \
+#                  -f docker-compose.liberator.yml up -d
+#
+# The submodule lives at third_party/liberator-trading-api (git submodule add ...;
+# fresh checkouts need `git submodule update --init`). Broker creds come from the
+# engine's gitignored .env (LIBERATOR_USERNAME/PASSWORD/PIN, TEL_NO, API_KEY).
+services:
+  execution-engine:
+    environment:
+      # Adapter target — internal service hostname on quant-network, never localhost.
+      # liberator defaults to internal port 8200 (its config/system.yaml api.port).
+      EXECUTION_ENGINE_LIBERATOR_BASE_URL: "http://liberator-trading-api:8200/api/v1"
+    depends_on:
+      liberator-trading-api:
+        condition: service_healthy
+
+  liberator-trading-api:
+    build:
+      context: ./third_party/liberator-trading-api
+      dockerfile: ../../docker/liberator/Dockerfile
+    container_name: liberator-trading-api
+    restart: always
+    # NO ports: — internal only; preserves the sole-credential-owner boundary.
+    env_file: .env            # LIBERATOR_USERNAME/PASSWORD/PIN, TEL_NO, API_KEY, REDIS_PASSWORD
+    volumes:
+      # Deterministic container config (Redis host = sidecar). YAML outranks env
+      # in liberator's settings loader, so this is how Redis/port are pinned.
+      - ./docker/liberator/system.yaml:/app/config/system.yaml:ro
+      # Persist the auth-token store + logs across restarts (OTP session survives).
+      - liberator_data:/app/data
+      - liberator_logs:/app/logs
+    depends_on:
+      liberator-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8200/api/v1/health').status==200 else sys.exit(1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Liberator's OWN Redis (OTP state / auth-token sync / session monitor) —
+  # distinct from the engine's execution-redis AND the gateway's quant-redis.
+  liberator-redis:
+    image: redis:7-alpine
+    container_name: liberator-redis
+    restart: always
+    volumes:
+      - liberator_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  liberator_data:
+  liberator_logs:
+  liberator_redis_data:
+
+networks:
+  default:
+    name: quant-network
+    external: true

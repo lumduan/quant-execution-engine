@@ -1,0 +1,26 @@
+# Container config for the bundled liberator-trading-api upstream.
+#
+# WHY THIS FILE EXISTS: liberator's Settings.__init__ merges YAML over env vars
+# (yaml_config is passed as init kwargs, which outrank environment variables in
+# pydantic-settings). So `REDIS_HOST`/`API_PORT` env vars are IGNORED whenever a
+# system.yaml provides them. We therefore pin the container-network values here
+# and mount this file at /app/config/system.yaml (see docker-compose.liberator.yml).
+#
+# Non-sensitive only. Credentials (LIBERATOR_*, API_KEY, REDIS_PASSWORD) stay in
+# the engine's gitignored .env and are read from the environment.
+
+api:
+  host: "0.0.0.0"
+  port: 8200        # internal port; adapter target is http://liberator-trading-api:8200/api/v1
+  debug: false
+
+redis:
+  host: "liberator-redis"   # the bundled sidecar on quant-network — NOT localhost
+  port: 6379
+  db: 0
+  socket_timeout: 5
+  connection_pool_max_connections: 10
+
+logging:
+  level: "INFO"
+  format: "json"
