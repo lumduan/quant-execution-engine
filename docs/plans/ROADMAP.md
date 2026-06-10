@@ -259,7 +259,8 @@ infra-db gate green. Phase plan:
   as the schema-PR precedent.
 
 ### Phase 2 — Engine core + gateway proxy + `SimAdapter` 🚦
-**Status:** `[ ]` Proposed. **Repos:** this repo **and** `quant-api-gateway` (own PRs).
+**Status:** `[~]` In progress (2026-06-10). **Repos:** this repo **and** `quant-api-gateway`
+(own PRs). Phase plan: [`phase2-engine-core-simadapter.md`](phase2-engine-core-simadapter.md).
 
 - **Objective:** prove the full lifecycle end-to-end against sim, with safety wired from the
   first path.
