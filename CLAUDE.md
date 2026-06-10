@@ -13,12 +13,14 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: scaffolded (all phases Proposed, 2026-06-09).** The repo is a FastAPI
-> skeleton from `lumduan/python-template` exposing only `GET /health`; the order-routing
-> surface, adapters, and state machine are **not implemented yet**. The build sequence is
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7); the architecture ADR (the
-> Phase-0 gate) is the umbrella
-> [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
+> **Current state: Phase 0 complete — ADR ACCEPTED (2026-06-10); Phases 1–7 Proposed.** The
+> repo is a FastAPI skeleton from `lumduan/python-template` exposing only `GET /health`; the
+> order-routing surface, adapters, and state machine are **not implemented yet**. The
+> contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine, capability-matrix
+> shape) are **frozen** in the umbrella ADR
+> [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md);
+> the build sequence is [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7).
+> Next: **Phase 1** — the `execution` schema, a `quant-infra-db` PR.
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -42,7 +44,7 @@ concern that stays in `order-book-infrastructure` + `quant-marketdata-engine`. W
 those feeds for price-band pre-trade checks; we never own them. Rationale: a dropped tick is a
 resubscribe, a duplicated order is a real loss.
 
-## `NormalizedOrder` contract + status enum (pinned in Phase 0/2)
+## `NormalizedOrder` contract + status enum (frozen in Phase 0)
 
 `NormalizedOrder(client_order_id, broker, account, market=SET|TFEX, symbol, side=BUY|SELL,
 order_type=MARKET|LIMIT|STOP|STOP_LIMIT|ICEBERG|MTL|ATO|ATC, price?, stop_price?, quantity,

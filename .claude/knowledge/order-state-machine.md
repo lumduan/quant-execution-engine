@@ -1,5 +1,8 @@
 # Order state machine
 
+> **FROZEN in Phase 0 (2026-06-10)** by the ADR
+> ([`feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md),
+> Pinned §E — the source of truth; the transition table there is identical to this one).
 > Persisted in `quant-infra-db` (`execution.orders.status` + append-only
 > `execution.order_events`). An app-level guard (and a DB constraint where practical) rejects
 > illegal transitions. Every transition appends an immutable audit row. Realised in Phase 2 over
@@ -41,10 +44,12 @@ final.
 - **Dedupe** happens at `submit` keyed on `client_order_id` **before** `PENDING_NEW` is even
   created twice — a repeat returns the existing order's result.
 - The **`PENDING_NEW → NEW`** edge is where the `client_order_id ↔ broker_order_id` mapping is
-  persisted atomically. If the ack is lost (network death after submit), the order is stuck in
-  `PENDING_NEW`; the **reconciliation loop** queries broker truth (Liberator `GET /orders`,
-  Settrade `get_orders`) and matches on `(account, symbol, side, qty, ts-window)` to recover
-  the `broker_order_id` and advance the state — never blindly re-sending.
+  persisted atomically (ADR §B). If the ack is lost (network death after submit), the order is
+  stuck in `PENDING_NEW`; the **reconciliation loop** queries broker truth (Liberator
+  `GET /orders`, Settrade `get_orders`) and fuzzy-matches on `(account, symbol, side, qty)`
+  within **±5 s** of the persisted submit timestamp to recover the `broker_order_id` and
+  advance the state — never blindly re-sending, and resolving within a bounded window (a stuck
+  `PENDING_NEW` never blocks routing indefinitely).
 - Settrade fills arrive via the native `subscribe_derivatives_order` push; Liberator fills are
   reconciled from order queries. Both normalize to the same `PARTIALLY_FILLED`/`FILLED` edges.
 

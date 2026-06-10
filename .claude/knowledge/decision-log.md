@@ -2,12 +2,13 @@
 
 > The cross-cutting Decision Log **D1–D13** is authored in the umbrella roadmap
 > ([`plans/feature-execution-engine/ROADMAP.md`](../../../plans/feature-execution-engine/ROADMAP.md))
-> and gated by the ADR
+> and pinned by the ADR
 > ([`.claude/knowledge/feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md)).
-> Phase 0 confirms each; this file records the per-service decisions + the findings the
-> broker research resolved.
+> **Phase 0 confirmed all thirteen as drafted — ACCEPTED 2026-06-10; the ADR is the source of
+> truth.** This file records the summary, the per-service decisions, the broker-research
+> findings, and the Phase 0 pinned resolutions.
 
-## Accepted (D1–D13, summary)
+## Accepted (D1–D13, summary — confirmed in the Phase 0 ADR, 2026-06-10)
 
 | # | Decision |
 |---|---|
@@ -45,3 +46,19 @@
 | R3 | **Settrade exposes a native order-update push** (`subscribe_derivatives_order`); Liberator does not. | Phase-5 stream: Settrade feeds it directly; Liberator state is reconciled/poll-normalized into the same shape (D12). |
 | R4 | **Settrade `price_type`/`validity_type`/`trigger_session` enum sets are SDK-passthrough strings.** | The exact venue enums are pinned in Phase 4 against the live venue, not guessed in the contract — `(confirm P4)` cells in the capability matrix. |
 | R5 | **Both brokers take a per-order PIN; auth differs** (Liberator OTP/SMS + Redis token, Settrade OAuth auto-refresh + rate-limit). | Session liveness is adapter-local (D10); the health/reconcile path must detect a dead session before it silently drops orders. |
+
+## Phase 0 pinned resolutions (2026-06-10)
+
+The ROADMAP's "Open questions / risks" were resolved as written decisions in the ADR
+(Pinned **§A–§G**); owner stances + parameters confirmed 2026-06-10. One-line summaries —
+the ADR text governs:
+
+| § | Resolution |
+|---|---|
+| §A | Delivery guarantee = **at-least-once + dedupe + reconcile + idempotent re-submit, NOT exactly-once** (R1). `client_order_id` standard: **UUIDv4**, client-generated, opaque to the engine (time-ordered drop-ins acceptable; the id is never parsed for time). |
+| §B | `client_order_id ↔ broker_order_id` persisted **atomically with `PENDING_NEW → NEW`**; lost-ack fallback: fuzzy match `(account, symbol, side, qty)` within **±5 s** of the persisted submit ts; a stuck `PENDING_NEW` resolves bounded, never blocks routing indefinitely. |
+| §C | `NormalizedOrder` / `NormalizedOrderResult` / `NormalizedStatus` **frozen** — `Decimal`-as-string wire, `int` qty, UTC. |
+| §D | `BrokerAdapter` 7-method interface frozen; amend semantics declared per adapter. |
+| §E | Order state machine frozen — 9 states + complete legal-transition table. |
+| §F | Capability-matrix shape frozen — per-`(broker, market)` sets, router-enforced pre-venue; Liberator amend = cancel+replace **non-atomic** (queue-loss declared); `(confirm P4)` enums deferred-by-design (R4). |
+| §G | Order-type validation = distinct pre-flight class per `(broker, market, order_type)` (Phase 3/4); auth liveness = **~30 s heartbeat + circuit breaker** per adapter; blast radius = PTRM caps + kill-switch **(reject new + mass-cancel open)** as Phase-2 milestones; streaming = external read-only dependency (D1 reaffirmed). |
