@@ -1,0 +1,243 @@
+"""OrderRouter: the full submit/cancel/get pipeline over a MemStore."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from src.quant_execution_engine.contracts.enums import OrderState, PublicOrderStatus
+from src.quant_execution_engine.contracts.errors import (
+    CapabilityError,
+    ConcurrentSubmit,
+    IllegalTransition,
+    KillSwitchEngagedError,
+    OrderNotFound,
+    RiskRejected,
+    StageRejected,
+)
+from src.quant_execution_engine.core.router import OrderRouter
+
+from tests._fakes import FakeRedis, MemStore, patch_repositories
+from tests.conftest import make_order, make_settings
+
+
+def _router(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    store: MemStore | None = None,
+    redis: Any | None = None,
+    **settings_overrides: Any,
+) -> tuple[OrderRouter, MemStore, FakeRedis]:
+    store = store or MemStore()
+    redis = FakeRedis() if redis is None else redis
+    patch_repositories(monkeypatch, store)
+    settings = make_settings(submit_lock_wait_ms=120, **settings_overrides)
+    return OrderRouter(settings=settings, pool=object(), redis=redis), store, redis
+
+
+async def test_happy_path_full_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, store, _ = _router(monkeypatch)
+    order = make_order()
+    outcome = await router.submit(order)
+    assert not outcome.duplicate
+    result = outcome.result
+    assert result.status is PublicOrderStatus.FILLED
+    assert result.engine_state is OrderState.FILLED
+    assert result.broker_order_id == f"SIM-{order.client_order_id[:8]}"
+    assert result.filled_qty == order.quantity
+    assert result.remaining_qty == 0
+    assert result.avg_fill_price == order.price
+
+
+async def test_dedupe_returns_prior_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, store, _ = _router(monkeypatch)
+    order = make_order()
+    first = await router.submit(order)
+    second = await router.submit(order)
+    assert second.duplicate
+    assert second.result == first.result
+    assert len(store.orders) == 1
+
+
+async def test_kill_switch_precedes_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, store, _ = _router(monkeypatch)
+    order = make_order()
+    await router.submit(order)
+    engaged, _, redis = _router(monkeypatch, store=store, kill_switch_engaged=True)
+    with pytest.raises(KillSwitchEngagedError):
+        await engaged.submit(order)  # even a known id is rejected
+
+
+async def test_capability_reject_before_any_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, store, _ = _router(monkeypatch)
+    order = make_order(broker="liberator", order_type="STOP", stop_price="10")
+    with pytest.raises(CapabilityError):
+        await router.submit(order)  # liberator+SET has no stop types
+    assert store.orders == {}
+
+
+async def test_risk_reject(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, _, _ = _router(monkeypatch, risk_max_order_qty=10)
+    with pytest.raises(RiskRejected):
+        await router.submit(make_order(quantity=11))
+
+
+async def test_stage_reject_no_real_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, store, _ = _router(monkeypatch, stage="micro_live")
+    with pytest.raises(StageRejected):
+        await router.submit(make_order())
+    assert store.orders == {}
+
+
+async def test_lock_miss_polls_store_for_the_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, store, redis = _router(monkeypatch)
+    order = make_order()
+    # Another submit holds the lock and has already persisted a lifecycle.
+    store.seed(order, OrderState.NEW)
+    await redis.set(f"exe:submit:{order.client_order_id}", "other-holder")
+    # Make the dedupe miss once so the pipeline reaches the lock.
+    real_fetch = store.fetch_order_result
+    calls = {"n": 0}
+
+    async def flaky_fetch(pool: Any, cid: str) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return await real_fetch(pool, cid)
+
+    monkeypatch.setattr(
+        "src.quant_execution_engine.db.repositories.fetch_order_result", flaky_fetch
+    )
+    outcome = await router.submit(order)
+    assert outcome.duplicate
+    assert outcome.result.engine_state is OrderState.NEW
+
+
+async def test_lock_miss_times_out_as_concurrent_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, _, redis = _router(monkeypatch)
+    order = make_order()
+    await redis.set(f"exe:submit:{order.client_order_id}", "other-holder")
+    with pytest.raises(ConcurrentSubmit):
+        await router.submit(order)
+
+
+async def test_pk_race_returns_prior_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redis lock lost (down) -> INSERT collides -> prior result, not an error."""
+    router, store, _ = _router(monkeypatch)
+    order = make_order()
+    store.seed(order, OrderState.NEW)
+    real_fetch = store.fetch_order_result
+    calls = {"n": 0}
+
+    async def flaky_fetch(pool: Any, cid: str) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # dedupe misses; the PK then collides inside the lock
+        return await real_fetch(pool, cid)
+
+    monkeypatch.setattr(
+        "src.quant_execution_engine.db.repositories.fetch_order_result", flaky_fetch
+    )
+    outcome = await router.submit(order)
+    assert outcome.duplicate
+    assert len(store.orders) == 1
+
+
+async def test_adapter_reject_persists_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, store, _ = _router(monkeypatch)
+    order = make_order(metadata={"sim_reject": "venue says no"})
+    outcome = await router.submit(order)
+    assert outcome.result.engine_state is OrderState.REJECTED
+    assert outcome.result.status is PublicOrderStatus.REJECTED
+    assert outcome.result.reject_reason == "venue says no"
+
+
+async def test_partial_fills_and_resting(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, _, _ = _router(monkeypatch)
+    partial = await router.submit(
+        make_order(symbol="AAA", quantity=100, metadata={"sim_fills": [40]})
+    )
+    assert partial.result.engine_state is OrderState.PARTIALLY_FILLED
+    assert partial.result.filled_qty == 40
+    assert partial.result.remaining_qty == 60
+    two_step = await router.submit(
+        make_order(symbol="BBB", quantity=100, metadata={"sim_fills": [40, 60]})
+    )
+    assert two_step.result.engine_state is OrderState.FILLED
+    resting = await router.submit(make_order(symbol="CCC", metadata={"sim_fills": []}))
+    assert resting.result.engine_state is OrderState.NEW
+
+
+async def test_ioc_remainder_walks_cancel_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, _, _ = _router(monkeypatch)
+    outcome = await router.submit(make_order(tif="IOC", quantity=100, metadata={"sim_fills": [40]}))
+    assert outcome.result.engine_state is OrderState.CANCELLED
+    assert outcome.result.filled_qty == 40
+    assert outcome.result.status is PublicOrderStatus.CANCELLED
+
+
+async def test_cancel_resting_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, _, _ = _router(monkeypatch)
+    order = make_order(metadata={"sim_fills": []})
+    await router.submit(order)
+    result = await router.cancel(order.client_order_id)
+    assert result.engine_state is OrderState.CANCELLED
+
+
+async def test_cancel_terminal_unknown_and_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, store, _ = _router(monkeypatch)
+    filled = make_order()
+    await router.submit(filled)
+    with pytest.raises(IllegalTransition):
+        await router.cancel(filled.client_order_id)
+    with pytest.raises(OrderNotFound):
+        await router.cancel("missing-id")
+    pending = make_order()
+    store.seed(pending, OrderState.PENDING_NEW)
+    with pytest.raises(IllegalTransition):
+        await router.cancel(pending.client_order_id)
+    mid_cancel = make_order()
+    store.seed(mid_cancel, OrderState.PENDING_CANCEL)
+    result = await router.cancel(mid_cancel.client_order_id)  # idempotent re-cancel
+    assert result.engine_state is OrderState.PENDING_CANCEL
+
+
+async def test_mass_cancel_sweeps_open_orders_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router, store, _ = _router(monkeypatch)
+    resting = make_order(symbol="AAA", metadata={"sim_fills": []})
+    partial = make_order(symbol="BBB", quantity=100, metadata={"sim_fills": [40]})
+    filled = make_order(symbol="CCC")
+    for order in (resting, partial, filled):
+        await router.submit(order)
+    poisoned = make_order(symbol="DDD", metadata={"sim_fills": []})
+    await router.submit(poisoned)
+    real_update = store.update_status
+
+    async def poison(pool: Any, cid: str, status: OrderState) -> None:
+        if cid == poisoned.client_order_id:
+            raise RuntimeError("boom")
+        await real_update(pool, cid, status)
+
+    monkeypatch.setattr("src.quant_execution_engine.db.repositories.update_status", poison)
+    cancelled, failed = await router.mass_cancel()
+    assert set(cancelled) == {resting.client_order_id, partial.client_order_id}
+    assert failed == [poisoned.client_order_id]
+    assert store.orders[filled.client_order_id]["status"] is OrderState.FILLED
+
+
+async def test_get_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    router, _, _ = _router(monkeypatch)
+    with pytest.raises(OrderNotFound):
+        await router.get("nope")
