@@ -62,3 +62,14 @@ the ADR text governs:
 | §E | Order state machine frozen — 9 states + complete legal-transition table. |
 | §F | Capability-matrix shape frozen — per-`(broker, market)` sets, router-enforced pre-venue; Liberator amend = cancel+replace **non-atomic** (queue-loss declared); `(confirm P4)` enums deferred-by-design (R4). |
 | §G | Order-type validation = distinct pre-flight class per `(broker, market, order_type)` (Phase 3/4); auth liveness = **~30 s heartbeat + circuit breaker** per adapter; blast radius = PTRM caps + kill-switch **(reject new + mass-cancel open)** as Phase-2 milestones; streaming = external read-only dependency (D1 reaffirmed). |
+
+## Phase 2 realisation decisions (E7–E12, 2026-06-10)
+
+| # | Decision | Rationale |
+|---|---|---|
+| E7 | **Synchronous in-request sim fills**; `repositories.apply_fill()` is the standalone seam Phase-3/4 stream/reconcile workers reuse. | Deterministic acceptance from one POST; no background ordering nondeterminism for an in-proc adapter. |
+| E8 | **Additive `engine_state` Result field** (internal 9-state truth) beside the frozen 6-value `status`. | Keeps the frozen enum intact while keeping the §B reconciliation window operator-visible. Contract addendum, not a change. |
+| E9 | **Kill-switch precedes even dedupe** in the submit path; cancels are NOT kill-switch-blocked (mass-cancel uses the cancel path). | Hard rule 3 ("checked first") wins over the validation-list ordering; cancels reduce risk. |
+| E10 | **Runtime kill-switch trip = Redis key + admin endpoints** (engine-direct, owner-mode, never proxied); env flag is the boot-time backstop and pins over runtime disengage. | An env-only switch needs a restart, during which nothing mass-cancels. |
+| E11 | **Single-flight submit lock is politeness; the orders PK is correctness.** Lock-miss ⇒ brief store-poll ⇒ 200 duplicate or 409 `submit_in_flight`; Redis-down ⇒ PK arbitrates. PTRM rate/burst fail-open in `sim|paper`, fail-closed in `micro_live|live`. | At-least-once + dedupe (§A) holds with or without Redis. |
+| E12 | **`metadata` is the sim control channel** (`sim_fills`, `sim_reject`) — never venue-sent by any adapter, never persisted. `reject_reason` persists durably (Phase-2 column); the audit trigger runs with INVOKER rights so the service role holds INSERT on `order_events` (append-only stays trigger-enforced). | Deterministic lifecycle steering without contract surface; real-money audit must not live in a cache. |

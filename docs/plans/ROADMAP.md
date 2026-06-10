@@ -16,12 +16,12 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–1 complete (2026-06-10) — ADR accepted; `execution` order store live;
-Phases 2–7 Proposed.** The repository is **scaffolded** (FastAPI skeleton from
-`lumduan/python-template`, `GET /health` only, own Redis sidecar in compose, strict gate
-green); no order path exists yet, but the durable store it will write
-(`db_execution`/`execution.*` in `quant-infra-db`, trigger-enforced frozen state machine) is
-live on `quant-network`. Next: **Phase 2** (engine core + gateway proxy + `SimAdapter`).
+**Status: Phases 0–2 complete (2026-06-10) — ADR accepted; order store live; engine core +
+SimAdapter + gateway proxy live; Phases 3–7 Proposed.** The full **sim** order path runs
+end-to-end through the gateway: submit/dedupe/fills/cancel over the durable store, PTRM +
+kill-switch + stage ladder wired from the first path. **No real-money path exists** —
+`micro_live`/`live` stages reject with a typed error until a real adapter lands. Next:
+**Phase 3** (LiberatorAdapter — first real venue, behind the ladder).
 
 ---
 
@@ -259,8 +259,20 @@ infra-db gate green. Phase plan:
   as the schema-PR precedent.
 
 ### Phase 2 — Engine core + gateway proxy + `SimAdapter` 🚦
-**Status:** `[~]` In progress (2026-06-10). **Repos:** this repo **and** `quant-api-gateway`
-(own PRs). Phase plan: [`phase2-engine-core-simadapter.md`](phase2-engine-core-simadapter.md).
+**Status:** `[x]` **Complete (2026-06-10).** **Repos:** this repo + `quant-api-gateway` +
+`quant-infra-db` (own PRs). **Shipped:** the full sim order path over the Phase-1 store —
+frozen `NormalizedOrder`/`Result` contracts (+ additive `engine_state`), pure 13-edge state
+machine, `OrderRouter` (kill-switch-first; dedupe ⇒ prior result; single-flight lock with
+PK backstop; §B-atomic ack; synchronous deterministic fills; IOC cancel walk), PTRM caps +
+rate/burst throttles, runtime kill-switch with best-effort mass-cancel, circuit-breaker
+scaffolding, deterministic `SimAdapter` (`sim_fills`/`sim_reject` control channel),
+`POST/GET/DELETE /orders` + `/capabilities` + owner-mode `/admin/kill-switch*`; gateway
+proxy `/api/v2/engines/execution/*` (typed envelopes pass through; no credential);
+infra-db: engine-registry row, durable `reject_reason`, least-privilege `quant` grants.
+Live acceptance passed end-to-end through the gateway (dedupe, partial fills, audit rows,
+typed rejects, kill-switch mass-cancel). 104 engine + 349 gateway tests, mypy strict,
+~99%/90.7% cov. **No real-money path exists.** Phase plan:
+[`phase2-engine-core-simadapter.md`](phase2-engine-core-simadapter.md). **Phase 3 unblocked.**
 
 - **Objective:** prove the full lifecycle end-to-end against sim, with safety wired from the
   first path.

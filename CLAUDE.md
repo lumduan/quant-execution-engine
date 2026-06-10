@@ -13,18 +13,21 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–1 complete (2026-06-10); Phases 2–7 Proposed.** Phase 0: ADR
+> **Current state: Phases 0–2 complete (2026-06-10); Phases 3–7 Proposed.** Phase 0: ADR
 > ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
-> Phase 1: the durable order store is **live** — `db_execution`/`execution.{orders, fills,
-> order_events}` in `quant-infra-db` (`12_schema_execution.sql`), idempotency PK on
-> `client_order_id`, DB triggers enforcing exactly the frozen state machine + append-only
-> audit (plan: [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md)).
-> The repo itself is still a FastAPI skeleton exposing only `GET /health`; the order-routing
-> surface, adapters, and state machine are **not implemented yet**. The build sequence is
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7).
-> Next: **Phase 2** — engine core + gateway proxy + `SimAdapter`.
+> Phase 1: the durable order store is **live** (`db_execution`/`execution.*` in
+> `quant-infra-db`, trigger-enforced frozen state machine + append-only audit). Phase 2:
+> the **engine core + deterministic `SimAdapter` + gateway proxy are live** — the full sim
+> order path (`POST/GET/DELETE /orders`, `/capabilities`, owner-mode `/admin/kill-switch*`)
+> runs end-to-end through `/api/v2/engines/execution/*` with idempotent dedupe, PTRM caps,
+> and the kill-switch wired first in the submit path (plans:
+> [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md),
+> [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md)).
+> **No real-money path exists** — `micro_live`/`live` reject with a typed error until a
+> real adapter lands. Build sequence: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md)
+> (8 phases, 0–7). Next: **Phase 3** — `LiberatorAdapter`, the first real venue.
 
 ### Ownership boundaries (the whole point of this service)
 

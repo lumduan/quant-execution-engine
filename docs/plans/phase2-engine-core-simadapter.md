@@ -3,7 +3,8 @@
 **Feature:** feature-execution-engine — Phase 2: engine core + gateway proxy + `SimAdapter`
 **Branch:** `feat/phase2-engine-core` (this repo) / `feat/v2-execution-proxy` (quant-api-gateway) / `feat/execution-registry-reject-reason` (quant-infra-db)
 **Created:** 2026-06-10
-**Status:** In Progress
+**Status:** Complete
+**Completed:** 2026-06-10
 **Depends On:** Phase 0 (Complete — ADR ACCEPTED), Phase 1 (Complete — `execution` order store live)
 
 ## Table of Contents
@@ -191,19 +192,19 @@ remainder. Ids: `SIM-{cid[:8]}`, `SIMF-{cid[:8]}-{i}`.
 
 1. [x] quant-infra-db PR: `engine_registry` `execution` row + `orders.reject_reason`
        (live-applied twice, idempotent; infra suites green).
-2. [ ] This plan doc (first commit); ROADMAP Phase 2 `[ ]` → `[~]`.
-3. [ ] `contracts/` (enums, orders, capabilities, errors).
-4. [ ] `db/` (pool, models, repositories) + `cache/` (client, single_flight, counters).
-5. [ ] `core/` (state_machine, risk, kill_switch, stage, router).
-6. [ ] `adapters/` (base, session, sim).
-7. [ ] `api/` (settings, deps, schemas, error_handlers, routes, main rewire).
-8. [ ] Test suites; gate green (ruff, mypy strict, pytest ≥90%).
-9. [ ] Local `docker compose up -d --build`; engine-direct verification.
-10. [ ] Gateway PR: proxy + catalog static entry + config + tests + docs; gate green.
-11. [ ] Live end-to-end acceptance through the gateway (public-mode 403 → owner-mode
+2. [x] This plan doc (first commit); ROADMAP Phase 2 `[ ]` → `[~]`.
+3. [x] `contracts/` (enums, orders, capabilities, errors).
+4. [x] `db/` (pool, models, repositories) + `cache/` (client, single_flight, counters).
+5. [x] `core/` (state_machine, risk, kill_switch, stage, router).
+6. [x] `adapters/` (base, session, sim).
+7. [x] `api/` (settings, deps, schemas, error_handlers, routes, main rewire).
+8. [x] Test suites; gate green (ruff, mypy strict, pytest ≥90%).
+9. [x] Local `docker compose up -d --build`; engine-direct verification.
+10. [x] Gateway PR: proxy + catalog static entry + config + tests + docs; gate green.
+11. [x] Live end-to-end acceptance through the gateway (public-mode 403 → owner-mode
         lifecycle → dedupe → partial fills → cancel → typed rejects → kill-switch
         mass-cancel → audit rows in `db_execution`).
-12. [ ] Docs/status flips here (CHANGELOG, CLAUDE banner, ROADMAP `[x]`, knowledge
+12. [x] Docs/status flips here (CHANGELOG, CLAUDE banner, ROADMAP `[x]`, knowledge
         addenda); PRs merged ① → ②; umbrella pins + flips (PR ③).
 
 ## File Changes
@@ -226,20 +227,58 @@ remainder. Ids: `SIM-{cid[:8]}`, `SIMF-{cid[:8]}-{i}`.
 
 ## Success Criteria
 
-- [ ] A `NormalizedOrder` POSTed **through the gateway** routes to `SimAdapter`,
+- [x] A `NormalizedOrder` POSTed **through the gateway** routes to `SimAdapter`,
       persists a full lifecycle in `db_execution` (one `order_events` row per
       transition; ack row snapshots `broker_order_id`).
-- [ ] Resend of the same `client_order_id` returns the prior result (200, no new rows).
-- [ ] Unsupported `(broker, market, order_type, tif)` ⇒ 422 `capability_unsupported`;
+- [x] Resend of the same `client_order_id` returns the prior result (200, no new rows).
+- [x] Unsupported `(broker, market, order_type, tif)` ⇒ 422 `capability_unsupported`;
       over-cap ⇒ 422/429 `risk_rejected`; wrong stage ⇒ 403 `stage_rejected`;
       kill-switch ⇒ 503 `kill_switch_engaged` + mass-cancel of open orders;
       public mode ⇒ 403 `public_mode` on submission endpoints.
-- [ ] Decimals serialize as strings end-to-end; `raw` never crosses the boundary;
+- [x] Decimals serialize as strings end-to-end; `raw` never crosses the boundary;
       no credential exists in the gateway; **no real-money path exists**.
-- [ ] Engine gate green (ruff, mypy strict, pytest ≥90% incl. `adapters/` + state
+- [x] Engine gate green (ruff, mypy strict, pytest ≥90% incl. `adapters/` + state
       machine); gateway gate green; infra-db gate green.
-- [ ] ROADMAP/CLAUDE/knowledge statuses updated; PRs sequenced ②b → ① → ② → umbrella ③.
+- [x] ROADMAP/CLAUDE/knowledge statuses updated; PRs sequenced ②b → ① → ② → umbrella ③.
 
 ## Completion Notes
 
-_To be filled when the phase completes._
+### Summary
+
+Shipped 2026-06-10 across four PRs: quant-infra-db#13 (engine-registry row +
+`reject_reason` column) and #14 (least-privilege `quant` service-role grants — the
+audit trigger runs with INVOKER rights, so the role needs INSERT on `order_events`;
+append-only stays trigger-enforced), this repo's `feat/phase2-engine-core` (engine
+core, 104 tests / ~99% cov, mypy strict), and quant-api-gateway `feat/v2-execution-proxy`
+(thin proxy, 349 tests / 90.7% cov).
+
+### Live acceptance (all passed, engine-direct AND through the gateway)
+
+- POST LIMIT order → 201 FILLED, Decimal-as-string, `SIM-` broker id; identical
+  resend → 200 byte-identical prior result (dedupe; one row in the store).
+- `sim_fills [40,60]` → FILLED via PARTIALLY_FILLED; `db_execution` audit shows
+  exactly one `order_events` row per transition (birth → PENDING_NEW → NEW →
+  PARTIALLY_FILLED → FILLED) with `broker_order_id` snapshotted on the ack row (§B);
+  two fills with synthesized `SIMF-` ids.
+- `sim_fills []` rests NEW → DELETE → CANCELLED.
+- Typed rejects verified: over-cap → 422 `risk_rejected`, liberator+SET+STOP → 422
+  `capability_unsupported`, bad UUID → 422 `validation_error`, `sim_reject` →
+  REJECTED with durable `reject_reason`.
+- Kill-switch engage → resting order mass-cancelled + submits 503
+  `kill_switch_engaged`; disengage restores; public mode 403 on all writes.
+- Gateway catalog (DB-first) lists `execution`; proxy forwards POST/GET/DELETE +
+  envelopes verbatim.
+
+### Deviations from the plan
+
+- `mass_cancel` lives on `OrderRouter` (it needs the store + adapter resolution),
+  not in `core/kill_switch.py`; the admin route composes both. Behaviour unchanged.
+- The sim-stage e2e orders written during acceptance remain in `db_execution`
+  by design — the audit chain is immutable (FK + append-only triggers), which is
+  itself the Phase-1 guarantee working as intended.
+
+### Decisions Deferred (→ Phases 3/4)
+
+- Amend HTTP route (adapter method implemented + tested); order-update stream;
+  heartbeat poll worker driving the breaker; venue-class field validation;
+  reconciliation loop; price-band PTRM against live data (Phase 6).
