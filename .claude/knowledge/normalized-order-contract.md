@@ -11,6 +11,17 @@
 > CHECK constraints on `execution.orders` in `quant-infra-db` (`12_schema_execution.sql`);
 > `client_order_id` is stored as opaque TEXT (§A — format validation stays at the engine
 > boundary), prices as `numeric(18,6)`, quantities as `bigint`.
+>
+> **REALISED in Phase 2 (2026-06-10)** as Pydantic models in
+> `src/quant_execution_engine/contracts/` — the single source for the API body, the
+> router's domain object, and every adapter input. **Contract addendum (additive):**
+> `NormalizedOrderResult` carries `engine_state` — the internal 9-state truth — alongside
+> the frozen 6-value `status` (mapping: `PENDING_NEW→NEW`;
+> `PENDING_CANCEL`/`PENDING_REPLACE→PARTIALLY_FILLED` if `filled_qty>0` else `NEW`), so the
+> §B reconciliation window stays operator-visible without touching the frozen enum.
+> `metadata` doubles as the **sim control channel** (`sim_fills: [q…]`, `sim_reject:
+> "reason"`) — safe precisely because metadata is never sent to any venue. `reject_reason`
+> persists durably in `execution.orders.reject_reason` (Phase-2 column).
 
 ## Request — `NormalizedOrder`
 

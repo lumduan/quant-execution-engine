@@ -1,30 +1,67 @@
-"""Execution-engine FastAPI app.
+"""Execution-engine FastAPI app factory + lifespan.
 
-Scaffold state: only ``GET /health`` is implemented. The order-routing surface
-(``POST /orders``, ``GET /orders/{client_order_id}``, ``DELETE`` cancel, capability
-matrix, order-update stream) is authored in Phase 2 of ``docs/plans/ROADMAP.md`` —
-deliberately not implemented yet so no order can reach a broker from this scaffold.
+Startup is resilient (marketdata pattern): a missing Postgres degrades order
+endpoints (they 500 on the uninitialized pool) while ``/health`` keeps
+answering, so compose healthchecks and the gateway proxy stay observable.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from src.quant_execution_engine import __version__
+from src.quant_execution_engine.api.error_handlers import register_error_handlers
+from src.quant_execution_engine.api.routes import router
+from src.quant_execution_engine.cache.redis_client import close_redis, create_redis
+from src.quant_execution_engine.config.settings import get_settings
+from src.quant_execution_engine.db.postgres import close_pool, create_pool
+from src.quant_execution_engine.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="quant-execution-engine",
-    version=__version__,
-    summary="Canonical order router + sole broker order-routing-credential owner.",
-)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Open/close the DB pool and Redis client around the app's lifetime."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    logger.info(
+        "starting quant-execution-engine (public_mode=%s, stage=%s, kill_switch_env=%s)",
+        settings.public_mode,
+        settings.stage,
+        settings.kill_switch_engaged,
+    )
+    try:
+        await create_pool(
+            settings.pg_dsn,
+            min_size=settings.pg_pool_min_size,
+            max_size=settings.pg_pool_max_size,
+        )
+    except Exception:  # noqa: BLE001 - degrade, never crash the probe surface
+        logger.warning("startup: postgres pool unavailable; order endpoints degraded")
+    create_redis(settings.redis_url)
+    try:
+        yield
+    finally:
+        await close_redis()
+        await close_pool()
 
 
-@app.get("/health")
-async def health() -> dict[str, Any]:
-    """Liveness probe. Mapped to host ``:8400`` (container ``:8000``) in compose."""
-    return {"status": "ok", "service": "quant-execution-engine", "version": __version__}
+def create_app() -> FastAPI:
+    """Build the FastAPI app."""
+    app = FastAPI(
+        title="quant-execution-engine",
+        version=__version__,
+        summary="Canonical order router + sole broker order-routing-credential owner.",
+        lifespan=lifespan,
+    )
+    app.include_router(router)
+    register_error_handlers(app)
+    return app
+
+
+app = create_app()

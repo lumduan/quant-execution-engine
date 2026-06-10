@@ -65,7 +65,10 @@ mypy_path = "src"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=90"]
+addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=90", "-m", "not integration"]
+markers = [
+    "integration: requires a live quant-network stack (run with -m integration --no-cov)",
+]
 
 [tool.coverage.run]
 source = ["src"]
