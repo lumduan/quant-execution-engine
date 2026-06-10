@@ -1,15 +1,17 @@
 # NormalizedOrder contract
 
-> The single order language every strategy speaks. Pinned in Phase 0 (ADR) and realised as
-> Pydantic models in Phase 2. `Decimal`-as-string on the wire; `int` quantities; UTC
-> timestamps (display Asia/Bangkok). Canonical sketch:
-> [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#normalizedorder--normalizedorderresult-contract-sketch--pinned-in-phase-02).
+> **FROZEN in Phase 0 (2026-06-10)** by the ADR
+> ([`feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md),
+> Pinned §C–§D — the source of truth); realised as Pydantic models in Phase 2. The single
+> order language every strategy speaks. `Decimal`-as-string on the wire; `int` quantities;
+> UTC timestamps (display Asia/Bangkok); no `float` at any money boundary. Canonical sketch:
+> [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#normalizedorder--normalizedorderresult-contract-frozen-in-phase-0-realised-in-phase-2).
 
 ## Request — `NormalizedOrder`
 
 | Field | Type | Notes |
 |---|---|---|
-| `client_order_id` | str | client-generated idempotency key (UUID/ULID); dedupe key |
+| `client_order_id` | str | client-generated idempotency key — **UUIDv4 standard** (ADR §A; time-ordered drop-ins acceptable, never parsed for time); dedupe key |
 | `broker` | `sim\|liberator\|settrade` | routing target |
 | `account` | str | broker account ref; **never logged in full** |
 | `market` | `SET\|TFEX` | |
@@ -34,6 +36,26 @@ the public boundary).
 ## Status enum
 
 `NEW | PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED | EXPIRED`
+
+## `BrokerAdapter` interface (frozen in Phase 0, ADR §D)
+
+Every adapter (`SimAdapter`, `LiberatorAdapter`, `SettradeAdapter`) implements exactly:
+
+```text
+place(order: NormalizedOrder)                 -> NormalizedOrderResult
+cancel(client_order_id: str)                  -> NormalizedOrderResult
+amend(client_order_id: str,
+      new_price?: Decimal, new_qty?: int)     -> NormalizedOrderResult
+get_open_orders(account: str)                 -> list[NormalizedOrderResult]
+get_positions(account: str)                   -> normalized positions
+get_account(account: str)                     -> normalized account/buying-power
+capabilities()                                -> per-(broker, market) capability sets
+```
+
+Amend semantics are **declared per adapter**, never assumed: Settrade amends natively
+(`change_order`); `LiberatorAdapter.amend` is cancel-then-replace — two venue operations,
+**non-atomic** (queue-priority loss + a brief no-resting-order window, declared in its
+capability metadata). Callers query `capabilities()` to learn the semantics.
 
 ## Validation rules (router, before any venue I/O)
 

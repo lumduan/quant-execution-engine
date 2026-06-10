@@ -16,9 +16,10 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: all phases Proposed / not started** (2026-06-09). The repository is **scaffolded**
-(FastAPI skeleton from `lumduan/python-template`, `GET /health` only, own Redis sidecar in
-compose, strict gate green); no order path exists yet.
+**Status: Phase 0 complete (2026-06-10) — ADR accepted; Phases 1–7 Proposed.** The
+repository is **scaffolded** (FastAPI skeleton from `lumduan/python-template`, `GET /health`
+only, own Redis sidecar in compose, strict gate green); no order path exists yet. Next:
+**Phase 1** (`quant-infra-db` `execution` schema).
 
 ---
 
@@ -74,8 +75,9 @@ compose, strict gate green); no order path exists yet.
 | **`live`** | — (gated) | Full real-money routing. Requires owner mode (`EXECUTION_ENGINE_PUBLIC_MODE=false`), the stage set to `live`, the kill-switch disengaged, and per-account caps configured. | real adapter |
 
 - The **global kill-switch** (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED=true`, or the runtime
-  admin trip) overrides **every** stage: flatten-and-halt, reject all new submits with a typed
-  error. It is checked **first** in the submit path (hard rule, mirrors tfex hard rule #8).
+  admin trip) overrides **every** stage: reject all new submits with a typed error **and
+  mass-cancel open orders** (flatten-and-halt). It is checked **first** in the submit path
+  (hard rule, mirrors tfex hard rule #8).
 - **Public mode** (`EXECUTION_ENGINE_PUBLIC_MODE=true`, the Docker default) disables all
   order-submission endpoints regardless of stage — only `/health`, capability matrix, and
   read endpoints answer.
@@ -121,7 +123,7 @@ here.
 
 ---
 
-## `NormalizedOrder` / `NormalizedOrderResult` contract (sketch — pinned in Phase 0/2)
+## `NormalizedOrder` / `NormalizedOrderResult` contract (frozen in Phase 0; realised in Phase 2)
 
 ```text
 NormalizedOrder
@@ -200,7 +202,14 @@ PENDING_NEW ───────────────► NEW ──fill(part
 > behind sim + kill-switch; no strategy sends live orders before the Phase-5 cutover.
 
 ### Phase 0 — Design & ADR gate 🧭
-**Status:** `[ ]` Proposed. **Repo:** umbrella `.claude/knowledge/` + this repo's docs.
+**Status:** `[x]` **Complete (2026-06-10).** **Repo:** umbrella `.claude/knowledge/` + this
+repo's docs. **Shipped:** the umbrella ADR promoted to **ACCEPTED** — D1–D13 confirmed as
+drafted; the `NormalizedOrder` contract + `BrokerAdapter` interface + order state machine +
+capability-matrix shape frozen; every open question below pinned (ADR §A–§G, most notably the
+**at-least-once + dedupe + reconcile** delivery guarantee and the
+`client_order_id ↔ broker_order_id` mapping rule); this repo's knowledge seed confirmed &
+frozen against the ADR. Phase plan: [`phase0-design-adr-gate.md`](phase0-design-adr-gate.md).
+**Phase 1 unblocked.**
 
 - **Objective:** freeze the contracts so every later phase builds against a fixed target.
 - **Scope (ships):** promote the umbrella ADR stub
@@ -244,8 +253,11 @@ PENDING_NEW ───────────────► NEW ──fill(part
   `GET /capabilities`); the `BrokerAdapter` interface
   (`place`/`cancel`/`amend`/`get_open_orders`/`get_positions`/`get_account`/`capabilities`);
   `NormalizedOrder` Pydantic models; the order state machine over the Phase-1 store; **idempotent
-  submit deduped on `client_order_id`**; the **pre-trade risk gate + global kill-switch**;
-  `SimAdapter` (deterministic paper fills); the `EXECUTION_ENGINE_STAGE` ladder (default `sim`).
+  submit deduped on `client_order_id`**; the **pre-trade risk gate (PTRM caps: max order
+  value/qty, per-second order rate limit) + global kill-switch (reject new + mass-cancel
+  open)**; per-adapter session **circuit-breaker scaffolding** (heartbeats land with the real
+  adapters, Phases 3/4); `SimAdapter` (deterministic paper fills); the
+  `EXECUTION_ENGINE_STAGE` ladder (default `sim`).
   **`quant-api-gateway`** (own PR): proxy `/api/v2/engines/execution/*` → `:8400`, register the
   **Execution** engine (`EXTERNAL`) in the catalog, auth-gated, **no broker credential**.
 - **Non-goals:** no real broker; no reconciliation against a venue (sim is in-proc).
@@ -266,8 +278,9 @@ PENDING_NEW ───────────────► NEW ──fill(part
   (`side`, `position`, `priceType`, `validityType`, `icebergVol`, stop fields, PIN); map
   Liberator status / `reject_code` → the normalized status enum; **amend = cancel + replace**
   (Liberator has no amend route — declared in its capability set); reconciliation loop v1
-  against `GET /orders` to repair submit/ack drift. Validate in **`paper` / `micro_live`
-  smallest size** behind the kill-switch.
+  against `GET /orders` to repair submit/ack drift; **proactive session heartbeat** (~30 s
+  low-impact read) tripping the circuit breaker on consecutive failures (ADR §G). Validate in
+  **`paper` / `micro_live` smallest size** behind the kill-switch.
 - **Deployment (bundled upstream).** `liberator-trading-api` is vendored as a **git submodule**
   at `third_party/liberator-trading-api/` (its own repo, pinned commit, untouched — D9 says the
   adapter *composes* it, never re-implements it). It is an **internal piece of the execution
@@ -305,8 +318,9 @@ PENDING_NEW ───────────────► NEW ──fill(part
   **native** `change_order` (amend) / `cancel_order(s)`; map status codes; **pin the exact
   Settrade `price_type`/`validity_type`/`trigger_session` enum sets** (the `(confirm P4)`
   cells above) and declare the capability divergences from Liberator (e.g. native amend,
-  TFEX-only). Confirm the router rejects `(settrade, market, type, tif)` combos Settrade
-  doesn't support **before** hitting the venue.
+  TFEX-only); same session heartbeat + circuit-breaker contract as Phase 3 (OAuth liveness).
+  Confirm the router rejects `(settrade, market, type, tif)` combos Settrade doesn't support
+  **before** hitting the venue.
 - **Non-goals:** no SET market on Settrade in scope (derivatives first); no streaming push yet.
 - **Acceptance:** the **same** `NormalizedOrder` routes to either broker by `broker`/account
   with no contract change; capability divergences are enforced up front, not discovered at the
@@ -367,29 +381,49 @@ PENDING_NEW ───────────────► NEW ──fill(part
 
 ---
 
-## Open questions / risks (pin in Phase 0 / revisit per phase)
+## Open questions / risks (pinned in Phase 0 / revisit per phase)
 
-- **Exactly-once vs at-least-once.** Neither broker echoes a client id; the realistic target
-  is **dedupe + reconcile + idempotent re-submit**, not true exactly-once. Pin the guarantee
-  precisely in Phase 0.
-- **`client_order_id` ↔ `broker_order_id` mapping.** Since brokers assign their own id on ack,
-  the engine must persist the mapping atomically with the `PENDING_NEW → NEW` transition, and
-  the reconciliation loop must match on `(account, symbol, side, qty, ts-window)` when an ack
-  is lost before the id is recorded.
-- **Order-type semantics drift.** "Stop"/"ATO"/"ATC"/"iceberg" differ across SET (Liberator),
-  TFEX (Liberator), and Settrade derivatives (min display qty, session rules, exact enum
-  spelling). The enum is easy; the per-`(broker, market, type)` validation rules are the work
-  (Phase 3/4).
-- **Auth liveness.** Liberator OTP sessions expire and need the SMS-webhook refresh; Settrade
-  OAuth tokens rotate (auto-refresh, but the session can still die). The health/reconciliation
-  path must detect a dead session **before** it silently drops orders.
-- **Amend asymmetry.** Settrade amends natively; Liberator's `LiberatorAdapter.amend` is
-  cancel-then-replace and therefore **not atomic** at the venue — declare the semantic in its
-  capability set and surface it to callers.
-- **Real-money blast radius.** Kill-switch, sim-default stage, and pre-trade caps must exist
-  before any live adapter — safety is Phase-2 wiring, not a Phase-6 afterthought.
-- **Streaming creep.** Resist folding market-data / order-book streaming into this service
-  (D1); read those feeds, don't own them.
+> All seven items were **pinned in Phase 0** (2026-06-10) as written decisions in the ADR
+> ([`feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md),
+> Pinned §A–§G), with the stances + parameters confirmed by the owner. The per-phase revisit
+> notes below them still apply.
+
+- **Exactly-once vs at-least-once.** ✅ **PINNED (ADR §A):** the guarantee is
+  **at-least-once submission + engine-side dedupe on `client_order_id` + durable state +
+  reconciliation + idempotent re-submit — explicitly NOT exactly-once** (neither broker
+  echoes a client id, R1); reconciliation never blindly re-sends. `client_order_id`
+  generation standard: **UUIDv4** (client-generated, format-validated, opaque to the engine —
+  time-ordered schemes like ULID/UUIDv7/Snowflake are acceptable drop-ins since the id is
+  never parsed for time).
+- **`client_order_id` ↔ `broker_order_id` mapping.** ✅ **PINNED (ADR §B):** the engine
+  persists the mapping **atomically with the `PENDING_NEW → NEW` transition**; when an ack is
+  lost before the id is recorded, the reconciliation loop fuzzy-matches on
+  `(account, symbol, side, qty)` within **±5 s** of the persisted submit timestamp. A stuck
+  `PENDING_NEW` resolves via reconciliation within a bounded window — it never blocks
+  routing indefinitely.
+- **Order-type semantics drift.** ✅ **PINNED (ADR §G):** the `order_type` enum is frozen in
+  Phase 0; each `(broker, market, order_type)` combination is treated as a **distinct
+  pre-flight validation class** ("Stop"/"ATO"/"ATC"/"iceberg" min-display/session quirks,
+  exact Settrade enum spellings) — deliberately **Phase 3/4 adapter work**; the
+  `(confirm P4)` cells above stay deferred-by-design (R4).
+- **Auth liveness.** ✅ **PINNED (ADR §G):** session liveness is adapter-local (D10) — and
+  waiting for a 401 on a live order is unacceptable. A **proactive heartbeat worker** polls a
+  low-impact read (e.g. account balance) every **~30 s** per adapter; consecutive failures
+  trip a **circuit breaker** that halts new routing for that broker and raises an alert.
+  Design pinned here; scaffolding wired in Phase 2, exercised per real adapter in Phases 3/4.
+- **Amend asymmetry.** ✅ **PINNED (ADR §D/§F):** `BrokerAdapter.amend` is uniform; Settrade
+  amends natively; `LiberatorAdapter.amend` is cancel-then-replace — **two venue operations
+  under the hood**, therefore **not atomic**: queue-priority loss and a brief
+  no-resting-order window are declared in its capability metadata and surfaced to callers,
+  never abstracted away.
+- **Real-money blast radius.** ✅ **PINNED (ADR §G):** pre-trade risk (PTRM) caps —
+  max order value/qty, per-second order rate limit — plus the **global kill-switch (reject
+  all new submits AND mass-cancel open orders)** and the sim-default stage (E2/E3) are
+  **Phase-2 milestones** (D11), not a Phase-6 afterthought — no live adapter lands before
+  they exist.
+- **Streaming creep.** ✅ **PINNED (ADR §G):** D1 reaffirmed — execution plane only;
+  market-data / order-book streams are strictly **external, read-only dependencies** (e.g.
+  price-band checks); never owned here.
 
 ---
 

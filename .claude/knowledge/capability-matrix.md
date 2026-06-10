@@ -1,11 +1,14 @@
 # Capability matrix — Liberator vs Settrade vs Sim
 
-> Reconciles the two broker research notes
+> **Shape FROZEN in Phase 0 (2026-06-10)** by the ADR
+> ([`feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md),
+> Pinned §F — per-`(broker, market)` capability sets; this file stays the canonical cell-level
+> matrix the ADR links). Reconciles the two broker research notes
 > ([Liberator](broker-research-liberator.md), [Settrade](broker-research-settrade.md)) onto one
 > `NormalizedOrder`. The router enforces these per-adapter capabilities **up front** (D7) —
 > an unsupported `(broker, market, order_type, tif)` is rejected with a typed error before any
 > venue I/O. **(confirm P4)** = a Settrade enum the SDK passes through as a string; pinned during
-> the Phase-4 adapter build, not guessed here. Canonical copy lives in
+> the Phase-4 adapter build (deferred-by-design, R4), not guessed here. Canonical copy lives in
 > [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#broker-capability-matrix-liberator-vs-settrade-vs-sim).
 
 | Capability | Liberator (SET / TFEX) | Settrade (derivatives) | Sim |
