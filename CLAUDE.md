@@ -13,14 +13,18 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phase 0 complete — ADR ACCEPTED (2026-06-10); Phases 1–7 Proposed.** The
-> repo is a FastAPI skeleton from `lumduan/python-template` exposing only `GET /health`; the
-> order-routing surface, adapters, and state machine are **not implemented yet**. The
-> contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine, capability-matrix
-> shape) are **frozen** in the umbrella ADR
-> [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md);
-> the build sequence is [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7).
-> Next: **Phase 1** — the `execution` schema, a `quant-infra-db` PR.
+> **Current state: Phases 0–1 complete (2026-06-10); Phases 2–7 Proposed.** Phase 0: ADR
+> ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
+> capability-matrix shape) are **frozen** in the umbrella ADR
+> [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
+> Phase 1: the durable order store is **live** — `db_execution`/`execution.{orders, fills,
+> order_events}` in `quant-infra-db` (`12_schema_execution.sql`), idempotency PK on
+> `client_order_id`, DB triggers enforcing exactly the frozen state machine + append-only
+> audit (plan: [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md)).
+> The repo itself is still a FastAPI skeleton exposing only `GET /health`; the order-routing
+> surface, adapters, and state machine are **not implemented yet**. The build sequence is
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7).
+> Next: **Phase 2** — engine core + gateway proxy + `SimAdapter`.
 
 ### Ownership boundaries (the whole point of this service)
 

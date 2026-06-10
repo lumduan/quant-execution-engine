@@ -6,6 +6,11 @@
 > order language every strategy speaks. `Decimal`-as-string on the wire; `int` quantities;
 > UTC timestamps (display Asia/Bangkok); no `float` at any money boundary. Canonical sketch:
 > [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#normalizedorder--normalizedorderresult-contract-frozen-in-phase-0-realised-in-phase-2).
+> **DB-encoded since Phase 1 (2026-06-10):** every enum below plus the cross-field rules
+> (price/stop_price requiredness, `display_qty ≤ quantity`, `position_effect` TFEX-only) are
+> CHECK constraints on `execution.orders` in `quant-infra-db` (`12_schema_execution.sql`);
+> `client_order_id` is stored as opaque TEXT (§A — format validation stays at the engine
+> boundary), prices as `numeric(18,6)`, quantities as `bigint`.
 
 ## Request — `NormalizedOrder`
 
