@@ -16,10 +16,12 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phase 0 complete (2026-06-10) — ADR accepted; Phases 1–7 Proposed.** The
-repository is **scaffolded** (FastAPI skeleton from `lumduan/python-template`, `GET /health`
-only, own Redis sidecar in compose, strict gate green); no order path exists yet. Next:
-**Phase 1** (`quant-infra-db` `execution` schema).
+**Status: Phases 0–1 complete (2026-06-10) — ADR accepted; `execution` order store live;
+Phases 2–7 Proposed.** The repository is **scaffolded** (FastAPI skeleton from
+`lumduan/python-template`, `GET /health` only, own Redis sidecar in compose, strict gate
+green); no order path exists yet, but the durable store it will write
+(`db_execution`/`execution.*` in `quant-infra-db`, trigger-enforced frozen state machine) is
+live on `quant-network`. Next: **Phase 2** (engine core + gateway proxy + `SimAdapter`).
 
 ---
 
@@ -227,7 +229,19 @@ frozen against the ADR. Phase plan: [`phase0-design-adr-gate.md`](phase0-design-
 - **Cross-refs:** umbrella ROADMAP Phase 0; ADR; this repo `.claude/knowledge/*`.
 
 ### Phase 1 — `quant-infra-db` `execution` order store 🗄️
-**Status:** `[ ]` Proposed. **Repo:** `quant-infra-db` (own PR; new `NN_schema_execution.sql`).
+**Status:** `[x]` **Complete (2026-06-10).** **Repo:** `quant-infra-db`
+([PR #11](https://github.com/lumduan/quant-infra-db/pull/11), `12_schema_execution.sql`).
+**Shipped:** `db_execution` (dedicated DB, plain tables — no TimescaleDB; FK targets cannot
+be hypertables) with `execution.orders` (**PK `client_order_id`** = the idempotency
+constraint; frozen enums as CHECKs; `numeric(18,6)` prices; §B reconciliation index
+`(account, symbol, side, quantity, created_at)` + partial `broker_order_id` index),
+`execution.fills` (`UNIQUE (client_order_id, broker_fill_id)` dedupes at-least-once
+delivery), and append-only `execution.order_events`; DB triggers enforce the entry state +
+**exactly the 13 frozen state-machine edges** (terminals immutable) and auto-append one
+audit row per transition with `broker_order_id` snapshotted atomically on ack (§B).
+Live-applied twice (idempotent) to `quant-postgres` on `quant-network`; 14 infra tests +
+infra-db gate green. Phase plan:
+[`phase1-execution-order-store.md`](phase1-execution-order-store.md). **Phase 2 unblocked.**
 
 - **Objective:** a durable, idempotent, auditable order store that survives restarts and
   powers reconciliation.

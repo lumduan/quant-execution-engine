@@ -7,6 +7,17 @@
 > `execution.order_events`). An app-level guard (and a DB constraint where practical) rejects
 > illegal transitions. Every transition appends an immutable audit row. Realised in Phase 2 over
 > the Phase-1 schema.
+>
+> **DB-ENFORCED since Phase 1 (2026-06-10,
+> [`12_schema_execution.sql`](https://github.com/lumduan/quant-infra-db/pull/11)):** the
+> `execution.orders_guard` trigger encodes **exactly the 13 edges below** (ERRCODE 23514 →
+> `CheckViolationError`), forces every INSERT to enter at `PENDING_NEW`, and leaves terminal
+> states immutable; `execution.orders_append_event` auto-appends one `order_events` row per
+> INSERT/transition (birth row `NULL → PENDING_NEW`; the ack row snapshots `broker_order_id`
+> atomically per §B); `order_events` rejects UPDATE/DELETE/TRUNCATE. Edges NOT in this graph
+> (venue cancel-reject, fills while `PENDING_CANCEL`, `PENDING_REPLACE → CANCELLED` for the
+> Liberator cancel+replace end state) are deliberately not encoded — amend the ADR first,
+> then ship a follow-up infra-db migration.
 
 ## States
 
