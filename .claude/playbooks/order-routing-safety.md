@@ -119,10 +119,21 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
 
 - Engine-side config: `EXECUTION_ENGINE_SETTRADE_BASE_URL` / `_APP_ID` / `_APP_SECRET` /
   `_APP_CODE` / `_BROKER_ID` / `_PIN`. The runtime only starts when `stage ∈ {paper, micro_live,
-  live}` AND owner mode AND **all five** of app_id/app_secret/app_code/broker_id/pin are present
+  live}` AND owner mode AND `broker_id` + `pin` are present AND **≥1 market resolves an app trio**
   (`ACCOUNT_NO` is NOT required — the per-order account comes from `NormalizedOrder.account`).
   Missing creds log a WARNING and leave Settrade routing disabled (`micro_live` submits then 403
   `stage_rejected`).
+- **Per-market broker apps (Phase 4.1).** A broker may split its books across two OAuth apps. Set
+  per-market overrides — SET via `EXECUTION_ENGINE_SETTRADE_EQUITY_APP_{ID,SECRET,CODE}`, TFEX via
+  `EXECUTION_ENGINE_SETTRADE_DERIVATIVES_APP_{ID,SECRET,CODE}` — and `broker_id`/`base_url`/`pin`
+  stay shared. **InnovestX (broker `023`)** example: `EQUITY_*` = the `ALGO_EQ` app, `DERIVATIVES_*`
+  = the `ALGO` app — this routes a stock-vs-futures spread's SET and TFEX legs concurrently. A
+  market with **no** per-market override falls back to the shared `SETTRADE_APP_*` trio (the
+  single-app sandbox path; UAT broker `098` is one app for both books). **Partial-trio fails loud:**
+  if a per-market trio is incomplete (1–2 of the 3 fields set), that market is left UNCONFIGURED
+  with a boot WARNING naming the missing field NAMES — it does **NOT** silently fall back to the
+  shared app (a forgotten secret must never route a leg through the wrong app). `GET /health
+  brokers.settrade.sessions` shows which markets are live.
 - **UAT sandbox rehearsal:** point `EXECUTION_ENGINE_SETTRADE_BASE_URL` at
   `https://open-api-test.settrade.com` and use **`BROKER_ID=098`** (the UAT sandbox broker) to
   exercise the OAuth + order path without prod creds. The integration skeleton is
@@ -130,6 +141,12 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
 - **No OTP flow** (unlike Liberator): the session is OAuth app-credentials. There is no SMS
   webhook to wait on — `ensure_token()` logs in and refreshes on its own. If the breaker is
   tripped, the diagnosis is creds/clock, not a missing OTP login.
+- **`micro_live`-flip prerequisite — the real trading PIN.** Reads (account/positions/heartbeat)
+  work with app creds alone; **writes do not**. Before flipping a real broker (e.g. InnovestX `023`)
+  to `micro_live`, confirm `EXECUTION_ENGINE_SETTRADE_PIN` holds the **real** trading PIN — the PIN
+  only enters write payloads, so a configured-but-PIN-less broker reads fine yet cannot place an
+  order. (Phase 4.1 validated InnovestX read-only against prod with the PIN still absent; supplying
+  the real PIN is the explicit gate to the first write.)
 
 ### Secret hygiene (Settrade)
 
@@ -151,6 +168,11 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
    health endpoint), so a trip means either OAuth login/refresh is failing (creds revoked /
    expired / **clock skew** breaking the ECDSA-signed timestamp) OR the transport is down /
    timing out. Check the engine log for the login/refresh failure vs an httpx transport error.
+   **Which app is dead?** With per-market apps (Phase 4.1) the heartbeat is **all-sessions** — one
+   dead app trips the single breaker and mass-cancels **both** books (intended: a spread leg must
+   not survive one-sided). `GET /health brokers.settrade.sessions` (`{"SET": …, "TFEX": …}`) tells
+   you **which** app failed — `false` = that app's token/transport is down, `true` = healthy,
+   `null` = not yet probed. Diagnose creds/clock for the `false` market's app specifically.
 3. Recovery is **automatic**: the next healthy heartbeat (token acquirable AND last wire OK)
    resets the breaker (state `closed`); reconcile then repairs any drift — verify with
    `GET /orders/{client_order_id}` on anything that was in flight.

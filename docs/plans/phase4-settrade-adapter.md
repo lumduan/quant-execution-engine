@@ -825,6 +825,12 @@ decision E26 and as a reusable scraping recipe in `broker-research-settrade.md`)
 - **In-Scope rows flipped Planned → Done** (all 14); the §"Pinned venue enum sets" cells in this
   plan are now realized 1:1 by `contracts/capabilities.py` + `adapters/settrade/mapping.py`.
 
+### Follow-on
+
+- **Phase 4.1 (2026-06-11)** extended the adapter to **per-market broker apps** (one
+  `SettradeClient` per market, for the InnovestX SET/TFEX OAuth-app split) — see
+  [`phase4.1-settrade-per-market-apps.md`](phase4.1-settrade-per-market-apps.md).
+
 ---
 
 **Document Version:** 1.1
