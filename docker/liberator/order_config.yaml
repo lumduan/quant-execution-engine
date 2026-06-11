@@ -1,0 +1,17 @@
+order_info:
+  # Maximum number of retry attempts for failed symbols
+  max_retries: 3
+
+  # Batch size for initial request and retries
+  batch_size: 50
+
+  # Delay between retry attempts (seconds)
+  retry_delay: 0.5
+
+  # Maximum delay between retries (exponential backoff cap)
+  max_retry_delay: 5.0
+
+  # Minimum success rate to consider acceptable (0.0-1.0)
+  # If below this threshold after max_retries, log warning
+  min_success_rate: 0.95
+

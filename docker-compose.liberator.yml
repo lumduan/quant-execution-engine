@@ -37,6 +37,12 @@ services:
       # Deterministic container config (Redis host = sidecar). YAML outranks env
       # in liberator's settings loader, so this is how Redis/port are pinned.
       - ./docker/liberator/system.yaml:/app/config/system.yaml:ro
+      # The remaining config files validate_configuration() requires at startup
+      # (the image ships only *.yaml.example templates, so the autonomous setup
+      # cannot self-heal — these complete it deterministically; no secrets).
+      - ./docker/liberator/session_status.yaml:/app/config/session_status.yaml:ro
+      - ./docker/liberator/trading_hour.yaml:/app/config/trading_hour.yaml:ro
+      - ./docker/liberator/order_config.yaml:/app/config/order_config.yaml:ro
       # Persist the auth-token store + logs across restarts (OTP session survives).
       - liberator_data:/app/data
       - liberator_logs:/app/logs

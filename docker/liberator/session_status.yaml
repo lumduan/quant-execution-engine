@@ -1,0 +1,40 @@
+# Container config for the bundled liberator-trading-api overlay.
+# test_payload is the session-monitor liveness probe; the monitor ships DISABLED
+# (session_monitor.enabled/auto_connect = false) so this is inert. Placeholder
+# accountNo/pin only — never real credentials (those live in the gitignored .env).
+session_status:
+  test_payload:
+    accountNo: '00000000'
+    icebergVol: 0
+    volume: 1
+    symbol: CPALL
+    side: Buy
+    pin: '000000'
+    price: 1.0
+    priceType: Limit
+    validityType: Day
+    nvdr: false
+    ip: ''
+    tstamp: ''
+  monitoring:
+    enabled: true
+    interval_seconds: 300
+    auto_reconnect: true
+    max_retries: 3
+    retry_delay: 10
+  health_check:
+    timeout_seconds: 30
+    include_runtime: true
+    include_config: false
+session_monitor:
+  auto_connect: false
+  checking_time_interval: 300
+  enabled: false
+  max_retries: 3
+  retry_backoff_seconds: 60
+  notify_on_reconnect: true
+  max_consecutive_failures: 5
+  service_pause_minutes: 30
+  health_check_on_startup: false
+  log_level: info
+
