@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
+from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.api.deps import (
     get_router_dep,
     get_settings_dep,
@@ -43,16 +44,25 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 
 def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
-    """Breaker/session state per configured broker (None when broker-free)."""
-    adapter = get_liberator_adapter()
-    if adapter is None:
-        return None
-    return {
-        "liberator": BrokerRuntimeHealth(
-            breaker_state=adapter.breaker.state.value,
-            session_healthy=adapter.last_heartbeat_ok,
+    """Breaker/session state per configured broker (None when broker-free).
+
+    The dict is non-None when EITHER broker runtime exists; each configured
+    broker contributes its own ``{breaker_state, session_healthy}`` entry.
+    """
+    brokers: dict[str, BrokerRuntimeHealth] = {}
+    liberator = get_liberator_adapter()
+    if liberator is not None:
+        brokers["liberator"] = BrokerRuntimeHealth(
+            breaker_state=liberator.breaker.state.value,
+            session_healthy=liberator.last_heartbeat_ok,
         )
-    }
+    settrade = get_settrade_adapter()
+    if settrade is not None:
+        brokers["settrade"] = BrokerRuntimeHealth(
+            breaker_state=settrade.breaker.state.value,
+            session_healthy=settrade.last_heartbeat_ok,
+        )
+    return brokers or None
 
 
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
