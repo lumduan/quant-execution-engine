@@ -662,3 +662,41 @@ micro_live venue validation is an operator runbook step (OTP login), documented 
   upstream hardening dropped the "settings-resolved key" variant in favour of the
   patch-compatible primitive (Issue 4) while keeping both security properties
   (timing-safe compare, 503 fail-closed).
+
+### Post-merge fixes (2026-06-11) — surfaced by the first real overlay bring-up
+
+The Phase 3 PR (#6) was mock-validated; the **first real owner-mode bring-up** of the
+liberator overlay (operator OTP runbook) surfaced two genuine defects, both fixed:
+
+1. **Overlay config-completeness gap (this repo).** The image entrypoint runs
+   `app_main()` → `run_setup_if_needed()` → `validate_configuration()`, which hard-exits
+   (`sys.exit(1)`) when `config/session_status.yaml` / `config/trading_hour.yaml` are
+   missing. The image ships only `*.yaml.example` templates, and `setup.py` looks for
+   `*.sample.yaml` names that don't exist — so the autonomous bootstrap could not
+   self-heal and the container crash-looped. Fixed by bundling container-appropriate
+   copies under `docker/liberator/` (`session_status.yaml` with the monitor probe
+   **disabled** + placeholder accountNo/pin, `trading_hour.yaml`, `order_config.yaml`)
+   and mounting them read-only in `docker-compose.liberator.yml` (alongside the existing
+   `system.yaml`). No secrets in any committed file.
+2. **`confirm-otp` phone-mask bug (upstream `liberator-trading-api`, dual-committed).**
+   `login_service.confirm_otp` put a **masked** phone (`_mask_phone_number → XXXXXX1234`)
+   into the actual `/va/2fa-confirm` payload, so the broker rejected every confirmation
+   with "phone number does not match" even with a valid OTP — 2FA could never complete.
+   Masking is for logging only; the login call already sends the full number. Fixed to
+   send the real `final_tel_no` (submodule `0556d93`, pinned here).
+
+**Live validation (operator OTP, real account).** With both fixes: `POST /login/` →
+OTP SMS received → `POST /login/confirm-otp` → HTTP 200, token stored
+(`tokens_stored/file_saved/redis_saved = true`); `GET /order/health/set` then reports
+`status: healthy, auth_token_available: true, pin_configured: true` — exactly the
+condition `LiberatorAdapter.heartbeat()` checks, so the breaker stays closed against a
+live session. The image health timestamp is correct UTC, confirming the Phase 3 auth
+hardening is live.
+
+**Recommended follow-up (not done here — needs its own plan).** The upstream config
+system is container-hostile: `setup.py`'s interactive/`--default` bootstrap and the
+YAML-over-env precedence (env `REDIS_HOST`/`API_PORT` are silently ignored when a
+`system.yaml` provides them) are surprising and brittle. A best-practice refactor would
+make config fully env-overridable (pydantic-settings as the single source of truth, YAML
+as defaults only) and drop the runtime `setup.py` dependency for container runs. Tracked
+as a recommendation for a dedicated upstream phase.
