@@ -40,6 +40,17 @@ class SettradeMappingError(SettradeAdapterError):
     """
 
 
+class SettradeMarketNotConfigured(SettradeAdapterError):
+    """No OAuth broker app is configured for the requested market (Phase 4.1).
+
+    Raised by the reconciler-facing ``fetch_venue_orders`` when a market has no
+    client — NEVER an empty list (an empty list would forge "venue says zero
+    orders" and drive cancel_confirm/ack_lost transitions against possibly-live
+    orders). The reconciler treats it as a group-skip so the affected rows freeze
+    and nag rather than transition on fabricated truth. Carries no venue code.
+    """
+
+
 class SettradeVenueRejection(SettradeAdapterError):
     """A structured non-2xx ``{code, message}`` venue rejection (status < 500).
 

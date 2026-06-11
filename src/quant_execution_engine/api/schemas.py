@@ -16,6 +16,9 @@ class BrokerRuntimeHealth(BaseModel):
 
     breaker_state: str  # "closed" | "open" | "half_open"
     session_healthy: bool | None = None  # last heartbeat result; None before the first
+    # Phase 4.1 (additive, Settrade only): per-market last heartbeat — which app
+    # is alive/dead under a multi-app broker ({"SET": bool|None, "TFEX": ...}).
+    sessions: dict[str, bool | None] | None = None
 
 
 class HealthResponse(BaseModel):
