@@ -16,7 +16,16 @@ from typing import Any
 
 import asyncpg
 import pytest
-from src.quant_execution_engine.contracts.enums import OrderState
+from src.quant_execution_engine.adapters.base import (
+    AccountInfo,
+    AmendAck,
+    BrokerAdapter,
+    CancelAck,
+    PlaceAck,
+    Position,
+)
+from src.quant_execution_engine.contracts.capabilities import CapabilitySet, lookup
+from src.quant_execution_engine.contracts.enums import Broker, Market, OrderState
 from src.quant_execution_engine.contracts.errors import IllegalTransition
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
@@ -166,6 +175,66 @@ class FakeRedis:
         return None
 
 
+# ------------------------------------------------------------- broker adapter
+
+
+class StubBrokerAdapter(BrokerAdapter):
+    """Configurable in-memory BrokerAdapter for router/stage tests.
+
+    Records amend/cancel/place calls; ``amend`` returns a scripted
+    :class:`AmendAck` (default ok) or raises a scripted exception.
+    """
+
+    def __init__(
+        self,
+        *,
+        broker: Broker = Broker.SETTRADE,
+        amend_ack: AmendAck | None = None,
+        amend_raises: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self.broker = broker  # type: ignore[misc]  # per-instance override for tests
+        self._amend_ack = amend_ack or AmendAck(ok=True, semantics="native")
+        self._amend_raises = amend_raises
+        self.amend_calls: list[tuple[str, Decimal | None, int | None]] = []
+        self.cancel_calls: list[str] = []
+        self.place_calls: list[NormalizedOrder] = []
+
+    async def place(self, order: NormalizedOrder) -> PlaceAck:
+        self.place_calls.append(order)
+        return PlaceAck(broker_order_id=f"STUB-{order.client_order_id[:8]}")
+
+    async def cancel(self, client_order_id: str) -> CancelAck:
+        self.cancel_calls.append(client_order_id)
+        return CancelAck(ok=True)
+
+    async def amend(
+        self,
+        client_order_id: str,
+        new_price: Decimal | None = None,
+        new_qty: int | None = None,
+    ) -> AmendAck:
+        self.amend_calls.append((client_order_id, new_price, new_qty))
+        if self._amend_raises is not None:
+            raise self._amend_raises
+        return self._amend_ack
+
+    async def get_open_orders(self, account: str) -> list[NormalizedOrder]:
+        return []
+
+    async def get_positions(self, account: str) -> list[Position]:
+        return []
+
+    async def get_account(self, account: str) -> AccountInfo:
+        return AccountInfo(account=account, buying_power=Decimal("1000000000"))
+
+    def capabilities(self) -> tuple[CapabilitySet, ...]:
+        return (lookup(self.broker, Market.SET),)
+
+    async def heartbeat(self) -> bool:
+        return True
+
+
 # -------------------------------------------------------------------- MemStore
 
 
@@ -233,6 +302,26 @@ class MemStore:
         row["broker_order_id"] = broker_order_id
         row["updated_at"] = self._now()
 
+    async def replace_order(
+        self,
+        pool: Any,
+        client_order_id: str,
+        new_price: Decimal | None,
+        new_qty: int | None,
+    ) -> None:
+        row = self.orders.get(client_order_id)
+        if row is None or row["status"] is not OrderState.PENDING_REPLACE:
+            raise IllegalTransition(
+                "replace requires the order to be in PENDING_REPLACE",
+                client_order_id=client_order_id,
+            )
+        row["status"] = OrderState.NEW
+        if new_price is not None:
+            row["price"] = new_price
+        if new_qty is not None:
+            row["quantity"] = new_qty
+        row["updated_at"] = self._now()
+
     async def update_status(self, pool: Any, client_order_id: str, new_status: OrderState) -> None:
         row = self.orders.get(client_order_id)
         if row is None:
@@ -281,13 +370,21 @@ class MemStore:
             if row["status"] in (OrderState.NEW, OrderState.PARTIALLY_FILLED)
         ]
 
-    async def fetch_orders_for_reconcile(self, pool: Any, broker: Any) -> list[OrderRow]:
-        wanted = (
+    async def fetch_orders_for_reconcile(
+        self,
+        pool: Any,
+        broker: Any,
+        *,
+        include_pending_replace: bool = False,
+    ) -> list[OrderRow]:
+        wanted = [
             OrderState.PENDING_NEW,
             OrderState.NEW,
             OrderState.PARTIALLY_FILLED,
             OrderState.PENDING_CANCEL,
-        )
+        ]
+        if include_pending_replace:
+            wanted.append(OrderState.PENDING_REPLACE)
         return [
             OrderRow(**row)
             for row in self.orders.values()
@@ -300,6 +397,7 @@ _REPO_FUNCTIONS = (
     "fetch_order",
     "fetch_order_result",
     "ack_order",
+    "replace_order",
     "update_status",
     "set_reject_reason",
     "apply_fill",

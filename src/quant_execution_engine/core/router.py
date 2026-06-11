@@ -17,14 +17,15 @@ from typing import Any
 
 import asyncpg
 
-from src.quant_execution_engine.adapters.base import BrokerAdapter
+from src.quant_execution_engine.adapters.base import AmendAck, BrokerAdapter
 from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.sim import SimAdapter
 from src.quant_execution_engine.cache.single_flight import single_flight
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts import capabilities
-from src.quant_execution_engine.contracts.enums import OrderState, to_public_status
+from src.quant_execution_engine.contracts.enums import Broker, OrderState, to_public_status
 from src.quant_execution_engine.contracts.errors import (
+    AmendRejected,
     ConcurrentSubmit,
     IllegalTransition,
     OrderNotFound,
@@ -33,10 +34,10 @@ from src.quant_execution_engine.contracts.orders import NormalizedOrder, Normali
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.core.kill_switch import KillSwitch
 from src.quant_execution_engine.core.risk import RiskGate
-from src.quant_execution_engine.core.stage import resolve_adapter
+from src.quant_execution_engine.core.stage import AdapterIntent, resolve_adapter
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
-from src.quant_execution_engine.db.models import OrderResultRow
+from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,35 @@ class SubmitOutcome:
     duplicate: bool
 
 
+def _amended_order(
+    row: OrderRow,
+    client_order_id: str,
+    *,
+    new_price: Decimal | None,
+    new_qty: int | None,
+) -> NormalizedOrder:
+    """Rebuild a NormalizedOrder from a stored row with overridden price/qty.
+
+    Shared by both amend branches: native re-uses the same ``client_order_id``,
+    cancel_replace supplies the fresh replacement id.
+    """
+    return NormalizedOrder(
+        client_order_id=client_order_id,
+        broker=row.broker,
+        account=row.account,
+        market=row.market,
+        symbol=row.symbol,
+        side=row.side,
+        order_type=row.order_type,
+        price=new_price if new_price is not None else row.price,
+        stop_price=row.stop_price,
+        quantity=new_qty if new_qty is not None else row.quantity,
+        display_qty=row.display_qty,
+        tif=row.tif,
+        position_effect=row.position_effect,
+    )
+
+
 class OrderRouter:
     """Per-request orchestrator (cheap to build; backed by process singletons)."""
 
@@ -61,15 +91,33 @@ class OrderRouter:
         pool: asyncpg.Pool,
         redis: Any | None,
         liberator_adapter: BrokerAdapter | None = None,
+        settrade_adapter: BrokerAdapter | None = None,
     ) -> None:
         self._settings = settings
         self._pool = pool
         self._redis = redis
         self._sim = SimAdapter(default_fill_price=settings.sim_default_fill_price)
-        # Injected process singleton (api/deps.py / runtime); None = not configured.
+        # Injected process singletons (api/deps.py / runtime); None = not configured.
         self._liberator = liberator_adapter
+        self._settrade = settrade_adapter
         self._risk = RiskGate(settings, redis)
         self.kill_switch = KillSwitch(settings, redis)
+
+    def _resolve_adapter(
+        self,
+        broker: Broker,
+        *,
+        intent: AdapterIntent = AdapterIntent.TRADE,
+    ) -> BrokerAdapter:
+        """Thread every injected adapter through the stage ladder (one call site)."""
+        return resolve_adapter(
+            self._settings.stage,
+            broker,
+            sim_adapter=self._sim,
+            liberator_adapter=self._liberator,
+            settrade_adapter=self._settrade,
+            intent=intent,
+        )
 
     # ------------------------------------------------------------------ submit
     async def submit(self, order: NormalizedOrder) -> SubmitOutcome:
@@ -85,12 +133,7 @@ class OrderRouter:
 
         await self._risk.check(order)
 
-        adapter = resolve_adapter(
-            self._settings.stage,
-            order.broker,
-            sim_adapter=self._sim,
-            liberator_adapter=self._liberator,
-        )
+        adapter = self._resolve_adapter(order.broker)
         adapter.breaker.guard()
         # Venue-class field validation hook: per-(broker, market, order_type)
         # strict rules plug in here in Phases 3/4 (ADR §G); no-op in Phase 2.
@@ -187,12 +230,7 @@ class OrderRouter:
                 f"no frozen cancel edge from {row.status} (transient pending state)",
                 client_order_id=client_order_id,
             )
-        adapter = resolve_adapter(
-            self._settings.stage,
-            row.broker,
-            sim_adapter=self._sim,
-            liberator_adapter=self._liberator,
-        )
+        adapter = self._resolve_adapter(row.broker)
         adapter.breaker.guard()
         await repositories.update_status(self._pool, client_order_id, OrderState.PENDING_CANCEL)
         ack = await adapter.cancel(client_order_id)
@@ -207,46 +245,159 @@ class OrderRouter:
         self,
         client_order_id: str,
         *,
-        new_client_order_id: str,
+        new_client_order_id: str | None = None,
         new_price: Decimal | None = None,
         new_qty: int | None = None,
     ) -> SubmitOutcome:
-        """Cancel+replace orchestration (Liberator has no amend route, R2).
+        """Amend price/qty; branches on the order's declared amend semantics.
 
-        Not HTTP-exposed in Phase 3 (the route lands Phase 4). The old order
-        ends CANCELLED via the frozen PENDING_CANCEL path (PENDING_REPLACE is
-        reserved for native amends); the replacement enters the FULL frozen
-        submit pipeline under the caller-supplied fresh ``client_order_id``.
-        Declared consequences of ``cancel_replace`` semantics: queue priority
-        is lost and a brief no-resting-order window exists. Under an engaged
-        kill-switch the cancel leg still runs (cancels reduce risk) and the
-        replacement is rejected — the position ends flat, never doubled. The
-        replacement gets NO PTRM exemption: a price-only amend re-using the
-        same quantity inside the duplicate-burst window is risk-rejected
-        (old order already cancelled — flat, retry after the window).
+        The branch key is the ORDER's ``capabilities.lookup(broker, market).amend``:
+        ``native`` (Settrade) amends in place via PENDING_REPLACE; ``cancel_replace``
+        (Liberator, which has no amend route, R2) cancels then resubmits.
+
+        Kill-switch FIRST (asymmetric with the un-gated cancel path): amends can
+        *increase* exposure, so the switch precedes everything in the amend path
+        — a cancel reduces risk and stays un-gated, an amend must not slip a
+        larger order past an engaged kill-switch.
         """
+        await self.kill_switch.assert_disengaged()  # FIRST — amends can raise exposure
         if new_price is None and new_qty is None:
-            raise AdapterError("amend requires new_price and/or new_qty")
+            raise AmendRejected(
+                "amend requires new_price and/or new_qty", client_order_id=client_order_id
+            )
         row = await repositories.fetch_order(self._pool, client_order_id)
         if row is None:
             raise OrderNotFound("unknown client_order_id", client_order_id=client_order_id)
-        await self.cancel(client_order_id)
-        replacement = NormalizedOrder(
-            client_order_id=new_client_order_id,
-            broker=row.broker,
-            account=row.account,
-            market=row.market,
-            symbol=row.symbol,
-            side=row.side,
-            order_type=row.order_type,
-            price=new_price if new_price is not None else row.price,
-            stop_price=row.stop_price,
-            quantity=new_qty if new_qty is not None else row.quantity,
-            display_qty=row.display_qty,
-            tif=row.tif,
-            position_effect=row.position_effect,
+        semantics = capabilities.lookup(row.broker, row.market).amend
+        if semantics == "native":
+            return await self._amend_native(
+                row, new_client_order_id, new_price=new_price, new_qty=new_qty
+            )
+        return await self._amend_cancel_replace(
+            row, new_client_order_id, new_price=new_price, new_qty=new_qty
         )
+
+    async def _amend_cancel_replace(
+        self,
+        row: OrderRow,
+        new_client_order_id: str | None,
+        *,
+        new_price: Decimal | None,
+        new_qty: int | None,
+    ) -> SubmitOutcome:
+        """Cancel+replace orchestration (Liberator has no amend route, R2).
+
+        The old order ends CANCELLED via the frozen PENDING_CANCEL path
+        (PENDING_REPLACE is reserved for native amends); the replacement enters
+        the FULL frozen submit pipeline under the caller-supplied fresh
+        ``client_order_id``. Declared consequences of ``cancel_replace``
+        semantics: queue priority is lost and a brief no-resting-order window
+        exists. Under an engaged kill-switch the amend is rejected up front (see
+        :meth:`amend`). The replacement gets NO PTRM exemption: a price-only
+        amend re-using the same quantity inside the duplicate-burst window is
+        risk-rejected (old order already cancelled — flat, retry after window).
+        """
+        if new_client_order_id is None:
+            raise AmendRejected(
+                "cancel_replace amend requires new_client_order_id",
+                client_order_id=row.client_order_id,
+            )
+        await self.cancel(row.client_order_id)
+        replacement = _amended_order(row, new_client_order_id, new_price=new_price, new_qty=new_qty)
         return await self.submit(replacement)
+
+    async def _amend_native(
+        self,
+        row: OrderRow,
+        new_client_order_id: str | None,
+        *,
+        new_price: Decimal | None,
+        new_qty: int | None,
+    ) -> SubmitOutcome:
+        """Native amend over the frozen PENDING_REPLACE -> NEW edge (Settrade).
+
+        The amend rides one atomic ``replace_order`` UPDATE (status + price +
+        quantity in one statement, so the audit trigger snapshots the amended
+        values). A venue amend-reject (e.g. a partial fill raced the amend) is a
+        NON-terminal restore: PENDING_REPLACE -> NEW (+ PARTIALLY_FILLED when
+        already partly filled), then ``AmendRejected`` (409). The order is still
+        LIVE — ``reject_reason`` is deliberately NOT written (it would imply the
+        order is dead); the two audit rows + the typed envelope are the evidence.
+        """
+        cid = row.client_order_id
+        if new_client_order_id is not None:
+            raise AmendRejected(
+                "native amend keeps the same client_order_id; omit new_client_order_id",
+                client_order_id=cid,
+            )
+        if row.status not in (OrderState.NEW, OrderState.PARTIALLY_FILLED):
+            detail = (
+                "amend already in flight"
+                if row.status is OrderState.PENDING_REPLACE
+                else f"no amend edge from {row.status}"
+            )
+            raise IllegalTransition(detail, client_order_id=cid)
+
+        result = await repositories.fetch_order_result(self._pool, cid)
+        if result is None:  # pragma: no cover - row was just fetched
+            raise OrderNotFound("order vanished mid-amend", client_order_id=cid)
+        filled_qty = result.filled_qty
+        self._assert_amend_quantities(cid, row, new_qty, filled_qty)
+
+        amended = _amended_order(row, cid, new_price=new_price, new_qty=new_qty)
+        await self._risk.check(amended)  # NO exemption (E17): a reject leaves the original resting
+
+        adapter = self._resolve_adapter(row.broker)
+        adapter.breaker.guard()
+
+        await repositories.update_status(self._pool, cid, OrderState.PENDING_REPLACE)
+        ack = await self._venue_amend(adapter, cid, new_price=new_price, new_qty=new_qty)
+        if ack.ok:
+            await repositories.replace_order(self._pool, cid, new_price, new_qty)
+            await self._restore_partial(cid, filled_qty)
+            return SubmitOutcome(result=await self.get(cid), duplicate=False)
+        # Venue amend-reject: restore non-terminally; the order is still live.
+        await repositories.update_status(self._pool, cid, OrderState.NEW)
+        await self._restore_partial(cid, filled_qty)
+        logger.warning("settrade native amend rejected for %s: %s", cid, ack.reason)
+        raise AmendRejected(ack.reason or "amend rejected by venue", client_order_id=cid)
+
+    @staticmethod
+    def _assert_amend_quantities(
+        cid: str,
+        row: OrderRow,
+        new_qty: int | None,
+        filled_qty: int,
+    ) -> None:
+        """Pre-flight the DB column CHECKs (quantity>0, display_qty<=quantity)."""
+        if new_qty is None:
+            return
+        if new_qty <= filled_qty:
+            raise AmendRejected("new_qty <= filled quantity; cancel instead", client_order_id=cid)
+        if row.display_qty is not None and new_qty < row.display_qty:
+            raise AmendRejected(
+                "new_qty < display_qty (would violate display_qty <= quantity)",
+                client_order_id=cid,
+            )
+
+    async def _venue_amend(
+        self,
+        adapter: BrokerAdapter,
+        cid: str,
+        *,
+        new_price: Decimal | None,
+        new_qty: int | None,
+    ) -> AmendAck:
+        """Call the adapter amend; any AdapterError is treated as ack-not-ok."""
+        try:
+            return await adapter.amend(cid, new_price=new_price, new_qty=new_qty)
+        except AdapterError as exc:
+            return AmendAck(ok=False, semantics="native", reason=str(exc))
+
+    async def _restore_partial(self, cid: str, filled_qty: int) -> None:
+        """Two-step restore: NEW -> PARTIALLY_FILLED when the order is partly filled."""
+        if filled_qty > 0:
+            await repositories.update_status(self._pool, cid, OrderState.PARTIALLY_FILLED)
 
     async def mass_cancel(self) -> tuple[list[str], list[str]]:
         """Flatten-and-halt sweep: best-effort cancel of every open order."""
@@ -254,12 +405,7 @@ class OrderRouter:
         failed: list[str] = []
         for row in await repositories.fetch_open_orders(self._pool):
             try:
-                adapter = resolve_adapter(
-                    self._settings.stage,
-                    row.broker,
-                    sim_adapter=self._sim,
-                    liberator_adapter=self._liberator,
-                )
+                adapter = self._resolve_adapter(row.broker)
                 await repositories.update_status(
                     self._pool, row.client_order_id, OrderState.PENDING_CANCEL
                 )

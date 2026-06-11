@@ -14,14 +14,14 @@ from uuid import uuid4
 
 import pytest
 import respx
-from src.quant_execution_engine.adapters.errors import AdapterError, CircuitOpenError
+from src.quant_execution_engine.adapters.errors import CircuitOpenError
 from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
 from src.quant_execution_engine.adapters.liberator.heartbeat import heartbeat_pass
 from src.quant_execution_engine.adapters.liberator.runtime import (
     get_liberator_adapter,
 )
 from src.quant_execution_engine.contracts.enums import Market, OrderState
-from src.quant_execution_engine.contracts.errors import StageRejected
+from src.quant_execution_engine.contracts.errors import AmendRejected, StageRejected
 from src.quant_execution_engine.core.router import OrderRouter
 
 from tests._fakes import FakeRedis, MemStore, patch_repositories
@@ -194,7 +194,7 @@ async def test_amend_replacement_gets_no_ptrm_exemption(
 
 async def test_amend_requires_a_change(monkeypatch: pytest.MonkeyPatch) -> None:
     router, _ = _router(monkeypatch, adapter=make_adapter(), stage="micro_live")
-    with pytest.raises(AdapterError, match="new_price and/or new_qty"):
+    with pytest.raises(AmendRejected, match="new_price and/or new_qty"):
         await router.amend("cid", new_client_order_id=str(uuid4()))
 
 

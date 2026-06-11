@@ -95,3 +95,17 @@ class ConcurrentSubmit(OrderRejectedError):
     """An identical submit is mid-flight and produced no durable row yet."""
 
     code: ClassVar[str] = "submit_in_flight"
+
+
+class AmendRejected(OrderRejectedError):
+    """An amend request is refused (pre-flight rule or venue amend-reject).
+
+    Covers no-change requests, the ``new_client_order_id`` rules per amend
+    class, ``new_qty`` that would underflow the filled/display quantity, and a
+    venue amend-reject (e.g. a partial fill raced the amend). When the venue
+    rejects, the order is still LIVE — the state machine restores it
+    non-terminally (NEW, +PARTIALLY_FILLED) and ``reject_reason`` is left
+    untouched; the two audit rows are the durable evidence.
+    """
+
+    code: ClassVar[str] = "amend_rejected"
