@@ -14,6 +14,8 @@ Wire payloads contain JSON-safe primitives only: prices are Decimal-as-string
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -21,6 +23,7 @@ from typing import Any
 from src.quant_execution_engine.adapters.liberator.errors import LiberatorMappingError
 from src.quant_execution_engine.adapters.liberator.models import VenueOrderItem
 from src.quant_execution_engine.contracts.enums import (
+    Broker,
     Market,
     OrderType,
     PositionEffect,
@@ -182,6 +185,69 @@ def to_cancel_payload(broker_order_id: str, *, pin: str) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------- read side
+
+_READ_PRICE_TYPES: dict[str, OrderType] = {
+    "LIMIT": OrderType.LIMIT,
+    "MARKET": OrderType.MARKET,
+    "MP": OrderType.MTL,
+    "ATO": OrderType.ATO,
+    "ATC": OrderType.ATC,
+    "STOP": OrderType.STOP,
+}
+_READ_VALIDITY: dict[str, Tif] = {"DAY": Tif.DAY, "GTC": Tif.GTC, "IOC": Tif.IOC, "FOK": Tif.FOK}
+_READ_POSITIONS: dict[str, PositionEffect] = {
+    "OPEN": PositionEffect.OPEN,
+    "CLOSE": PositionEffect.CLOSE,
+}
+
+
+def _synthetic_client_order_id(order_no: str) -> str:
+    """Deterministic UUIDv4-shaped placeholder for an uncorrelated venue row.
+
+    ``get_open_orders`` must return ``NormalizedOrder`` (frozen §D) but the
+    venue does not know our client ids. The placeholder is a stable hash of
+    the venue order number with the v4 version/variant bits set so it passes
+    the contract validator; it is a READ-ONLY view id and is never persisted.
+    """
+    digest = bytearray(hashlib.sha256(f"liberator:{order_no}".encode()).digest()[:16])
+    digest[6] = (digest[6] & 0x0F) | 0x40
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(digest)))
+
+
+def venue_item_to_normalized(item: VenueOrderItem, *, account: str) -> NormalizedOrder | None:
+    """Best-effort venue row → ``NormalizedOrder`` (read-only view, ADR §B).
+
+    Rows the frozen contract cannot represent (unknown price type, non-positive
+    limit price such as a negative futures-spread, TFEX ``Auto`` position)
+    return ``None`` and are skipped by the caller — a read view never guesses.
+    """
+    side = from_venue_side(item.side)
+    order_type = _READ_PRICE_TYPES.get(item.price_type.strip().upper())
+    if side is None or order_type is None:
+        return None
+    if order_type is OrderType.LIMIT and item.iceberg_vol > 0:
+        order_type = OrderType.ICEBERG
+    position = _READ_POSITIONS.get((item.position or "").strip().upper())
+    market = Market.TFEX if (item.position or "").strip() else Market.SET
+    try:
+        return NormalizedOrder(
+            client_order_id=_synthetic_client_order_id(item.order_no),
+            broker=Broker.LIBERATOR,
+            account=item.account_no or account,
+            market=market,
+            symbol=item.symbol,
+            side=side,
+            order_type=order_type,
+            price=item.price,
+            stop_price=item.stop_price if order_type is OrderType.STOP else None,
+            quantity=item.volume,
+            display_qty=item.iceberg_vol if order_type is OrderType.ICEBERG else None,
+            tif=_READ_VALIDITY.get(item.validity_type.strip().upper(), Tif.DAY),
+            position_effect=position,
+        )
+    except ValueError:
+        return None
 
 
 class VenueOrderState(StrEnum):

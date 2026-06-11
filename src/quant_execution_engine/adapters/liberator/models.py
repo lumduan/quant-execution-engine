@@ -84,6 +84,8 @@ class VenueOrderItem(BaseModel):
     symbol: str = ""
     side: str = ""  # "B" | "S"
     position: str | None = None
+    price_type: str = Field(default="", alias="priceType")
+    iceberg_vol: int = Field(default=0, alias="icebergVol")
     volume: int = 0
     price: Decimal | None = None
     matched: int = 0
