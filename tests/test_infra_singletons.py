@@ -147,8 +147,9 @@ def test_get_settings_is_cached() -> None:
 def test_capability_lookup_and_unsupported_market() -> None:
     row = capabilities.lookup(Broker.SIM, Market.SET)
     assert row.adapter_installed
-    with pytest.raises(CapabilityError):
-        capabilities.lookup(Broker.SETTRADE, Market.SET)  # derivatives only
+    settrade_set = capabilities.lookup(Broker.SETTRADE, Market.SET)  # SET since Phase 4
+    assert settrade_set.adapter_installed
+    assert settrade_set.position_effects == ()
 
 
 def test_capability_assert_supports_each_axis() -> None:
@@ -162,17 +163,17 @@ def test_capability_assert_supports_each_axis() -> None:
     with pytest.raises(CapabilityError, match="order_type"):
         liberator_set.assert_supports(OrderType.STOP, Tif.DAY, None)
     settrade = capabilities.lookup(Broker.SETTRADE, Market.TFEX)
-    with pytest.raises(CapabilityError, match="tif"):
-        settrade.assert_supports(OrderType.LIMIT, Tif.GTC, PositionEffect.OPEN)
+    with pytest.raises(CapabilityError, match="order_type"):
+        settrade.assert_supports(OrderType.ATC, Tif.DAY, PositionEffect.OPEN)  # no deriv ATC
     with pytest.raises(CapabilityError, match="position_effect"):
         liberator_set.assert_supports(OrderType.LIMIT, Tif.DAY, PositionEffect.OPEN)
-    settrade.assert_supports(OrderType.LIMIT, Tif.DAY, PositionEffect.OPEN)
+    settrade.assert_supports(OrderType.LIMIT, Tif.GTC, PositionEffect.OPEN)  # GTC pinned P4
 
 
 def test_matrix_shape() -> None:
-    assert len(capabilities.CAPABILITY_MATRIX) == 5
+    assert len(capabilities.CAPABILITY_MATRIX) == 6  # +SETTRADE×SET since Phase 4
     installed = {c.broker for c in capabilities.CAPABILITY_MATRIX if c.adapter_installed}
-    assert installed == {Broker.SIM, Broker.LIBERATOR}  # Settrade lands Phase 4
+    assert installed == {Broker.SIM, Broker.LIBERATOR, Broker.SETTRADE}  # Settrade Phase 4
 
 
 # ----------------------------------------------------------------------- stage
