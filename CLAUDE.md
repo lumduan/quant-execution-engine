@@ -13,7 +13,7 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–4 complete (Phase 4: 2026-06-11); Phases 5–7 Proposed.** Phase 0:
+> **Current state: Phases 0–4.1 complete (Phase 4 + 4.1: 2026-06-11); Phases 5–7 Proposed.** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -42,11 +42,24 @@ submit lock / rate-limit).
 > (`paper` intercepts placement to sim / `micro_live` routes `broker=settrade` real); capability
 > cells pinned from `developer.settrade.com`; `EXECUTION_ENGINE_SETTRADE_*` settings
 > (`SecretStr` creds/PIN); `cryptography>=42` dep; **no compose overlay** (cloud API — creds ride
-> `docker-compose.private.yml`'s `env_file`). (Plans:
+> `docker-compose.private.yml`'s `env_file`). **Phase 4.1 (2026-06-11): per-market broker apps** —
+> `SettradeAdapter` holds one `SettradeClient` per market (ctor `clients: Mapping[Market,
+> SettradeClient]`) behind the unchanged `NormalizedOrder`, so a broker that splits its books across
+> two OAuth apps (the real broker **InnovestX `023`**: `ALGO_EQ` = SET equity, `ALGO` = TFEX
+> derivatives) routes both legs of a stock-vs-futures spread concurrently; six per-market settings
+> (`EXECUTION_ENGINE_SETTRADE_{EQUITY,DERIVATIVES}_APP_{ID,SECRET,CODE}`), per-market
+> credentials-resolution with partial-trio-fails-loud (no silent shared fallback) and a shared-trio
+> single-app fallback (the UAT sandbox), all-sessions heartbeat on the single frozen breaker (one
+> dead app trips + mass-cancels both books), per-market reconciler budget skip, additive `/health`
+> `brokers.settrade.sessions`; **real-venue validated read-only** against prod broker 023 (the
+> InnovestX trading PIN is still absent from `.env` — the explicit `micro_live`-flip prerequisite).
+> A spread is two independent `POST /orders` (no batch endpoint); an in-engine refactor (no new
+> `third_party` service). (Plans:
 > [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md),
 > [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md),
 > [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md),
-> [`docs/plans/phase4-settrade-adapter.md`](docs/plans/phase4-settrade-adapter.md).)
+> [`docs/plans/phase4-settrade-adapter.md`](docs/plans/phase4-settrade-adapter.md),
+> [`docs/plans/phase4.1-settrade-per-market-apps.md`](docs/plans/phase4.1-settrade-per-market-apps.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
 > operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
 > Liberator + Settrade runbooks). Build sequence:
@@ -152,9 +165,15 @@ Settrade engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`): Settr
 **cloud API — no compose overlay**; creds ride `docker-compose.private.yml`'s `env_file`.
 `SETTRADE_BASE_URL` (prod `https://open-api.settrade.com`; UAT `https://open-api-test.settrade.com`,
 sandbox `BROKER_ID=098`), `SETTRADE_APP_ID` + `SETTRADE_APP_SECRET` + `SETTRADE_PIN` (SecretStr),
-`SETTRADE_APP_CODE` + `SETTRADE_BROKER_ID` — all five required for the runtime to start
-(`SETTRADE_ACCOUNT_NO` is an integration-test convenience only; the per-order account comes from
-`NormalizedOrder.account`), `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
+`SETTRADE_APP_CODE` + `SETTRADE_BROKER_ID` — `broker_id` + `pin` + at least one market's app trio
+required for the runtime to start (`SETTRADE_ACCOUNT_NO` is an integration-test convenience only;
+the per-order account comes from `NormalizedOrder.account`). **Per-market broker apps (Phase 4.1)** —
+optional overrides so a broker can split its books across two OAuth apps (InnovestX `023`:
+`ALGO_EQ` = SET, `ALGO` = TFEX): `SETTRADE_EQUITY_APP_ID` + `SETTRADE_EQUITY_APP_SECRET` +
+`SETTRADE_EQUITY_APP_CODE` (SET), `SETTRADE_DERIVATIVES_APP_ID` + `SETTRADE_DERIVATIVES_APP_SECRET` +
+`SETTRADE_DERIVATIVES_APP_CODE` (TFEX); a market with no override falls back to the shared
+`SETTRADE_APP_*` trio, a PARTIAL per-market trio fails loud (market unconfigured + WARNING, no silent
+fallback). `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
 `SETTRADE_CIRCUIT_BREAKER_THRESHOLD=3`, `SETTRADE_RECONCILE_INTERVAL_SECONDS=12`,
 `SETTRADE_TOKEN_REFRESH_MARGIN_SECONDS=100`.
 

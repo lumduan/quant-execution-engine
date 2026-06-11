@@ -61,6 +61,7 @@ def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
         brokers["settrade"] = BrokerRuntimeHealth(
             breaker_state=settrade.breaker.state.value,
             session_healthy=settrade.last_heartbeat_ok,
+            sessions={m.value: ok for m, ok in settrade.last_heartbeat_by_market.items()},
         )
     return brokers or None
 

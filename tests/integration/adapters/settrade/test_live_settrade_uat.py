@@ -51,7 +51,7 @@ def _adapter(creds: dict[str, str]) -> SettradeAdapter:
         broker_id=creds[f"{_ENV}BROKER_ID"],
     )
     return SettradeAdapter(
-        client=client,
+        clients={Market.SET: client, Market.TFEX: client},
         broker_id=creds[f"{_ENV}BROKER_ID"],
         pin=SecretStr(creds[f"{_ENV}PIN"]),
     )
@@ -84,5 +84,71 @@ async def test_uat_place_amend_cancel_far_from_market() -> None:
         # Reads are side-effect-free and safe to assert against the live book.
         orders = await adapter.fetch_venue_orders(creds[f"{_ENV}ACCOUNT_NO"], Market.SET)
         assert isinstance(orders, list)
+    finally:
+        await adapter.aclose()
+
+
+# ----------------------------- Phase 4.1: real InnovestX per-market read-only ---
+
+# Opt-in: requires the SPLIT InnovestX OAuth apps (broker 023, prod). Skips unless
+# BOTH per-market trios are present. Reads only — the PIN is a placeholder because
+# get_account/get_positions never serialize it (it enters write payloads only).
+_INNOVESTX_EQUITY = (
+    f"{_ENV}EQUITY_APP_ID",
+    f"{_ENV}EQUITY_APP_SECRET",
+    f"{_ENV}EQUITY_APP_CODE",
+)
+_INNOVESTX_DERIVATIVES = (
+    f"{_ENV}DERIVATIVES_APP_ID",
+    f"{_ENV}DERIVATIVES_APP_SECRET",
+    f"{_ENV}DERIVATIVES_APP_CODE",
+)
+_INNOVESTX_SET_ACCOUNT = "902001825"
+_INNOVESTX_TFEX_ACCOUNT = "507619-0"
+
+
+def _innovestx_dual_adapter() -> SettradeAdapter:
+    needed = (*_INNOVESTX_EQUITY, *_INNOVESTX_DERIVATIVES, f"{_ENV}BROKER_ID")
+    missing = [name for name in needed if not os.environ.get(name)]
+    if missing:
+        pytest.skip(f"InnovestX per-market creds absent: {', '.join(missing)}")
+    base_url = os.environ.get(f"{_ENV}BASE_URL", "https://open-api.settrade.com")
+    broker_id = os.environ[f"{_ENV}BROKER_ID"]
+
+    def _client(prefix: tuple[str, str, str]) -> SettradeClient:
+        return SettradeClient(
+            base_url=base_url,
+            app_id=SecretStr(os.environ[prefix[0]]),
+            app_secret=SecretStr(os.environ[prefix[1]]),
+            app_code=os.environ[prefix[2]],
+            broker_id=broker_id,
+        )
+
+    return SettradeAdapter(
+        clients={
+            Market.SET: _client(_INNOVESTX_EQUITY),
+            Market.TFEX: _client(_INNOVESTX_DERIVATIVES),
+        },
+        broker_id=broker_id,
+        pin=SecretStr("000000"),  # placeholder — reads never serialize the PIN
+    )
+
+
+async def test_innovestx_per_market_reads_through_split_apps() -> None:
+    """get_account/get_positions for the equity (SET) + derivatives (TFEX) books.
+
+    902001825 reads through the equity (ALGO_EQ) client; 507619-0 reads through
+    the derivatives (ALGO) client — proving the refactored adapter routes each
+    market to its own OAuth app against real InnovestX (broker 023). No writes.
+    """
+    adapter = _innovestx_dual_adapter()
+    try:
+        assert await adapter.heartbeat() is True  # both apps' tokens acquirable
+        set_account = await adapter.get_account(_INNOVESTX_SET_ACCOUNT)
+        assert set_account.buying_power >= Decimal("0")
+        set_positions = await adapter.get_positions(_INNOVESTX_SET_ACCOUNT)
+        assert isinstance(set_positions, list)
+        tfex_positions = await adapter.get_positions(_INNOVESTX_TFEX_ACCOUNT)
+        assert isinstance(tfex_positions, list)
     finally:
         await adapter.aclose()

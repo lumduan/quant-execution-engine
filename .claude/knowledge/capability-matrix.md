@@ -13,7 +13,7 @@
 
 | Capability | Liberator (SET / TFEX) | Settrade (SET + TFEX) | Sim |
 |---|---|---|---|
-| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | OAuth app creds → token (ECDSA P-256 login sig, single-flight refresh, rate-limited); per-order PIN | none |
+| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | OAuth app creds → token (ECDSA P-256 login sig, single-flight refresh, rate-limited); per-order PIN. **May be split per market across two apps** (Phase 4.1 — see below) | none |
 | Markets | SET + TFEX | SET (`/api/seos/v3`) + TFEX (`/api/seosd/v3`) | any |
 | `side` | SET Buy/Sell; TFEX Long/Short | SET Buy/Sell; TFEX Long/Short | both |
 | `position_effect` | TFEX Open/Close/Auto; SET n/a | TFEX Open/Close (`Auto` ✗); SET n/a | both |
@@ -104,3 +104,18 @@ trigger stops (no contract condition/`triggerSession` field).
 - **Amend is `native`, atomic at the engine** (one `replace_order` over `PENDING_REPLACE → NEW`),
   kill-switch-gated up front, PTRM-rechecked with **no exemption**; a venue amend-reject is a
   NON-terminal restore + typed `AmendRejected` (409) — the order stays live (decisions E21–E27).
+
+## Phase 4.1 — per-market broker apps (auth-model note, 2026-06-11)
+
+The **capability cells above are unchanged** — Phase 4.1 is an auth/routing refactor only. A
+broker may **split its two markets across two OAuth apps**: the real broker **InnovestX (023)**
+uses `ALGO_EQ` for SET equity and `ALGO` for TFEX derivatives (separate `app_id`/`app_secret`/
+`app_code` each). Since Phase 4.1 the engine supports **per-market credentials**
+(`EXECUTION_ENGINE_SETTRADE_{EQUITY,DERIVATIVES}_APP_*`) — one `SettradeClient` per market behind
+the unchanged adapter, so the same `NormalizedOrder` routes SET and TFEX concurrently (spread
+trading). A **shared** `settrade_app_*` trio remains the single-app fallback (the UAT sandbox,
+broker `098`: one app keys one client under both books). A PARTIAL per-market trio fails loud
+(market unconfigured + WARNING, no silent shared fallback). One dead app trips the single breaker
+and mass-cancels both books (all-sessions heartbeat — decision E28). See
+[`decision-log.md`](decision-log.md) E28 and
+[`broker-research-settrade.md`](broker-research-settrade.md) (InnovestX specifics).

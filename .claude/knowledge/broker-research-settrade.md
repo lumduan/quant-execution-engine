@@ -168,3 +168,19 @@ What the live `adapters/settrade/` actually does, vs this research note:
   market-data plane — D1 split, stays in `quant-marketdata-engine`), `RealtimeDataConnection`/MQTT
   (Phase 5), `_place_orders` (private SDK batch method), NVDR, `Auto` position, `Date`(GTD) TIF,
   `SESSION`-trigger stops.
+
+## InnovestX (broker 023) specifics (Phase 4.1)
+
+The real broker **InnovestX (broker `023`)** splits its two markets across **two investor OAuth
+apps** — `ALGO_EQ` for **SET equity**, `ALGO` for **TFEX derivatives** — each with its own
+`app_id`/`app_secret`/`app_code`. One app cannot route both legs of a stock-vs-futures spread, so
+Phase 4.1 made the engine support **per-market credentials** (one `SettradeClient` per market;
+`EXECUTION_ENGINE_SETTRADE_{EQUITY,DERIVATIVES}_APP_*`). Validated **read-only against prod
+2026-06-11** through the refactored adapter: both apps' tokens acquired; **equity accounts
+`902001825` / `903001825`** read via the `ALGO_EQ` (SET) client, **TFEX `507619-0`** via the
+`ALGO` (derivatives) client; no writes (the PIN is never serialized on reads). By contrast the
+**UAT sandbox (broker `098`) is ONE app for both books** — the shared `settrade_app_*` trio resolves
+to a single client keyed under both markets (one login, one session). The InnovestX trading PIN is
+not yet in `.env` — the explicit prerequisite for flipping InnovestX to `micro_live`. See
+[`capability-matrix.md`](capability-matrix.md) (per-market auth note) and
+[`decision-log.md`](decision-log.md) E28.

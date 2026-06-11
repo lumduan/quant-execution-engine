@@ -410,6 +410,52 @@ total coverage (settrade modules 93–100%). Phase plan:
 - **Cross-refs:** umbrella ROADMAP Phase 4; `.claude/knowledge/broker-research-settrade.md`
   (venue-docs scraping recipe + equity surface addendum + implemented-vs-researched).
 
+### Phase 4.1 — Settrade per-market broker apps 🔌
+**Status:** `[x]` **Complete (2026-06-11).** **Repo:** this repo
+(`feature/phase4.1-settrade-per-market-apps`). **Shipped:** a focused in-engine refactor —
+`SettradeAdapter` now holds **one `SettradeClient` per market** (ctor `clients:
+Mapping[Market, SettradeClient]`) behind the **unchanged** `NormalizedOrder` contract, so the
+real broker **InnovestX (023)** — which splits the books across two OAuth apps (`ALGO_EQ` = SET
+equity, `ALGO` = TFEX derivatives) — can route both legs of a stock-vs-futures spread
+**concurrently**. Six new per-market settings
+(`EXECUTION_ENGINE_SETTRADE_{EQUITY,DERIVATIVES}_APP_{ID,SECRET,CODE}`); per-market credentials
+resolve **independently** with **partial-trio-fails-loud** (a PARTIAL per-market trio leaves the
+market UNCONFIGURED with a boot WARNING naming the missing fields — **no silent fallback** to the
+shared app); the shared `settrade_app_*` trio remains the single-app sandbox path; clients are
+deduped by credentials value (the sandbox keys ONE client/login under both markets). An
+unconfigured market returns typed not-ok acks (place/cancel/amend), reads skip it, and
+`fetch_venue_orders` **raises** `SettradeMarketNotConfigured` (never `[]` — an empty list would
+forge venue truth). The all-sessions heartbeat keeps the single frozen Phase-0 breaker (E28): one
+dead app trips it and **mass-cancels both books** (spread legs must not survive one-sided; per-market
+breakers would thaw the one-breaker `BrokerAdapter` base). Per-market reconciler GET-budget skip set
+(a starved bucket no longer stalls the other client's groups); additive `/health`
+`brokers.settrade.sessions = {"SET": bool|None, "TFEX": bool|None}`. **Unchanged:** capability
+**cells**, `client.py`/`mapping.py`/`models.py`/`core/`/`db/`/`contracts/`, the PATCH route,
+`NormalizedOrder`, `POST /orders` (a spread = two independent submits, one per leg — no batch
+endpoint; in-engine refactor, no new `third_party` service). 713 tests passed, mypy strict, 96.22%
+coverage. **Real-venue read-only verified** through the refactored adapter against prod broker 023
+(equity `902001825` via the `ALGO_EQ` client, TFEX `507619-0` via the `ALGO` client; both apps'
+tokens acquired, PIN never sent). The InnovestX trading PIN is still absent from `.env` — the
+explicit `micro_live`-flip prerequisite. Phase plan:
+[`phase4.1-settrade-per-market-apps.md`](phase4.1-settrade-per-market-apps.md).
+
+- **Objective:** route SET and TFEX **concurrently** through two OAuth apps behind one adapter,
+  with zero contract change — spread-trade ready.
+- **Scope (shipped):** per-market client mapping + per-market credentials resolution
+  (per-market | shared | mixed; partial-fails-loud); `SettradeMarketNotConfigured`; all-sessions
+  heartbeat on the single breaker; per-market reconciler budget skip; additive `sessions` health
+  field; per-market boot logging (never secrets).
+- **Non-goals (deferred):** a batch / multi-leg / spread endpoint; a `third_party` Settrade
+  service; per-market circuit breakers; any capability-cell change.
+- **Acceptance (met):** the same `NormalizedOrder` routes SET via the equity app and TFEX via the
+  derivatives app concurrently; the sandbox single-app config is unchanged (one login under both
+  markets); one dead app trips the breaker and mass-cancels both books; gate green; real-venue
+  read-only verified.
+- **Quality gate:** ruff + mypy strict + pytest ≥90% on `adapters/settrade*` (respx-mocked; no live
+  creds in CI).
+- **Cross-refs:** [`phase4-settrade-adapter.md`](phase4-settrade-adapter.md); decision E28 in
+  [`.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md).
+
 ### Phase 5 — Strategy execution path + order-update streaming 📡
 **Status:** `[ ]` Proposed (**unblocked 2026-06-11** by Phase 4). **Repos:** `strategies/csm-set`,
 `strategies/tfex-s50-multi-tf-swing`, this repo (own PRs). Settrade's native MQTT push

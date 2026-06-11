@@ -23,6 +23,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
+
+from pydantic import SecretStr
 
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.adapters.settrade.adapter import SettradeAdapter
@@ -46,6 +49,97 @@ _tasks: list[asyncio.Task[None]] = []
 _trip_lock = asyncio.Lock()
 
 
+@dataclass(frozen=True)
+class SettradeAppCredentials:
+    """One market's effective OAuth app trio (Phase 4.1).
+
+    Frozen + hashable (``SecretStr`` is hashable and value-equal), so two markets
+    resolving to the SAME trio key one ``SettradeClient`` instance in the dedupe
+    map — the sandbox single-app path keeps exactly one login/session.
+    """
+
+    app_id: SecretStr
+    app_secret: SecretStr
+    app_code: str
+
+
+# (per-market override field names, shared fallback field names) per market — the
+# resolution order is documented in settings.py and enforced below.
+_MARKET_FIELD_NAMES: dict[Market, tuple[str, str, str]] = {
+    Market.SET: (
+        "settrade_equity_app_id",
+        "settrade_equity_app_secret",
+        "settrade_equity_app_code",
+    ),
+    Market.TFEX: (
+        "settrade_derivatives_app_id",
+        "settrade_derivatives_app_secret",
+        "settrade_derivatives_app_code",
+    ),
+}
+_SHARED_FIELD_NAMES: tuple[str, str, str] = (
+    "settrade_app_id",
+    "settrade_app_secret",
+    "settrade_app_code",
+)
+
+
+def _trio(
+    settings: Settings, field_names: tuple[str, str, str]
+) -> tuple[SecretStr | None, SecretStr | None, str | None]:
+    app_id = getattr(settings, field_names[0])
+    app_secret = getattr(settings, field_names[1])
+    app_code = getattr(settings, field_names[2])
+    return app_id, app_secret, app_code
+
+
+def _effective_credentials(settings: Settings, market: Market) -> SettradeAppCredentials | None:
+    """Resolve one market's effective trio (the core rule — see settings.py).
+
+    Per-market trio complete → use it. Per-market trio PARTIAL → market
+    UNCONFIGURED + WARNING naming the missing fields (no silent shared fallback).
+    Else shared trio complete → use shared. Else unconfigured.
+    """
+    override_names = _MARKET_FIELD_NAMES[market]
+    app_id, app_secret, app_code = _trio(settings, override_names)
+    present = [v is not None for v in (app_id, app_secret, app_code)]
+    if all(present):
+        assert app_id is not None and app_secret is not None and app_code is not None
+        return SettradeAppCredentials(app_id=app_id, app_secret=app_secret, app_code=app_code)
+    if any(present):
+        missing = [name for name, ok in zip(override_names, present, strict=True) if not ok]
+        logger.warning(
+            "settrade %s app trio is PARTIAL (missing %s) — market UNCONFIGURED, NO fallback "
+            "to the shared app; %s orders will be rejected",
+            market.value,
+            ", ".join(f"EXECUTION_ENGINE_{n.upper()}" for n in missing),
+            market.value,
+        )
+        return None
+    shared_id, shared_secret, shared_code = _trio(settings, _SHARED_FIELD_NAMES)
+    if shared_id is not None and shared_secret is not None and shared_code is not None:
+        return SettradeAppCredentials(
+            app_id=shared_id, app_secret=shared_secret, app_code=shared_code
+        )
+    return None
+
+
+def _configured_markets(settings: Settings) -> dict[Market, SettradeAppCredentials]:
+    """Markets with a resolvable effective trio, in (SET, TFEX) order."""
+    resolved: dict[Market, SettradeAppCredentials] = {}
+    for market in (Market.SET, Market.TFEX):
+        creds = _effective_credentials(settings, market)
+        if creds is not None:
+            resolved[market] = creds
+    return resolved
+
+
+def _credentials_source(settings: Settings, market: Market) -> str:
+    """'per-market' | 'shared' for the boot log (never a secret value)."""
+    app_id, _, _ = _trio(settings, _MARKET_FIELD_NAMES[market])
+    return "per-market" if app_id is not None else "shared"
+
+
 async def _resolve_order_from_store(
     client_order_id: str,
 ) -> tuple[str, Market, str] | None:
@@ -57,13 +151,16 @@ async def _resolve_order_from_store(
 
 
 def _secrets_present(settings: Settings) -> bool:
-    """All five required Settrade secrets present (account_no NOT required)."""
+    """``broker_id`` + ``pin`` + at least one market with a resolvable app trio.
+
+    Phase 4.1: the per-market/shared resolution replaces the old fixed shared
+    trio (``account_no`` is still NOT required — the per-order account rides each
+    ``NormalizedOrder``).
+    """
     return (
-        settings.settrade_app_id is not None
-        and settings.settrade_app_secret is not None
-        and settings.settrade_app_code is not None
-        and settings.settrade_broker_id is not None
+        settings.settrade_broker_id is not None
         and settings.settrade_pin is not None
+        and bool(_configured_markets(settings))
     )
 
 
@@ -91,27 +188,49 @@ def create_settrade_runtime(settings: Settings) -> SettradeAdapter | None:
         return None
     if not settrade_enabled(settings):
         return None
-    assert settings.settrade_app_id is not None
-    assert settings.settrade_app_secret is not None
-    assert settings.settrade_app_code is not None
     assert settings.settrade_broker_id is not None
     assert settings.settrade_pin is not None
-    client = SettradeClient(
-        base_url=settings.settrade_base_url,
-        app_id=settings.settrade_app_id,
-        app_secret=settings.settrade_app_secret,
-        app_code=settings.settrade_app_code,
-        broker_id=settings.settrade_broker_id,
-        refresh_margin_seconds=settings.settrade_token_refresh_margin_seconds,
-    )
+    markets = _configured_markets(settings)
+    # Dedupe by credentials value: markets sharing a trio share ONE client (the
+    # sandbox single-app path ⇒ one login, one session).
+    by_creds: dict[SettradeAppCredentials, SettradeClient] = {}
+    clients: dict[Market, SettradeClient] = {}
+    for market, creds in markets.items():
+        client = by_creds.get(creds)
+        if client is None:
+            client = SettradeClient(
+                base_url=settings.settrade_base_url,
+                app_id=creds.app_id,
+                app_secret=creds.app_secret,
+                app_code=creds.app_code,
+                broker_id=settings.settrade_broker_id,
+                refresh_margin_seconds=settings.settrade_token_refresh_margin_seconds,
+            )
+            by_creds[creds] = client
+        clients[market] = client
+    if len(markets) == 1:
+        only = next(iter(markets))
+        missing = next(m for m in (Market.SET, Market.TFEX) if m is not only)
+        logger.warning(
+            "settrade: only the %s market is configured — %s orders will be rejected "
+            "(no broker app)",
+            only.value,
+            missing.value,
+        )
     _adapter = SettradeAdapter(
-        client=client,
+        clients=clients,
         broker_id=settings.settrade_broker_id,
         pin=settings.settrade_pin,
         breaker_threshold=settings.settrade_circuit_breaker_threshold,
         resolve_order=_resolve_order_from_store,
     )
-    logger.info("settrade runtime created (stage=%s)", settings.stage)
+    sources = ",".join(f"{m.value}:{_credentials_source(settings, m)}" for m in markets)
+    logger.info(
+        "settrade runtime created (stage=%s, markets=%s, clients=%d)",
+        settings.stage,
+        sources,
+        len(by_creds),
+    )
     return _adapter
 
 

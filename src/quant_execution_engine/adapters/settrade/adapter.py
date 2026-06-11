@@ -23,7 +23,7 @@ Boundaries the adapter keeps (mirrors Liberator):
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal
 from typing import ClassVar
 
@@ -43,6 +43,7 @@ from src.quant_execution_engine.adapters.settrade import mapping
 from src.quant_execution_engine.adapters.settrade.client import SettradeClient
 from src.quant_execution_engine.adapters.settrade.errors import (
     SettradeMappingError,
+    SettradeMarketNotConfigured,
     SettradeTransportError,
     SettradeVenueRejection,
 )
@@ -73,22 +74,32 @@ _MARKETS: tuple[Market, ...] = (Market.SET, Market.TFEX)
 
 
 class SettradeAdapter(BrokerAdapter):
-    """Routes normalized orders to the Settrade Open API v2 cloud venue."""
+    """Routes normalized orders to the Settrade Open API v2 cloud venue.
+
+    Phase 4.1: one OAuth ``SettradeClient`` PER MARKET (the real broker InnovestX
+    splits SET equity / TFEX derivatives across two apps). The clients map may
+    hold the SAME instance under both keys (the sandbox single-app path) — the
+    adapter dedupes by ``id()`` for heartbeat probing and ``aclose``. A market
+    with no client is UNCONFIGURED: placements/cancels/amends return typed
+    not-ok acks, reads skip it, and ``fetch_venue_orders`` raises (never ``[]``).
+    """
 
     broker: ClassVar[Broker] = Broker.SETTRADE
 
     def __init__(
         self,
         *,
-        client: SettradeClient,
+        clients: Mapping[Market, SettradeClient],
         broker_id: str,
         pin: SecretStr,
         breaker_threshold: int = 3,
         resolve_order: SettradeOrderIdResolver | None = None,
     ) -> None:
         super().__init__()
+        if not clients:
+            raise ValueError("SettradeAdapter requires at least one configured market client")
         self.breaker = SessionCircuitBreaker(failure_threshold=breaker_threshold)
-        self._client = client
+        self._clients: dict[Market, SettradeClient] = dict(clients)
         self._broker_id = broker_id
         self._pin = pin
         self._resolve_order = resolve_order
@@ -97,16 +108,39 @@ class SettradeAdapter(BrokerAdapter):
         # fallback (URLs are account-scoped, so the account rides the ref).
         self._order_ref_cache: dict[str, tuple[str, Market, str]] = {}
         self.last_heartbeat_ok: bool | None = None
+        # All-sessions heartbeat (E28): one bool|None per CONFIGURED market.
+        self.last_heartbeat_by_market: dict[Market, bool | None] = dict.fromkeys(self._clients)
+
+    # ---------------------------------------------------------------- routing
+    def _client_for(self, market: Market) -> SettradeClient | None:
+        """The OAuth client for ``market``; None when the market is unconfigured."""
+        return self._clients.get(market)
+
+    def _distinct_clients(self) -> list[SettradeClient]:
+        """Each underlying client exactly once (the sandbox shares one instance)."""
+        seen: dict[int, SettradeClient] = {}
+        for client in self._clients.values():
+            seen.setdefault(id(client), client)
+        return list(seen.values())
+
+    @staticmethod
+    def _no_app_reason(market: Market) -> str:
+        return f"settrade: no {market.value} broker app configured"
 
     # ------------------------------------------------------------------ place
     async def place(self, order: NormalizedOrder) -> PlaceAck:
+        # Resolve the per-market client FIRST — an unroutable order must never
+        # serialize the PIN into a mapping payload it cannot send.
+        client = self._client_for(order.market)
+        if client is None:
+            return PlaceAck(rejected=True, reject_reason=self._no_app_reason(order.market))
         try:
             payload = mapping.to_place_payload(order, pin=self._pin.get_secret_value())
         except SettradeMappingError as exc:
             return PlaceAck(rejected=True, reject_reason=f"settrade mapping: {exc}")
         path = mapping.orders_path(self._broker_id, order.account, order.market)
         try:
-            body = await self._client.post_json(path, payload)
+            body = await client.post_json(path, payload)
         except SettradeVenueRejection as exc:
             # Venue truth is never swallowed — it travels as a rejected ack.
             return PlaceAck(rejected=True, reject_reason=f"settrade {exc.venue_code}: {exc}")
@@ -147,10 +181,13 @@ class SettradeAdapter(BrokerAdapter):
         if ref is None:
             return CancelAck(ok=False, reason=f"unknown broker order id for {client_order_id}")
         order_no, market, account = ref
+        client = self._client_for(market)
+        if client is None:
+            return CancelAck(ok=False, reason=self._no_app_reason(market))
         path = mapping.cancel_path(self._broker_id, account, market, order_no)
         cancel_payload = mapping.to_cancel_payload(self._pin.get_secret_value())
         try:
-            await self._client.patch_json(path, cancel_payload)
+            await client.patch_json(path, cancel_payload)
         except SettradeVenueRejection as exc:
             # Router keeps PENDING_CANCEL; the reconciler resolves it (§B). An
             # already-terminal order surfaces here as venue rejection text too.
@@ -182,6 +219,9 @@ class SettradeAdapter(BrokerAdapter):
                 reason=f"unknown broker order id for {client_order_id}",
             )
         order_no, market, account = ref
+        client = self._client_for(market)
+        if client is None:
+            return AmendAck(ok=False, semantics="native", reason=self._no_app_reason(market))
         try:
             payload = mapping.to_change_payload(
                 market,
@@ -193,7 +233,7 @@ class SettradeAdapter(BrokerAdapter):
             return AmendAck(ok=False, semantics="native", reason=f"settrade mapping: {exc}")
         path = mapping.change_path(self._broker_id, account, market, order_no)
         try:
-            await self._client.patch_json(path, payload)
+            await client.patch_json(path, payload)
         except SettradeVenueRejection as exc:
             logger.warning("settrade amend rejected for %s: %s", client_order_id, exc.venue_code)
             return AmendAck(
@@ -214,19 +254,31 @@ class SettradeAdapter(BrokerAdapter):
 
     # ------------------------------------------------------------------ reads
     async def fetch_venue_orders(self, account: str, market: Market) -> list[SettradeOrderItem]:
-        """Raw venue order rows for one book — the reconciler polling source (§B)."""
-        body = await self._client.get_json(mapping.orders_path(self._broker_id, account, market))
+        """Raw venue order rows for one book — the reconciler polling source (§B).
+
+        An unconfigured market RAISES :class:`SettradeMarketNotConfigured` — never
+        ``[]`` (an empty list would forge "venue says zero orders" and drive
+        cancel_confirm/ack_lost against possibly-live orders).
+        """
+        client = self._client_for(market)
+        if client is None:
+            raise SettradeMarketNotConfigured(self._no_app_reason(market))
+        body = await client.get_json(mapping.orders_path(self._broker_id, account, market))
         return parse_order_items(body)
 
     async def get_open_orders(self, account: str) -> list[NormalizedOrder]:
-        """Venue-truth open orders across BOTH books as a read-only view.
+        """Venue-truth open orders across configured books as a read-only view.
 
         Rows the frozen contract cannot represent are skipped (never guessed).
-        An account may exist on one book only — a per-market venue rejection is
-        tolerated (DEBUG + continue); a transport failure propagates.
+        Unconfigured markets are skipped (DEBUG); an account may exist on one
+        book only, so a per-market venue rejection is tolerated (DEBUG +
+        continue); a transport failure propagates.
         """
         normalized: list[NormalizedOrder] = []
         for market in _MARKETS:
+            if self._client_for(market) is None:
+                logger.debug("settrade open-orders %s book not configured — skipped", market)
+                continue
             try:
                 items = await self.fetch_venue_orders(account, market)
             except SettradeVenueRejection as exc:
@@ -243,11 +295,15 @@ class SettradeAdapter(BrokerAdapter):
         return normalized
 
     async def get_positions(self, account: str) -> list[Position]:
-        """Net positions across BOTH books (per-market reject tolerated)."""
+        """Net positions across configured books (per-market reject tolerated)."""
         positions: list[Position] = []
         for market in _MARKETS:
+            client = self._client_for(market)
+            if client is None:
+                logger.debug("settrade portfolio %s book not configured — skipped", market)
+                continue
             try:
-                body = await self._client.get_json(
+                body = await client.get_json(
                     mapping.portfolios_path(self._broker_id, account, market)
                 )
             except SettradeVenueRejection as exc:
@@ -287,11 +343,15 @@ class SettradeAdapter(BrokerAdapter):
         The buying-power chain (first non-None wins) is documented per book:
         ``line_available`` (equity credit line) → ``excess_equity`` →
         ``cash_balance`` → ``equity`` → ``Decimal("0")``. The equity book is
-        tried first; a per-market venue rejection falls through to derivatives.
+        tried first; an unconfigured/rejecting market falls through to the next.
         """
         for market in _MARKETS:
+            client = self._client_for(market)
+            if client is None:
+                logger.debug("settrade account-info %s book not configured — skipped", market)
+                continue
             try:
-                body = await self._client.get_json(
+                body = await client.get_json(
                     mapping.account_info_path(self._broker_id, account, market)
                 )
             except SettradeVenueRejection as exc:
@@ -323,42 +383,57 @@ class SettradeAdapter(BrokerAdapter):
                 return candidate
         return Decimal("0")
 
-    def get_budget_exhausted(self) -> bool:
-        """True when the client's GET rate bucket has nothing left (D8).
+    def get_budget_exhausted(self, market: Market) -> bool:
+        """True when ``market``'s client GET rate bucket has nothing left (D8).
 
         The reconciler consults this before polling each ``(account, market)``
-        group and budget-skips the rest of the pass when exhausted; observing the
-        snapshot keeps the adapter the single owner of the client.
+        group and budget-skips that market's groups when exhausted; observing the
+        snapshot keeps the adapter the single owner of the client. An unconfigured
+        market is never exhausted (its fetch raises on the one code path).
         """
-        budget = self._client.rate_snapshot().get("GET")
+        client = self._client_for(market)
+        if client is None:
+            return False
+        budget = client.rate_snapshot().get("GET")
         if budget is None:
             return False
         return budget.remaining_second == 0 or budget.remaining_minute == 0
 
     # ------------------------------------------------------------- liveness
     async def heartbeat(self) -> bool:
-        """OAuth token-liveness probe (Design Decision 6). NEVER raises.
+        """OAuth token-liveness probe across ALL sessions (Design Decision 6 + E28).
 
-        Settrade exposes no health/session endpoint, so token *acquirability*
-        IS the OAuth session: healthy ⇔ ``ensure_token()`` succeeds AND the last
-        real wire call did not fail. This is the E19 analogue (Liberator probes a
-        real health route because it has one; Settrade cannot). The residual
-        blind spot — a valid token over a dead order endpoint that has seen no
-        traffic — is documented and closed in Phase 5 (the MQTT stream gives a
-        real session signal).
+        A market is healthy ⇔ its ``ensure_token()`` succeeds AND the last wire
+        call did not fail (Settrade has no health endpoint). Probes EVERY distinct
+        client, fills ``last_heartbeat_by_market``, aggregates ``all(...)`` — one
+        breaker, all-sessions (E28: a spread holds one leg per app, so a dead app
+        leaves the other leg un-hedgeable; trip + mass-cancel BOTH books rather
+        than route the survivor into one-sided exposure). NEVER raises.
         """
-        try:
-            await self._client.ensure_token()
-            ok = self._client.last_wire_ok is not False
-        except Exception:  # noqa: BLE001 - heartbeat contract: never raises
-            logger.warning("settrade heartbeat failed (token unavailable)")
-            ok = False
+        probed: dict[int, bool] = {}
+        for client in self._distinct_clients():
+            probed[id(client)] = await self._probe(client)
+        for market, client in self._clients.items():
+            self.last_heartbeat_by_market[market] = probed[id(client)]
+        ok = all(probed.values())
         self.last_heartbeat_ok = ok
         return ok
+
+    @staticmethod
+    async def _probe(client: SettradeClient) -> bool:
+        """One client's token-liveness probe; never raises."""
+        try:
+            await client.ensure_token()
+            return client.last_wire_ok is not False
+        except Exception:  # noqa: BLE001 - heartbeat contract: never raises
+            logger.warning("settrade heartbeat failed (token unavailable)")
+            return False
 
     # ------------------------------------------------------------------ meta
     def capabilities(self) -> tuple[CapabilitySet, ...]:
         return tuple(entry for entry in CAPABILITY_MATRIX if entry.broker is Broker.SETTRADE)
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """Close each distinct underlying client exactly once (id-dedupe)."""
+        for client in self._distinct_clients():
+            await client.aclose()

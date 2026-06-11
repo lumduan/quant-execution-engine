@@ -43,7 +43,10 @@ from decimal import Decimal
 import asyncpg
 
 from src.quant_execution_engine.adapters.settrade.adapter import SettradeAdapter
-from src.quant_execution_engine.adapters.settrade.errors import SettradeVenueRejection
+from src.quant_execution_engine.adapters.settrade.errors import (
+    SettradeMarketNotConfigured,
+    SettradeVenueRejection,
+)
 from src.quant_execution_engine.adapters.settrade.mapping import (
     VenueOrderState,
     classify_venue_state,
@@ -292,12 +295,21 @@ class SettradeReconciler:
             by_group.setdefault((row.account, row.market), []).append(row)
 
         applied = 0
+        # Per-market budget skip (Phase 4.1): one market's exhausted GET bucket
+        # must NOT starve the other market's groups (the old whole-pass break
+        # inverted starvation). Warn once per exhausted market per pass.
+        exhausted: set[Market] = set()
+        warned: set[Market] = set()
         for (account, market), group_rows in by_group.items():
-            if self._adapter.get_budget_exhausted():
-                logger.warning(
-                    "reconcile: settrade GET budget exhausted — skipping remaining groups this pass"
-                )
-                break
+            if market in exhausted or self._adapter.get_budget_exhausted(market):
+                exhausted.add(market)
+                if market not in warned:
+                    logger.warning(
+                        "reconcile: settrade %s GET budget exhausted — skipping its groups",
+                        market.value,
+                    )
+                    warned.add(market)
+                continue
             try:
                 items = await self._adapter.fetch_venue_orders(account, market)
             except SettradeVenueRejection as exc:
@@ -305,6 +317,12 @@ class SettradeReconciler:
                     "reconcile: %s venue orders unavailable, group skipped: %s",
                     market,
                     exc.venue_code,
+                )
+                continue
+            except SettradeMarketNotConfigured as exc:
+                # No app for this market — rows freeze and nag (never faked truth).
+                logger.warning(
+                    "reconcile: %s venue orders unavailable, group skipped: %s", market, exc
                 )
                 continue
             applied += await self._reconcile_group(pool, group_rows, items, now=now)
