@@ -1,6 +1,6 @@
 # Phase 4: SettradeAdapter — Second Broker (SET + TFEX, native amend, OAuth)
 
-> **Status:** In progress (2026-06-11)
+> **Status:** Complete (2026-06-11)
 > **Branch:** `feature/phase4-settrade-adapter`
 > **Parent plan:** [`ROADMAP.md`](ROADMAP.md) — "Phase 4 — SettradeAdapter (second broker — proves the abstraction)"
 > **Builds on:** [`phase3-liberator-adapter.md`](phase3-liberator-adapter.md)
@@ -425,20 +425,20 @@ The binding prompt that initiated this phase is reproduced **verbatim** below.
 
 | # | Deliverable | Status |
 |---|---|---|
-| 1 | `EXECUTION_ENGINE_SETTRADE_*` settings (creds `SecretStr`; base_url, intervals, refresh margin; all optional) + `cryptography>=42` dep + `.env.example` block | Planned |
-| 2 | `adapters/settrade/errors.py` — `SettradeAdapterError`/`SettradeTransportError`/`SettradeAuthError`/`SettradeMappingError`/`SettradeVenueRejection` | Planned |
-| 3 | `adapters/settrade/client.py` — OAuth transport: ECDSA sign, single-flight `ensure_token()`, proactive refresh, 401 re-auth, rate-header parse, redaction | Planned |
-| 4 | `adapters/settrade/models.py` — token/error/place/order-item/portfolio Pydantic models (tolerant, both books) | Planned |
-| 5 | `adapters/settrade/mapping.py` — pure SET + TFEX payload builders, `wire_price`, read-side venue→normalized, `classify_venue_state` | Planned |
-| 6 | `adapters/settrade/adapter.py` — `SettradeAdapter(BrokerAdapter)`: place/cancel/**native amend**/reads/heartbeat/capabilities | Planned |
-| 7 | `adapters/settrade/heartbeat.py` + `reconciler.py` (+ `replace_resolve`) + `runtime.py` (process singleton + worker lifecycle) | Planned |
-| 8 | `contracts/errors.py` `AmendRejected` (409) + `api/error_handlers.py` status map | Planned |
-| 9 | `db/repositories.py` `replace_order` (one-statement `PENDING_REPLACE→NEW`) + `fetch_orders_for_reconcile(include_pending_replace=...)` flag | Planned |
-| 10 | `core/router.py` `amend()` native branch + `settrade_adapter` threaded through all `resolve_adapter` sites; `core/stage.py` settrade axis | Planned |
-| 11 | `api/{deps,main,routes,schemas}.py` — `PATCH /orders/{cid}` route, `AmendOrderRequest`, settrade runtime injection + lifespan + `/health` brokers block | Planned |
-| 12 | `contracts/capabilities.py` — SETTRADE×SET (new row) + SETTRADE×TFEX cells pinned from venue docs, `amend="native"`, `adapter_installed=True` | Planned |
-| 13 | Tests ≥90 % (respx) — `tests/unit/adapters/settrade/` 9-file suite + `test_core_router_amend_native.py` + route/stage/breaker extensions + UAT integration skeleton | Planned |
-| 14 | Docs: ROADMAP, capability-matrix, decision-log (E21–E27), broker-research-settrade addendum, safety playbook "Settrade specifics", engine CLAUDE.md, umbrella docs | Planned |
+| 1 | `EXECUTION_ENGINE_SETTRADE_*` settings (creds `SecretStr`; base_url, intervals, refresh margin; all optional) + `cryptography>=42` dep + `.env.example` block | Done |
+| 2 | `adapters/settrade/errors.py` — `SettradeAdapterError`/`SettradeTransportError`/`SettradeAuthError`/`SettradeMappingError`/`SettradeVenueRejection` | Done |
+| 3 | `adapters/settrade/client.py` — OAuth transport: ECDSA sign, single-flight `ensure_token()`, proactive refresh, 401 re-auth, rate-header parse, redaction | Done |
+| 4 | `adapters/settrade/models.py` — token/error/place/order-item/portfolio Pydantic models (tolerant, both books) | Done |
+| 5 | `adapters/settrade/mapping.py` — pure SET + TFEX payload builders, `wire_price`, read-side venue→normalized, `classify_venue_state` | Done |
+| 6 | `adapters/settrade/adapter.py` — `SettradeAdapter(BrokerAdapter)`: place/cancel/**native amend**/reads/heartbeat/capabilities | Done |
+| 7 | `adapters/settrade/heartbeat.py` + `reconciler.py` (+ `replace_resolve`) + `runtime.py` (process singleton + worker lifecycle) | Done |
+| 8 | `contracts/errors.py` `AmendRejected` (409) + `api/error_handlers.py` status map | Done |
+| 9 | `db/repositories.py` `replace_order` (one-statement `PENDING_REPLACE→NEW`) + `fetch_orders_for_reconcile(include_pending_replace=...)` flag | Done |
+| 10 | `core/router.py` `amend()` native branch + `settrade_adapter` threaded through all `resolve_adapter` sites; `core/stage.py` settrade axis | Done |
+| 11 | `api/{deps,main,routes,schemas}.py` — `PATCH /orders/{cid}` route, `AmendOrderRequest`, settrade runtime injection + lifespan + `/health` brokers block | Done |
+| 12 | `contracts/capabilities.py` — SETTRADE×SET (new row) + SETTRADE×TFEX cells pinned from venue docs, `amend="native"`, `adapter_installed=True` | Done |
+| 13 | Tests ≥90 % (respx) — `tests/unit/adapters/settrade/` 9-file suite + `test_core_router_amend_native.py` + route/stage/breaker extensions + UAT integration skeleton | Done |
+| 14 | Docs: ROADMAP, capability-matrix, decision-log (E21–E27), broker-research-settrade addendum, safety playbook "Settrade specifics", engine CLAUDE.md, umbrella docs | Done |
 
 ### Out of Scope (deferred)
 
@@ -717,16 +717,16 @@ fetch_orders_for_reconcile(broker=settrade, include_pending_replace=True)
 
 ## Implementation Steps
 
-1. [ ] Branch `feature/phase4-settrade-adapter` (already created); this plan document — standalone `docs(plans)` commit.
-2. [ ] `chore(config)`: `cryptography>=42` dep; `EXECUTION_ENGINE_SETTRADE_*` settings (creds `SecretStr`, all optional); `.env.example` block (BASE_URL, intervals, refresh margin, UAT-sandbox comment `BROKER_ID=098`).
-3. [ ] `feat(adapters)`: `errors.py` + `models.py` + `client.py` (ECDSA sign, single-flight `ensure_token`, 401 retry, rate-header parse, redaction) + unit tests (`test_client_auth.py`, `test_client_transport.py`, `test_models.py`).
-4. [ ] `feat(adapters)`: `mapping.py` (SET + TFEX payloads, `wire_price`, read-side, `classify_venue_state`) + `contracts/capabilities.py` rows (SETTRADE×SET new row + SETTRADE×TFEX cells, `amend="native"`, `installed=True`) + mapping tests (`test_mapping_set.py`, `test_mapping_tfex.py`).
-5. [ ] `feat(core)`: `contracts/errors.py` `AmendRejected`; `api/error_handlers.py` 409; `db/repositories.py` `replace_order` + `include_pending_replace` flag; `core/router.py` native amend branch + `settrade_adapter` threading; `tests/conftest.py` reset; `test_core_router_amend_native.py`.
-6. [ ] `feat(adapters)`: `adapter.py` (place/cancel/native amend/reads/heartbeat/capabilities) + `heartbeat.py` + `reconciler.py` (+`replace_resolve`) + `runtime.py` + unit tests (`test_adapter_place.py`, `test_adapter_amend_cancel_reads.py`, `test_heartbeat.py`, `test_reconciler.py`, `test_runtime.py`).
-7. [ ] `feat(api)`: `core/stage.py` settrade axis; `api/{deps,main}.py` runtime injection + lifespan; `api/schemas.py` `AmendOrderRequest`; `api/routes.py` `PATCH /orders/{cid}` + `/health` brokers block + capability rows + stage/route/breaker test extensions.
-8. [ ] Enum pinning sweep: confirm capability cells + mapping enums against the pinned venue docs; UAT-sandbox integration skeleton `test_live_settrade_uat.py`.
-9. [ ] Quality gate green (ruff + format + mypy strict + pytest ≥90 %; liberator submodule baseline 240F/559P — compare against that).
-10. [ ] `docs:` ROADMAP / capability-matrix / decision-log (E21–E27) / broker-research-settrade addendum / safety playbook / engine CLAUDE.md + Completion Notes here; umbrella docs (separate branch/PR after merge); auto-memory.
+1. [x] Branch `feature/phase4-settrade-adapter` (already created); this plan document — standalone `docs(plans)` commit.
+2. [x] `chore(config)`: `cryptography>=42` dep; `EXECUTION_ENGINE_SETTRADE_*` settings (creds `SecretStr`, all optional); `.env.example` block (BASE_URL, intervals, refresh margin, UAT-sandbox comment `BROKER_ID=098`).
+3. [x] `feat(adapters)`: `errors.py` + `models.py` + `client.py` (ECDSA sign, single-flight `ensure_token`, 401 retry, rate-header parse, redaction) + unit tests (`test_client_auth.py`, `test_client_transport.py`, `test_models.py`).
+4. [x] `feat(adapters)`: `mapping.py` (SET + TFEX payloads, `wire_price`, read-side, `classify_venue_state`) + `contracts/capabilities.py` rows (SETTRADE×SET new row + SETTRADE×TFEX cells, `amend="native"`, `installed=True`) + mapping tests (`test_mapping_set.py`, `test_mapping_tfex.py`).
+5. [x] `feat(core)`: `contracts/errors.py` `AmendRejected`; `api/error_handlers.py` 409; `db/repositories.py` `replace_order` + `include_pending_replace` flag; `core/router.py` native amend branch + `settrade_adapter` threading; `tests/conftest.py` reset; `test_core_router_amend_native.py`.
+6. [x] `feat(adapters)`: `adapter.py` (place/cancel/native amend/reads/heartbeat/capabilities) + `heartbeat.py` + `reconciler.py` (+`replace_resolve`) + `runtime.py` + unit tests (`test_adapter_place.py`, `test_adapter_amend_cancel_reads.py`, `test_heartbeat.py`, `test_reconciler.py`, `test_runtime.py`).
+7. [x] `feat(api)`: `core/stage.py` settrade axis; `api/{deps,main}.py` runtime injection + lifespan; `api/schemas.py` `AmendOrderRequest`; `api/routes.py` `PATCH /orders/{cid}` + `/health` brokers block + capability rows + stage/route/breaker test extensions.
+8. [x] Enum pinning sweep: confirm capability cells + mapping enums against the pinned venue docs; UAT-sandbox integration skeleton `test_live_settrade_uat.py`.
+9. [x] Quality gate green (ruff + format + mypy strict + pytest ≥90 %; liberator submodule baseline 240F/559P — compare against that).
+10. [x] `docs:` ROADMAP / capability-matrix / decision-log (E21–E27) / broker-research-settrade addendum / safety playbook / engine CLAUDE.md + Completion Notes here; umbrella docs (separate branch/PR after merge); auto-memory.
 11. [ ] Commit sequence → push → PR `feature/phase4-settrade-adapter` → result table. Umbrella pin bump after merge.
 
 ## File Changes
@@ -766,22 +766,66 @@ fetch_orders_for_reconcile(broker=settrade, include_pending_replace=True)
 
 ## Success Criteria
 
-- [ ] The **same** `NormalizedOrder` routes to either broker by `broker`/account with no contract change — `broker=settrade` reaches Settrade (mock-verified end-to-end; live operator-gated).
-- [ ] Native amend rides `PENDING_REPLACE → NEW` as one atomic `replace_order` UPDATE; venue amend-reject restores non-terminally (NEW, +PARTIALLY_FILLED when filled) and raises `AmendRejected` (409) — never REJECTED.
-- [ ] `PATCH /orders/{cid}` works for both amend classes: native returns the same cid, cancel_replace returns the replacement cid; typed envelopes (404/409/403/422/503) pass through.
-- [ ] OAuth lifecycle: single-flight (N concurrent ⇒ 1 login), proactive refresh inside 100 s, refresh-fail→login fallback, exactly one reactive 401 retry; no credential ever logged or in an exception.
-- [ ] Capability matrix has all Phase 4 Settrade cells filled (SET + TFEX) from the pinned venue enums; unsupported combos (SET stops, TFEX ATC, `Date`/`Auto`/NVDR/SESSION) reject pre-flight before any HTTP.
-- [ ] Reconciler v1 drives PENDING_NEW → NEW → PARTIALLY_FILLED → FILLED from polled venue truth; lost-ack fuzzy match works; `replace_resolve` repairs stranded PENDING_REPLACE; resolution bounded; rate-budget skip honored.
-- [ ] Heartbeat + circuit breaker: N consecutive failures trip → `broker_circuit_open` on submits + mass-cancel attempted; healthy probe resets; state visible in `/health` and `/capabilities`.
-- [ ] `paper` intercepts placement to sim with **zero** Settrade HTTP calls; `micro_live` routes real at PTRM cap; `live` stays gated.
-- [ ] Kill-switch gates amend up front (asserted paired against the un-gated cancel path); PTRM re-checks the hypothetical amended order with no exemption.
-- [ ] Quality gate green: ruff + ruff format + mypy strict + pytest ≥90 % on `adapters/settrade/` (respx-mocked; no live creds; liberator submodule baseline 240F/559P).
+- [x] The **same** `NormalizedOrder` routes to either broker by `broker`/account with no contract change — `broker=settrade` reaches Settrade (mock-verified end-to-end; live operator-gated).
+- [x] Native amend rides `PENDING_REPLACE → NEW` as one atomic `replace_order` UPDATE; venue amend-reject restores non-terminally (NEW, +PARTIALLY_FILLED when filled) and raises `AmendRejected` (409) — never REJECTED.
+- [x] `PATCH /orders/{cid}` works for both amend classes: native returns the same cid, cancel_replace returns the replacement cid; typed envelopes (404/409/403/422/503) pass through.
+- [x] OAuth lifecycle: single-flight (N concurrent ⇒ 1 login), proactive refresh inside 100 s, refresh-fail→login fallback, exactly one reactive 401 retry; no credential ever logged or in an exception.
+- [x] Capability matrix has all Phase 4 Settrade cells filled (SET + TFEX) from the pinned venue enums; unsupported combos (SET stops, TFEX ATC, `Date`/`Auto`/NVDR/SESSION) reject pre-flight before any HTTP.
+- [x] Reconciler v1 drives PENDING_NEW → NEW → PARTIALLY_FILLED → FILLED from polled venue truth; lost-ack fuzzy match works; `replace_resolve` repairs stranded PENDING_REPLACE; resolution bounded; rate-budget skip honored.
+- [x] Heartbeat + circuit breaker: N consecutive failures trip → `broker_circuit_open` on submits + mass-cancel attempted; healthy probe resets; state visible in `/health` and `/capabilities`.
+- [x] `paper` intercepts placement to sim with **zero** Settrade HTTP calls; `micro_live` routes real at PTRM cap; `live` stays gated.
+- [x] Kill-switch gates amend up front (asserted paired against the un-gated cancel path); PTRM re-checks the hypothetical amended order with no exemption.
+- [x] Quality gate green: ruff + ruff format + mypy strict + pytest ≥90 % on `adapters/settrade/` (respx-mocked; no live creds; liberator submodule baseline 240F/559P).
 
 ## Completion Notes
 
-_To be filled on completion._
+### Summary
+
+Landed on `feature/phase4-settrade-adapter` (2026-06-11), gate-green. `adapters/settrade/` is the
+**second real broker** — full SET equity + TFEX derivatives behind one `NormalizedOrder`, with
+**zero contract change** (no new edge, no infra-db migration; native amend rides the existing
+frozen `PENDING_REPLACE → NEW` edge, verified against the live trigger). The wire is a raw
+`httpx.AsyncClient` (Design Decision 2 — the sync `settrade-v2` SDK is forbidden): ECDSA P-256
+login signing, single-flight `ensure_token()` with proactive refresh + refresh-fail→fresh-login
++ one reactive-401 retry; secrets/tokens/signature/account redacted throughout. Native amend via
+the new `PATCH /orders/{client_order_id}` route (kill-switch-gated up front, PTRM no-exemption,
+one atomic `replace_order`, non-terminal venue-reject restore + `AmendRejected` 409). Reconciler
+v1 mirrors Liberator (watermark fills + new `replace_resolve` for stranded `PENDING_REPLACE`,
+observe-don't-throttle rate budget). OAuth token-liveness heartbeat + breaker; stage matrix
+(`paper` intercept / `micro_live` real / `live` gated). Capability cells pinned from
+`developer.settrade.com`. No compose overlay (cloud API).
+
+**Final gate:** ruff + ruff format + mypy strict all clean; **pytest 687 passed**; **total
+coverage 96.14%** — settrade modules: adapter 94%, heartbeat 95%, reconciler 93%, runtime 96%,
+client 96%, mapping 97%, models 97%, errors 100%. (Liberator submodule baseline 240F/559P
+unchanged — Phase 4 touched no upstream code.)
+
+### Issues encountered
+
+None blocking. The one notable surprise was **positive**: the official venue docs
+(`developer.settrade.com`), recorded in the Phase-3 research note as an un-scrapable JS SPA,
+turned out to serve their content as **raw markdown** from a `/template/open-api/...` backend
+(menu `config.json` + `{n}_{name}.md` pages). That discovery converted the planned enum-pinning
+**fallback** (declare conservative cells, validate at micro_live) into **verified cells** pinned
+before any code shipped — every former `(confirm P4)` cell is now doc-pinned (recorded as
+decision E26 and as a reusable scraping recipe in `broker-research-settrade.md`).
+
+### Decisions changed from plan
+
+- **File-size target ≤ 400 lines exceeded for two files, by design:** `mapping.py` is **460
+  lines** (two complete venue books — SET + TFEX — each with place/amend/cancel payload builders,
+  `wire_price`, read-side venue→normalized, and `classify_venue_state`; splitting it would scatter
+  one cohesive pure-mapping concern) and `core/router.py` is **445 lines** (the native-amend
+  orchestration — kill-switch-gate, PTRM re-check, two-step restore, venue-reject handling — added
+  to the existing submit/cancel paths). Both stay single-responsibility; the line budget is a
+  target, not a hard cap.
+- **`adapter.get_budget_exhausted()` seam:** rather than have the reconciler reach into the
+  client's private rate-snapshot state, the adapter exposes a `get_budget_exhausted()` boolean
+  (decision E25) — keeps the reconciler off `client.py` internals.
+- **In-Scope rows flipped Planned → Done** (all 14); the §"Pinned venue enum sets" cells in this
+  plan are now realized 1:1 by `contracts/capabilities.py` + `adapters/settrade/mapping.py`.
 
 ---
 
-**Document Version:** 1.0
-**Status:** In progress (2026-06-11)
+**Document Version:** 1.1
+**Status:** Complete (2026-06-11)

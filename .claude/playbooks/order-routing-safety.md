@@ -104,3 +104,83 @@ disengage.** The reconciler repairs drift on flip-back, but never rely on it for
   with a fresh `client_order_id` after confirming venue state.
 - TFEX stop orders ship `stopCondition: ""` in v1 — the venue's condition vocabulary is pinned
   during the operator-driven micro_live validation; a venue reject flows back typed.
+
+## Settrade specifics (Phase 4)
+
+### Bring-up (no overlay — cloud API)
+
+Settrade is a **cloud Open API** — there is NO `docker-compose.settrade.yml` overlay (unlike
+Liberator, which bundles `liberator-trading-api`). Credentials ride owner mode's `env_file`:
+
+```bash
+# Owner mode reads EXECUTION_ENGINE_SETTRADE_* from .env via docker-compose.private.yml:
+docker compose -f docker-compose.yml -f docker-compose.private.yml up -d
+```
+
+- Engine-side config: `EXECUTION_ENGINE_SETTRADE_BASE_URL` / `_APP_ID` / `_APP_SECRET` /
+  `_APP_CODE` / `_BROKER_ID` / `_PIN`. The runtime only starts when `stage ∈ {paper, micro_live,
+  live}` AND owner mode AND **all five** of app_id/app_secret/app_code/broker_id/pin are present
+  (`ACCOUNT_NO` is NOT required — the per-order account comes from `NormalizedOrder.account`).
+  Missing creds log a WARNING and leave Settrade routing disabled (`micro_live` submits then 403
+  `stage_rejected`).
+- **UAT sandbox rehearsal:** point `EXECUTION_ENGINE_SETTRADE_BASE_URL` at
+  `https://open-api-test.settrade.com` and use **`BROKER_ID=098`** (the UAT sandbox broker) to
+  exercise the OAuth + order path without prod creds. The integration skeleton is
+  `@pytest.mark.integration` (excluded from CI; no creds in the repo).
+- **No OTP flow** (unlike Liberator): the session is OAuth app-credentials. There is no SMS
+  webhook to wait on — `ensure_token()` logs in and refreshes on its own. If the breaker is
+  tripped, the diagnosis is creds/clock, not a missing OTP login.
+
+### Secret hygiene (Settrade)
+
+- `EXECUTION_ENGINE_SETTRADE_APP_SECRET` / `_PIN` / `_APP_ID` are `SecretStr`; the access token,
+  refresh token, and the ECDSA login **signature** are redacted — never logged, never in an
+  exception. Only `adapters/settrade/client.py` touches the wire.
+- **The account number rides the URL path** (`/accounts/{account_no}/orders`), so the transport
+  applies `redact_path` to mask it AND the third-party `httpx` logger is **demoted to WARNING at
+  import** (an INFO-level httpx request log would otherwise leak the full URL incl. the account).
+- **Credential rotation:** regenerate the app credentials at the Settrade **developer portal**
+  (no OTP, no SMS), update `.env`, restart owner mode. `git status` must stay clean of `.env`.
+
+### Circuit-breaker trip runbook
+
+1. Trip signal: `GET /health` shows `brokers.settrade.breaker_state = "open"`; new
+   `broker=settrade` submits return 503 `broker_circuit_open`; the trip already attempted a
+   best-effort **mass-cancel** of open orders (check the engine log for the sweep result).
+2. Diagnose the session: the heartbeat is an **OAuth token-liveness probe** (Settrade has no
+   health endpoint), so a trip means either OAuth login/refresh is failing (creds revoked /
+   expired / **clock skew** breaking the ECDSA-signed timestamp) OR the transport is down /
+   timing out. Check the engine log for the login/refresh failure vs an httpx transport error.
+3. Recovery is **automatic**: the next healthy heartbeat (token acquirable AND last wire OK)
+   resets the breaker (state `closed`); reconcile then repairs any drift — verify with
+   `GET /orders/{client_order_id}` on anything that was in flight.
+4. If the venue is healthy but you must halt anyway, use the kill-switch
+   (`POST /admin/kill-switch/engage`) — it rejects new submits AND mass-cancels.
+
+### Native-amend runbook (`PATCH /orders/{client_order_id}`)
+
+- Settrade amends **natively** (one venue `PATCH .../change`), unlike Liberator's cancel+replace.
+  The response carries the **same** `client_order_id` (a cancel_replace broker returns the
+  replacement cid instead). The route is owner-mode + API-key.
+- **Amend is kill-switch-gated** (unlike cancel, which is un-gated): an amend can *increase*
+  exposure, so engaging the kill-switch blocks amends. PTRM re-checks the amended shape with
+  **no exemption** — a price-only amend inside the duplicate-burst window can risk-reject (the
+  original order stays resting, which is safe).
+- A **venue amend-reject** (e.g. a partial fill raced the amend) is NON-terminal: the order is
+  **still live** and a typed `AmendRejected` (409) is returned. `reject_reason` is deliberately
+  NOT written — the **two audit rows** (`PENDING_REPLACE` then the restore to `NEW`/
+  `PARTIALLY_FILLED`) are the durable evidence. Check `execution.order_events` for the cid, not
+  `reject_reason`.
+- A **stranded `PENDING_REPLACE`** (process crash or lost response mid-amend) is repaired by the
+  reconciler's `replace_resolve` action (venue-truth price/qty restore). Mass-cancel **skips
+  `PENDING_REPLACE` rows by construction** (no frozen cancel edge from that state) — so after a
+  kill-switch engage, a stranded amend is NOT swept by the first sweep: **re-run engage (or wait
+  one reconcile pass)** so `replace_resolve` returns the row to `NEW`/`PARTIALLY_FILLED` first,
+  then the next sweep cancels it.
+
+### Stage-flip rule (unchanged)
+
+The Liberator stage-flip rule applies verbatim: cancels resolve their adapter from the CURRENT
+stage, so **before changing `EXECUTION_ENGINE_STAGE` while `broker=settrade` orders are open,
+engage the kill-switch (mass-cancels everything), verify `GET /health`, then flip and
+disengage.** Do not rely on the reconciler to fix mis-routed cancels.

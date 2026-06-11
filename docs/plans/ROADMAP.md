@@ -16,12 +16,15 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–2 complete (2026-06-10) — ADR accepted; order store live; engine core +
-SimAdapter + gateway proxy live; Phases 3–7 Proposed.** The full **sim** order path runs
-end-to-end through the gateway: submit/dedupe/fills/cancel over the durable store, PTRM +
-kill-switch + stage ladder wired from the first path. **No real-money path exists** —
-`micro_live`/`live` stages reject with a typed error until a real adapter lands. Next:
-**Phase 3** (LiberatorAdapter — first real venue, behind the ladder).
+**Status: Phases 0–4 complete (Phase 4: 2026-06-11) — ADR accepted; order store live; engine
+core + SimAdapter + gateway proxy live; `LiberatorAdapter` + `SettradeAdapter` (both real
+venues) live; Phases 5–7 Proposed.** The full order path runs end-to-end through the gateway:
+submit/dedupe/fills/cancel/**native-amend** over the durable store, PTRM + kill-switch + stage
+ladder wired from the first path. Two real brokers now route the **same** `NormalizedOrder` by
+`broker`/account (Liberator cancel+replace amend; Settrade native amend via `PATCH /orders/{cid}`).
+**`live` stays gated — no real-money default**; `micro_live` is the highest rung the adapters
+exercise, operator-driven. Next: **Phase 5** (strategy execution path + the normalized
+order-update stream out).
 
 ---
 
@@ -88,31 +91,33 @@ kill-switch + stage ladder wired from the first path. **No real-money path exist
 
 ## Broker capability matrix (Liberator vs Settrade vs Sim)
 
-Mapped onto one `NormalizedOrder`. Cells are sourced from the existing `liberator-trading-api`
-service models and the official Settrade `settrade_v2` Python SDK (v2.2.1); see
+Mapped onto one `NormalizedOrder`. Liberator cells are sourced from the existing
+`liberator-trading-api` service models (validated against the live adapter since Phase 3);
+**Settrade cells are pinned (2026-06-11) from the official venue docs** at
+`developer.settrade.com/.../investor-{derivatives,equity}/*.md` (the raw markdown backend of
+the JS SPA) cross-checked against the `settrade-v2` 2.2.1 SDK source — every former
+**(confirm P4)** cell is now a concrete entry. See
 [`.claude/knowledge/capability-matrix.md`](../../.claude/knowledge/capability-matrix.md) for
-the cited extraction. Cells marked **(confirm P4)** are venue-validated enum sets the SDK
-passes through as strings — pinned during the Phase-4 `SettradeAdapter` build, not guessed
-here.
+the cited extraction and the Phase 4 validation section.
 
-| Capability | **Liberator** (SET / TFEX) | **Settrade** (derivatives) | **Sim** |
+| Capability | **Liberator** (SET / TFEX) | **Settrade** (SET + TFEX) | **Sim** |
 |---|---|---|---|
-| Auth model | OTP/2FA + SMS-webhook refresh; Redis-backed token; per-order **PIN** | OAuth app creds (`app_id`/`app_secret`/`app_code`/`broker_id`) → access+refresh token, auto-refresh, rate-limited; per-order **PIN** | none |
-| Markets | **SET** (equity) + **TFEX** (derivatives) | **TFEX** (derivatives) | any (configurable) |
-| Place order | `POST /order/place/{set,tfex}` | `InvestorDerivatives.place_order(...)` → `POST /{account_no}/orders` | in-proc |
-| `side` | SET `Buy/Sell`; TFEX `Long/Short` | `side` (Long/Short) | both |
-| `position_effect` | TFEX `Open/Close/Auto`; SET n/a | `position` `Open/Close` | both |
-| MARKET / LIMIT | ✅ (`Market`/`Limit`) | ✅ (`Limit` default; market variants **confirm P4**) | ✅ |
-| STOP / STOP_LIMIT | TFEX ✅ (`priceType=Stop` + `stopSymbol`/`stopPrice`/`stopCondition`); SET ✗ | ✅ via `stop_condition`/`stop_symbol`/`stop_price` | ✅ |
-| ICEBERG (display qty) | ✅ `icebergVol` (SET + TFEX) | ✅ `iceberg_vol` | ✅ |
-| ATO / ATC | SET ✅ (`priceType=ATO/ATC`); TFEX ✗ | via `price_type`/`trigger_session` **(confirm P4)** | ✅ |
-| MTL / MP (market-to-limit) | SET ✅ (`priceType=MP`) | **(confirm P4)** | ✅ |
-| TIF | `Day/GTC/IOC/FOK` | `Day` default; `IOC/FOK/Date/…` via `validity_type`/`validity_date_condition` **(confirm P4)** | all |
-| Amend | ✗ **no amend route** → adapter does **cancel + replace** | ✅ **native** `change_order(pin, order_no, new_price?, new_volume?)` | ✅ native |
-| Cancel | `POST /order/cancelled/{set,tfex}` by `orderNo` list (≤50) + PIN | `cancel_order(order_no, pin)` / `cancel_orders(list, pin)` | ✅ |
-| Query (reconcile) | `GET /orders`, `/orders/{account_no}`, `/orders/summary` (status, matched/balance/cancelled, reject_code, can_cancel) | `get_order` / `get_orders` / `get_trades` / `get_portfolios` / `get_account_info` | in-proc state |
-| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | **native** `RealtimeDataConnection.subscribe_derivatives_order(...)` (MQTT) | synthetic events |
-| Client idempotency key | ✗ (broker `orderNo` only) | ✗ (broker `order_no` only) | n/a |
+| Auth model | OTP/2FA + SMS-webhook refresh; Redis-backed token; per-order **PIN** | OAuth app creds (`app_id`/`app_secret`/`app_code`/`broker_id`) → access+refresh token (ECDSA P-256 login sig, single-flight refresh), rate-limited; per-order **PIN** | none |
+| Markets | **SET** (equity) + **TFEX** (derivatives) | **SET** (equity, `/api/seos/v3`) + **TFEX** (derivatives, `/api/seosd/v3`) | any (configurable) |
+| Place order | `POST /order/place/{set,tfex}` | `POST /{broker_id}/accounts/{account_no}/orders` (raw httpx, not the SDK) | in-proc |
+| `side` | SET `Buy/Sell`; TFEX `Long/Short` | SET `Buy/Sell`; TFEX `Long/Short` | both |
+| `position_effect` | TFEX `Open/Close/Auto`; SET n/a | TFEX `Open/Close` (`Auto` undeclared — extra permission); SET n/a | both |
+| MARKET / LIMIT | ✅ (`Market`/`Limit`) | ✅ (`MP-MKT` / `Limit`) | ✅ |
+| STOP / STOP_LIMIT | TFEX ✅ (`priceType=Stop` + `stopSymbol`/`stopPrice`/`stopCondition`); SET ✗ | TFEX ✅ (`MP-MKT`/`Limit` + stop trio); **SET ✗** (no equity stop API) | ✅ |
+| ICEBERG (display qty) | ✅ `icebergVol` (SET + TFEX) | ✅ SET `qtyOpen` / TFEX `icebergVol` (`Limit` base) | ✅ |
+| ATO / ATC | SET ✅ (`priceType=ATO/ATC`); TFEX ✗ | SET ✅ (`ATO`/`ATC`); TFEX `ATO` ✅, **`ATC` ✗** (not a derivatives priceType) | ✅ |
+| MTL / MP (market-to-limit) | SET ✅ (`priceType=MP`) | SET + TFEX ✅ (`MP-MTL`) | ✅ |
+| TIF | `Day/GTC/IOC/FOK` | `Day`/`IOC`/`FOK`/`GTC('Cancel')`; **`Date`(GTD) undeclared** (no `Tif` member) | all |
+| Amend | ✗ **no amend route** → adapter does **cancel + replace** | ✅ **native** `PATCH /orders/{order_no}/change` (`newPrice?`/`newVolume?`/SET `newIcebergVolume?`) over `PENDING_REPLACE → NEW` | ✅ native |
+| Cancel | `POST /order/cancelled/{set,tfex}` by `orderNo` list (≤50) + PIN | `PATCH /orders/{order_no}/cancel` + bulk `PATCH /cancel` + PIN | ✅ |
+| Query (reconcile) | `GET /orders`, `/orders/{account_no}`, `/orders/summary` (status, matched/balance/cancelled, reject_code, can_cancel) | `GET /orders` (cumulative `matchQty`/`matched`, `rejectCode`/`rejectReason`, `canCancel`/`canChange`); `GET /trades` reserved for Phase 5 | in-proc state |
+| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | **native** `RealtimeDataConnection.subscribe_{derivatives,equity}_order(...)` (MQTT) — **Phase 5** | synthetic events |
+| Client idempotency key | ✗ (broker `orderNo` only) | ✗ (broker `orderNo`/`order_no` only) | n/a |
 
 **Two findings that shape the design:**
 - **Neither broker accepts a client idempotency key.** The engine therefore owns the
@@ -351,31 +356,67 @@ Liberator runbook. Phase plan: [`phase3-liberator-adapter.md`](phase3-liberator-
 - **Cross-refs:** umbrella ROADMAP Phase 3; `.claude/knowledge/broker-research-liberator.md`.
 
 ### Phase 4 — `SettradeAdapter` (second broker — proves the abstraction) 🔌
-**Status:** `[ ]` Proposed. **Repo:** this repo (own PR).
+**Status:** `[x]` **Complete (2026-06-11).** **Repo:** this repo
+(`feature/phase4-settrade-adapter`). **Shipped:** `adapters/settrade/` — the second real venue,
+routing the **same** `NormalizedOrder` to either broker with **zero contract change**. Full
+**SET equity** (`/api/seos/v3`) **+ TFEX derivatives** (`/api/seosd/v3`) — the old "no SET on
+Settrade (derivatives first)" non-goal was **struck by operator decision**. OAuth session lives
+inside the adapter (D10) over a **raw `httpx.AsyncClient`** (the sync `settrade-v2` SDK is
+forbidden — `requests`-based + import-time side effects: writes `~/settradesdkv2_config.txt`,
+NTP call, version-check HTTP): ECDSA P-256/SHA256 login signing, single-flight `ensure_token()`,
+proactive refresh inside the 100 s margin, refresh-fail→fresh-login (the SDK's silent-ignore bug
+not copied), one serial-guarded reactive-401 retry; creds/PIN/tokens/signature all `SecretStr`/
+redacted (account rides the URL path → `redact_path` + httpx logger demoted to WARNING).
+**Native amend** over the frozen `PENDING_REPLACE → NEW` edge — one atomic `replace_order`
+(status+price+qty so the audit row snapshots amended values); venue amend-reject is a
+NON-terminal restore + typed `AmendRejected` (409), `reject_reason` deliberately untouched
+(order still live); kill-switch gates amends up front (asymmetry vs un-gated cancel), PTRM
+re-check with NO exemption. New **`PATCH /orders/{client_order_id}`** route (native amends in
+place / cancel_replace returns the replacement cid). Reconciler v1 mirrors Liberator (E18
+watermark fills `broker_fill_id=f"{order_no}:{matched}"`, §B constants verbatim, GET-budget
+skip) with a new **`replace_resolve`** action for stranded `PENDING_REPLACE`. Heartbeat =
+**OAuth token-liveness probe** (Settrade has no health endpoint) → breaker trip ⇒
+`broker_circuit_open` + mass-cancel; `/health` brokers dict carries `settrade` alongside
+`liberator`. Stage matrix (`paper` intercepts placement to sim with the session live for reads;
+`micro_live` routes `broker=settrade` real at PTRM cap; **`live` stays gated** — typed reject).
+Rate limits observe-don't-throttle (GET vs POST+PATCH buckets; reconciler budget-skip).
+Capability cells **pinned from `developer.settrade.com`** (replaced every `(confirm P4)` cell;
+both SET + TFEX, `amend="native"`, `adapter_installed=True`). `EXECUTION_ENGINE_SETTRADE_*`
+settings (creds/PIN `SecretStr`), `cryptography>=42` dep; **no compose overlay** (cloud API —
+creds ride `docker-compose.private.yml`'s `env_file`). 687 tests passed, mypy strict, 96.14%
+total coverage (settrade modules 93–100%). Phase plan:
+[`phase4-settrade-adapter.md`](phase4-settrade-adapter.md). **Phase 5 unblocked.**
 
 - **Objective:** add a second broker by writing **one adapter**, with zero contract change —
   the test that the abstraction is real.
-- **Scope (ships):** `SettradeAdapter` owning the Settrade Open API **OAuth** session inside
-  the adapter (D10 — `app_id`/`app_secret`/`app_code`/`broker_id` → token, auto-refresh,
-  rate-limit aware); map `NormalizedOrder` ↔ `InvestorDerivatives.place_order(...)` and the
-  **native** `change_order` (amend) / `cancel_order(s)`; map status codes; **pin the exact
-  Settrade `price_type`/`validity_type`/`trigger_session` enum sets** (the `(confirm P4)`
-  cells above) and declare the capability divergences from Liberator (e.g. native amend,
-  TFEX-only); same session heartbeat + circuit-breaker contract as Phase 3 (OAuth liveness).
-  Confirm the router rejects `(settrade, market, type, tif)` combos Settrade doesn't support
-  **before** hitting the venue.
-- **Non-goals:** no SET market on Settrade in scope (derivatives first); no streaming push yet.
-- **Acceptance:** the **same** `NormalizedOrder` routes to either broker by `broker`/account
+- **Scope (shipped):** `SettradeAdapter` owning the Settrade Open API **OAuth** session inside
+  the adapter (D10 — `app_id`/`app_secret`/`app_code`/`broker_id`/`pin` → token, proactive
+  refresh, rate-limit aware) over a raw `httpx.AsyncClient` (not the sync SDK); map
+  `NormalizedOrder` ↔ the SET + TFEX `POST .../orders` wire and the **native** amend
+  (`PATCH .../change`) / cancel (`PATCH .../cancel`); map status/`rejectCode`; **pinned** the
+  exact Settrade `priceType`/`validityType`/stop-condition enum sets (the former `(confirm P4)`
+  cells) and declared the capability divergences from Liberator (native amend, SET + TFEX,
+  distinct enum sets); OAuth token-liveness heartbeat + circuit breaker (no venue health route).
+  The router rejects `(settrade, market, type, tif)` combos Settrade doesn't support
+  **before** hitting the venue (SET stops, TFEX ATC, `Date`/`Auto`/NVDR/SESSION).
+- **Non-goals (deferred):** streaming order-update push (Phase 5 — Settrade native MQTT
+  `subscribe_{derivatives,equity}_order`); `MarketRep*`/`MarketData` SDK surfaces (D1 plane
+  split); `_place_orders` private batch; NVDR (`trusteeIdType` pinned `Local`); `live` unlock.
+- **Acceptance (met):** the **same** `NormalizedOrder` routes to either broker by `broker`/account
   with no contract change; capability divergences are enforced up front, not discovered at the
   venue; gate green.
-- **Quality gate:** ruff + mypy strict + pytest ≥90% on `adapters/settrade*` + state machine
-  (SDK calls mocked; no live creds in CI).
+- **Quality gate:** ruff + mypy strict + pytest ≥90% on `adapters/settrade*` + the native-amend
+  router path (respx-mocked; no live creds in CI).
 - **Cross-refs:** umbrella ROADMAP Phase 4; `.claude/knowledge/broker-research-settrade.md`
-  (official `settrade_v2` SDK extraction).
+  (venue-docs scraping recipe + equity surface addendum + implemented-vs-researched).
 
 ### Phase 5 — Strategy execution path + order-update streaming 📡
-**Status:** `[ ]` Proposed. **Repos:** `strategies/csm-set`,
-`strategies/tfex-s50-multi-tf-swing`, this repo (own PRs).
+**Status:** `[ ]` Proposed (**unblocked 2026-06-11** by Phase 4). **Repos:** `strategies/csm-set`,
+`strategies/tfex-s50-multi-tf-swing`, this repo (own PRs). Settrade's native MQTT push
+(`subscribe_{derivatives,equity}_order`) feeds the normalized stream directly; Liberator's is
+poll-reconciled into the same shape (R3). The Settrade adapter's `GET /trades` surface is
+reserved for this phase (the reconciler v1 deliberately uses cumulative-watermark deltas, not
+per-fill trades).
 
 - **Objective:** a strategy runs an end-to-end **sim** trade loop with no broker code in it.
 - **Scope (ships):** the normalized **order-update stream out** (WS/events) of fills + status
@@ -447,8 +488,9 @@ Liberator runbook. Phase plan: [`phase3-liberator-adapter.md`](phase3-liberator-
 - **Order-type semantics drift.** ✅ **PINNED (ADR §G):** the `order_type` enum is frozen in
   Phase 0; each `(broker, market, order_type)` combination is treated as a **distinct
   pre-flight validation class** ("Stop"/"ATO"/"ATC"/"iceberg" min-display/session quirks,
-  exact Settrade enum spellings) — deliberately **Phase 3/4 adapter work**; the
-  `(confirm P4)` cells above stay deferred-by-design (R4).
+  exact Settrade enum spellings) — deliberately **Phase 3/4 adapter work**. The
+  `(confirm P4)` cells were **pinned in Phase 4** (2026-06-11) from the official venue docs
+  (R4 resolved) — no `(confirm P4)` placeholder remains.
 - **Auth liveness.** ✅ **PINNED (ADR §G):** session liveness is adapter-local (D10) — and
   waiting for a 401 on a live order is unacceptable. A **proactive heartbeat worker** polls a
   low-impact read (e.g. account balance) every **~30 s** per adapter; consecutive failures
