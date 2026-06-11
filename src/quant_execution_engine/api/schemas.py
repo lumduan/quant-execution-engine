@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import uuid
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.quant_execution_engine.contracts.capabilities import CapabilitySet
 from src.quant_execution_engine.contracts.enums import Stage
@@ -39,3 +42,54 @@ class KillSwitchEngageResponse(BaseModel):
     engaged: bool
     cancelled: list[str]
     failed: list[str]
+
+
+class AmendOrderRequest(BaseModel):
+    """``PATCH /orders/{cid}`` body — amend price and/or quantity.
+
+    ``new_client_order_id`` is supplied ONLY for cancel_replace brokers
+    (Liberator); native brokers (Settrade) keep the same id and must omit it —
+    that asymmetry is enforced in the router, by amend semantics. At least one
+    of ``new_price``/``new_qty`` is required (422 at the boundary).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_price: Decimal | None = None
+    new_qty: int | None = Field(default=None, gt=0)
+    new_client_order_id: str | None = None
+
+    @field_validator("new_price", mode="before")
+    @classmethod
+    def _no_float_money(cls, value: object) -> object:
+        """Money is Decimal-as-string on the wire — reject binary floats outright."""
+        if isinstance(value, float):
+            raise ValueError("new_price must be sent as a string, never a float")
+        return value
+
+    @field_validator("new_price")
+    @classmethod
+    def _positive_price(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and value <= 0:
+            raise ValueError("new_price must be > 0")
+        return value
+
+    @field_validator("new_client_order_id")
+    @classmethod
+    def _uuid4_when_present(cls, value: str | None) -> str | None:
+        """ADR §A: the replacement id is a UUIDv4, format-validated here."""
+        if value is None:
+            return None
+        try:
+            parsed = uuid.UUID(value)
+        except ValueError as exc:
+            raise ValueError("new_client_order_id must be a UUIDv4") from exc
+        if parsed.version != 4:
+            raise ValueError("new_client_order_id must be a UUIDv4")
+        return value
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> AmendOrderRequest:
+        if self.new_price is None and self.new_qty is None:
+            raise ValueError("amend requires at least one of new_price or new_qty")
+        return self

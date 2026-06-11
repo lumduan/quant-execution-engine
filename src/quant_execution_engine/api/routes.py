@@ -1,9 +1,10 @@
-"""The Phase 2 order surface (frozen-minimal per the ROADMAP).
+"""The order surface (frozen-minimal per the ROADMAP).
 
 Public mode answers only health, capabilities, and reads (E3); order
-submission, cancel, and the kill-switch admin are owner-mode. The amend HTTP
-route is deliberately absent until Phase 4 (the adapter method exists). The
-``/admin/*`` routes are engine-direct only — the gateway never proxies them.
+submission, cancel, amend, and the kill-switch admin are owner-mode. The amend
+HTTP route (``PATCH /orders/{cid}``) lands in Phase 4 — the promise the Phase-3
+``router.amend`` docstring made is now kept. The ``/admin/*`` routes are
+engine-direct only — the gateway never proxies them.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
+from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.api.deps import (
     get_router_dep,
     get_settings_dep,
@@ -22,6 +24,7 @@ from src.quant_execution_engine.api.deps import (
     require_owner_mode,
 )
 from src.quant_execution_engine.api.schemas import (
+    AmendOrderRequest,
     BrokerRuntimeHealth,
     CapabilitiesResponse,
     HealthResponse,
@@ -41,16 +44,25 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 
 def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
-    """Breaker/session state per configured broker (None when broker-free)."""
-    adapter = get_liberator_adapter()
-    if adapter is None:
-        return None
-    return {
-        "liberator": BrokerRuntimeHealth(
-            breaker_state=adapter.breaker.state.value,
-            session_healthy=adapter.last_heartbeat_ok,
+    """Breaker/session state per configured broker (None when broker-free).
+
+    The dict is non-None when EITHER broker runtime exists; each configured
+    broker contributes its own ``{breaker_state, session_healthy}`` entry.
+    """
+    brokers: dict[str, BrokerRuntimeHealth] = {}
+    liberator = get_liberator_adapter()
+    if liberator is not None:
+        brokers["liberator"] = BrokerRuntimeHealth(
+            breaker_state=liberator.breaker.state.value,
+            session_healthy=liberator.last_heartbeat_ok,
         )
-    }
+    settrade = get_settrade_adapter()
+    if settrade is not None:
+        brokers["settrade"] = BrokerRuntimeHealth(
+            breaker_state=settrade.breaker.state.value,
+            session_healthy=settrade.last_heartbeat_ok,
+        )
+    return brokers or None
 
 
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
@@ -113,6 +125,34 @@ async def cancel_order(client_order_id: str, order_router: RouterDep) -> JSONRes
     """Deliberately NOT blocked by the kill-switch — cancels reduce risk."""
     result = await order_router.cancel(client_order_id)
     return JSONResponse(status_code=status.HTTP_200_OK, content=result.wire_dump())
+
+
+@router.patch(
+    "/orders/{client_order_id}",
+    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    summary="Amend a resting order's price/quantity",
+)
+async def amend_order(
+    client_order_id: str, body: AmendOrderRequest, order_router: RouterDep
+) -> JSONResponse:
+    """Amend in place (native, same cid) or cancel+replace (returns the new cid).
+
+    The router branches on the order's declared amend semantics: a native broker
+    (Settrade) returns the SAME ``client_order_id`` with the updated price/qty;
+    a cancel_replace broker (Liberator) returns the REPLACEMENT cid — the honest
+    answer, since a new order object was created. The kill-switch is enforced
+    INSIDE ``router.amend`` (amends can increase exposure), not duplicated here.
+    Typed errors flow through the envelope handlers: 404 order_not_found, 409
+    amend_rejected / illegal_transition, 403 public-mode / kill-switch, 422
+    risk / capability, 503 broker_circuit_open.
+    """
+    outcome = await order_router.amend(
+        client_order_id,
+        new_client_order_id=body.new_client_order_id,
+        new_price=body.new_price,
+        new_qty=body.new_qty,
+    )
+    return JSONResponse(status_code=status.HTTP_200_OK, content=outcome.result.wire_dump())
 
 
 @router.get(

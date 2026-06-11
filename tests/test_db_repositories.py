@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from src.quant_execution_engine.contracts.enums import OrderState
+from src.quant_execution_engine.contracts.enums import Broker, OrderState
 from src.quant_execution_engine.contracts.errors import IllegalTransition
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
@@ -194,3 +194,33 @@ async def test_set_reject_reason_and_open_orders() -> None:
     ]
     sql = rows.calls[0][1]
     assert "('NEW', 'PARTIALLY_FILLED')" in sql
+
+
+async def test_replace_order_single_statement_and_rowcount_guard() -> None:
+    # One UPDATE sets status='NEW' + COALESCE'd price/qty (audit-atomic).
+    conn = FakeConn(execute_results=["UPDATE 1"])
+    await repositories.replace_order(FakePool(conn), "cid", Decimal("9.50"), 80)
+    sql, args = conn.calls[0][1], conn.calls[0][2]
+    assert "status = 'NEW'" in sql
+    assert "COALESCE($2, price)" in sql and "COALESCE($3, quantity)" in sql
+    assert "status = 'PENDING_REPLACE'" in sql  # the guarded WHERE
+    assert args == ("cid", Decimal("9.50"), 80)
+    # Not in PENDING_REPLACE -> zero rows -> IllegalTransition (mirrors ack_order).
+    stale = FakeConn(execute_results=["UPDATE 0"])
+    with pytest.raises(IllegalTransition, match="PENDING_REPLACE"):
+        await repositories.replace_order(FakePool(stale), "cid", None, 80)
+
+
+async def test_fetch_orders_for_reconcile_pending_replace_flag() -> None:
+    default = FakeConn(fetch_results=[[order_record(status="NEW")]])
+    await repositories.fetch_orders_for_reconcile(FakePool(default), Broker.LIBERATOR)
+    # Default working set excludes PENDING_REPLACE (Liberator cancel_replace).
+    assert "PENDING_REPLACE" not in default.calls[0][2][1]
+    assert default.calls[0][2][0] == "liberator"
+
+    extended = FakeConn(fetch_results=[[order_record(status="PENDING_REPLACE")]])
+    rows = await repositories.fetch_orders_for_reconcile(
+        FakePool(extended), Broker.SETTRADE, include_pending_replace=True
+    )
+    assert "PENDING_REPLACE" in extended.calls[0][2][1]
+    assert [r.status for r in rows] == [OrderState.PENDING_REPLACE]

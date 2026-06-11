@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,6 +91,73 @@ def test_submit_lifecycle_dedupe_and_decimal_strings(
     read = client.get(f"/orders/{body['client_order_id']}")
     assert read.status_code == 200
     assert read.json() == payload
+
+
+def test_amend_native_happy_path_same_cid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PATCH a resting settrade order: 200, same cid, updated price."""
+    client, store, _ = _owner_client(monkeypatch)
+    body = order_payload(broker="settrade", metadata={"sim_fills": []})
+    assert client.post("/orders", json=body).status_code == 201
+    cid = body["client_order_id"]
+
+    amended = client.patch(f"/orders/{cid}", json={"new_price": "150.25", "new_qty": 80})
+    assert amended.status_code == 200
+    payload = amended.json()
+    assert payload["client_order_id"] == cid  # native keeps the same id
+    assert payload["engine_state"] == "NEW"
+    assert store.orders[cid]["price"] == Decimal("150.25")
+    assert store.orders[cid]["quantity"] == 80
+
+
+def test_amend_unknown_cid_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _owner_client(monkeypatch)
+    response = client.patch(f"/orders/{uuid4()}", json={"new_price": "10"})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "order_not_found"
+
+
+def test_amend_no_change_body_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _owner_client(monkeypatch)
+    response = client.patch(f"/orders/{uuid4()}", json={})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_amend_float_price_rejected_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _owner_client(monkeypatch)
+    response = client.patch(f"/orders/{uuid4()}", json={"new_price": 10.5})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_amend_native_with_new_cid_409_amend_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native broker must omit new_client_order_id — typed 409 envelope."""
+    client, store, _ = _owner_client(monkeypatch)
+    body = order_payload(broker="settrade", metadata={"sim_fills": []})
+    assert client.post("/orders", json=body).status_code == 201
+    response = client.patch(
+        f"/orders/{body['client_order_id']}",
+        json={"new_price": "150.25", "new_client_order_id": str(uuid4())},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "amend_rejected"
+
+
+def test_amend_owner_mode_and_api_key_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Public mode blocks the write (mirror DELETE).
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    public = build_client(settings=make_settings(), pool=object(), redis=FakeRedis())[0]
+    blocked = public.patch(f"/orders/{uuid4()}", json={"new_price": "1"})
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "public_mode"
+
+    # API key enforced when configured.
+    keyed, _, _ = _owner_client(monkeypatch, api_key="sekret")
+    no_key = keyed.patch(f"/orders/{uuid4()}", json={"new_price": "1"})
+    assert no_key.status_code == 401
 
 
 def test_partial_fill_then_cancel(monkeypatch: pytest.MonkeyPatch) -> None:

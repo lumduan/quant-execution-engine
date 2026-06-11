@@ -13,7 +13,7 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–3 complete (Phase 3: 2026-06-11); Phases 4–7 Proposed.** Phase 0:
+> **Current state: Phases 0–4 complete (Phase 4: 2026-06-11); Phases 5–7 Proposed.** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -29,14 +29,29 @@ submit lock / rate-limit).
 > breaker (trip ⇒ `broker_circuit_open` + mass-cancel; state on `/health`/`/capabilities`),
 > stage matrix (`paper` intercepts placement to sim with the session live; `micro_live`
 > routes `broker=liberator` real at PTRM-capped size), router-level cancel+replace amend,
-> `EXECUTION_ENGINE_LIBERATOR_*` settings (`SecretStr`). (Plans:
+> `EXECUTION_ENGINE_LIBERATOR_*` settings (`SecretStr`). Phase 4: **`SettradeAdapter` — the
+> second real venue, proving the abstraction** — full **SET equity + TFEX derivatives** over a
+> raw `httpx.AsyncClient` OAuth client (NOT the sync `settrade-v2` SDK): ECDSA P-256 login
+> signing, single-flight `ensure_token()` with proactive refresh + refresh-fail→fresh-login +
+> one reactive-401 retry; **native amend** over the frozen `PENDING_REPLACE → NEW` edge (one
+> atomic `replace_order`; venue reject = non-terminal restore + typed `AmendRejected` 409) via
+> a new **`PATCH /orders/{client_order_id}`** route (native amends in place / cancel_replace
+> returns the replacement cid); OAuth token-liveness heartbeat + breaker (no venue health
+> endpoint), reconciler v1 (mirrors Liberator; watermark fills + a new `replace_resolve` action
+> for stranded `PENDING_REPLACE`; observe-don't-throttle rate budget); stage matrix
+> (`paper` intercepts placement to sim / `micro_live` routes `broker=settrade` real); capability
+> cells pinned from `developer.settrade.com`; `EXECUTION_ENGINE_SETTRADE_*` settings
+> (`SecretStr` creds/PIN); `cryptography>=42` dep; **no compose overlay** (cloud API — creds ride
+> `docker-compose.private.yml`'s `env_file`). (Plans:
 > [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md),
 > [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md),
-> [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md).)
+> [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md),
+> [`docs/plans/phase4-settrade-adapter.md`](docs/plans/phase4-settrade-adapter.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
-> operator-driven (OTP login; see the safety playbook's Liberator runbook). Build sequence:
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 4** —
-> `SettradeAdapter`, the second broker that proves the abstraction.
+> operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
+> Liberator + Settrade runbooks). Build sequence:
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 5** —
+> strategy execution path + the normalized order-update stream out.
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -73,13 +88,16 @@ and [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normali
 
 `sim` (default) → `paper` → `micro_live` → `live`. **No order reaches a real broker below
 `micro_live`, and never without owner mode on, the kill-switch disengaged, and the broker
-runtime configured.** Since Phase 3: `paper` keeps the Liberator session live for reads but
-intercepts every placement to sim; `micro_live` routes `broker=liberator` to the real venue
-at PTRM-capped size; **`live` stays gated** (typed reject). The kill-switch
-(`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides every stage and is checked first in the
-submit path. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default) disables all
-order-submission endpoints. See the ROADMAP's "Safety ladder" section and the safety
-playbook's Liberator runbook (stage-flip rule, breaker trips).
+runtime configured.** Since Phases 3–4 (Liberator + Settrade): `paper` keeps each configured
+broker session live for reads but intercepts every placement to sim; `micro_live` routes
+`broker=liberator`/`broker=settrade` to the real venue at PTRM-capped size; **`live` stays
+gated** (typed reject). The kill-switch (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides
+every stage and is checked first in the submit path — including the **native-amend path**,
+which (unlike the un-gated cancel path) is kill-switch-gated up front because an amend can
+*increase* exposure. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default)
+disables all order-submission endpoints. See the ROADMAP's "Safety ladder" section and the
+safety playbook's Liberator + Settrade runbooks (stage-flip rule, breaker trips, native
+amend).
 
 ## Network & ports (`quant-network`)
 
@@ -130,6 +148,16 @@ Liberator engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`):
 `LIBERATOR_HEARTBEAT_INTERVAL_SECONDS=30`, `LIBERATOR_CIRCUIT_BREAKER_THRESHOLD=3`,
 `LIBERATOR_RECONCILE_INTERVAL_SECONDS=12`.
 
+Settrade engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`): Settrade is a
+**cloud API — no compose overlay**; creds ride `docker-compose.private.yml`'s `env_file`.
+`SETTRADE_BASE_URL` (prod `https://open-api.settrade.com`; UAT `https://open-api-test.settrade.com`,
+sandbox `BROKER_ID=098`), `SETTRADE_APP_ID` + `SETTRADE_APP_SECRET` + `SETTRADE_PIN` (SecretStr),
+`SETTRADE_APP_CODE` + `SETTRADE_BROKER_ID` — all five required for the runtime to start
+(`SETTRADE_ACCOUNT_NO` is an integration-test convenience only; the per-order account comes from
+`NormalizedOrder.account`), `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
+`SETTRADE_CIRCUIT_BREAKER_THRESHOLD=3`, `SETTRADE_RECONCILE_INTERVAL_SECONDS=12`,
+`SETTRADE_TOKEN_REFRESH_MARGIN_SECONDS=100`.
+
 ## Quality gates
 
 `ruff` (E, F, I, UP, B, SIM) · `mypy --strict` · `pytest` with **≥90% coverage on core
@@ -158,7 +186,10 @@ Tear down in reverse; only `quant-infra-db` down removes `quant-network`.
 4. **Adapters declare capabilities; the router enforces them.** Reject unsupported
    `(broker, market, order_type, tif)` up front with a typed error — never fail silently at a
    venue. Liberator has **no amend route** → `LiberatorAdapter.amend` is cancel-then-replace
-   (declared, non-atomic); Settrade amends natively.
+   (declared, non-atomic); Settrade amends **natively** (Phase 4 — shipped) over the frozen
+   `PENDING_REPLACE → NEW` edge, exposed via `PATCH /orders/{client_order_id}`. The router
+   branches on the capability row's `amend` field; native amends return the **same** cid,
+   cancel_replace returns the **replacement** cid.
 5. **Durable state + reconciliation.** Persist the lifecycle to `execution.orders` /
    `.fills` / append-only `.order_events` before anything reaches a venue; a reconciliation
    loop repairs submit/ack drift against broker truth.

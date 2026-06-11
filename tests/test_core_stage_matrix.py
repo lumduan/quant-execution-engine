@@ -1,4 +1,4 @@
-"""The Phase 3 stage×broker×intent routing matrix (core/stage.py)."""
+"""The Phase 3/4 stage×broker×intent routing matrix (core/stage.py)."""
 
 from __future__ import annotations
 
@@ -8,12 +8,17 @@ from src.quant_execution_engine.contracts.enums import Broker, Stage
 from src.quant_execution_engine.contracts.errors import StageRejected
 from src.quant_execution_engine.core.stage import AdapterIntent, resolve_adapter
 
+from tests._fakes import StubBrokerAdapter
 from tests.conftest import make_settings
 from tests.unit.adapters.liberator.test_adapter_place import make_adapter
 
 
 def _sim() -> SimAdapter:
     return SimAdapter(default_fill_price=make_settings().sim_default_fill_price)
+
+
+def _StubBrokerAdapter() -> StubBrokerAdapter:
+    return StubBrokerAdapter(broker=Broker.SETTRADE)
 
 
 def test_sim_stage_routes_every_broker_to_sim_even_when_liberator_exists() -> None:
@@ -69,12 +74,46 @@ def test_micro_live_routes_liberator_and_rejects_everything_else() -> None:
     assert resolved is liberator
     with pytest.raises(StageRejected, match="configured liberator runtime"):
         resolve_adapter(Stage.MICRO_LIVE, Broker.LIBERATOR, sim_adapter=sim)
-    for broker in (Broker.SIM, Broker.SETTRADE):
-        with pytest.raises(StageRejected, match="no installed adapter"):
-            resolve_adapter(Stage.MICRO_LIVE, broker, sim_adapter=sim, liberator_adapter=liberator)
+    # broker=sim still has no real micro_live adapter.
+    with pytest.raises(StageRejected, match="no installed adapter"):
+        resolve_adapter(Stage.MICRO_LIVE, Broker.SIM, sim_adapter=sim, liberator_adapter=liberator)
 
 
-def test_live_stays_gated_in_phase_3() -> None:
+def test_micro_live_settrade_requires_a_configured_runtime() -> None:
+    sim = _sim()
+    stub = _StubBrokerAdapter()
+    # With a configured settrade runtime, micro_live routes broker=settrade to it.
+    resolved = resolve_adapter(
+        Stage.MICRO_LIVE, Broker.SETTRADE, sim_adapter=sim, settrade_adapter=stub
+    )
+    assert resolved is stub
+    # Without one, the ladder rejects with a settrade-specific runtime message.
+    with pytest.raises(StageRejected, match="settrade runtime"):
+        resolve_adapter(Stage.MICRO_LIVE, Broker.SETTRADE, sim_adapter=sim)
+
+
+def test_paper_read_settrade_reaches_runtime_trade_intercepts() -> None:
+    sim = _sim()
+    stub = _StubBrokerAdapter()
+    read = resolve_adapter(
+        Stage.PAPER,
+        Broker.SETTRADE,
+        sim_adapter=sim,
+        settrade_adapter=stub,
+        intent=AdapterIntent.READ,
+    )
+    assert read is stub  # account/position realism
+    trade = resolve_adapter(
+        Stage.PAPER,
+        Broker.SETTRADE,
+        sim_adapter=sim,
+        settrade_adapter=stub,
+        intent=AdapterIntent.TRADE,
+    )
+    assert trade is sim  # placements never reach the venue at paper
+
+
+def test_live_stays_gated_in_phase_4() -> None:
     sim, liberator = _sim(), make_adapter()
     for broker in Broker:
         with pytest.raises(StageRejected, match="gated"):

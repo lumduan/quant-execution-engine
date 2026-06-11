@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     liberator_circuit_breaker_threshold: int = 3
     liberator_reconcile_interval_seconds: int = 12
 
+    # Broker: Settrade Open API v2 (Phase 4) — cloud venue + secrets. Same
+    # discipline as Liberator: creds/PIN are SecretStr, all optional (settings
+    # must load in sim, where Settrade is not configured), presence-checked only
+    # at runtime creation; NEVER logged. No compose overlay — Settrade is a cloud
+    # API; creds ride docker-compose.private.yml's env_file.
+    settrade_base_url: str = "https://open-api.settrade.com"
+    settrade_app_id: SecretStr | None = None
+    settrade_app_secret: SecretStr | None = None
+    settrade_app_code: str | None = None
+    settrade_broker_id: str | None = None
+    settrade_account_no: str | None = None
+    settrade_pin: SecretStr | None = None
+    settrade_heartbeat_interval_seconds: int = 30
+    settrade_circuit_breaker_threshold: int = 3
+    settrade_reconcile_interval_seconds: int = 12
+    settrade_token_refresh_margin_seconds: int = 100
+
     # Informational (compose maps host port -> container :8000)
     host_port: int = 8400
 

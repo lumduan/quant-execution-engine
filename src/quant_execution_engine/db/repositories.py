@@ -51,6 +51,12 @@ _ACK_ORDER = (
     "WHERE client_order_id = $1 AND status = 'PENDING_NEW'"
 )
 
+_REPLACE_ORDER = (
+    "UPDATE execution.orders "
+    "SET status = 'NEW', price = COALESCE($2, price), quantity = COALESCE($3, quantity) "
+    "WHERE client_order_id = $1 AND status = 'PENDING_REPLACE'"
+)
+
 _UPDATE_STATUS = "UPDATE execution.orders SET status = $2 WHERE client_order_id = $1"
 
 _SET_REJECT_REASON = "UPDATE execution.orders SET reject_reason = $2 WHERE client_order_id = $1"
@@ -69,9 +75,11 @@ _SELECT_OPEN_ORDERS = (
     "SELECT * FROM execution.orders WHERE status IN ('NEW', 'PARTIALLY_FILLED') ORDER BY created_at"
 )
 
+_RECONCILE_STATES: tuple[str, ...] = ("PENDING_NEW", "NEW", "PARTIALLY_FILLED", "PENDING_CANCEL")
+
 _SELECT_RECONCILE_ORDERS = (
-    "SELECT * FROM execution.orders WHERE broker = $1 AND status IN "
-    "('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL') ORDER BY created_at"
+    "SELECT * FROM execution.orders WHERE broker = $1 AND status = ANY($2::text[]) "
+    "ORDER BY created_at"
 )
 
 
@@ -136,6 +144,29 @@ async def ack_order(pool: asyncpg.Pool, client_order_id: str, broker_order_id: s
         )
 
 
+async def replace_order(
+    pool: asyncpg.Pool,
+    client_order_id: str,
+    new_price: Decimal | None,
+    new_qty: int | None,
+) -> None:
+    """PENDING_REPLACE -> NEW + the amended price/qty, atomically (native amend).
+
+    One statement so the audit trigger snapshots the amended ``price``/``quantity``
+    in the same transaction as the ``PENDING_REPLACE->NEW`` transition (the
+    trigger reads ``NEW.price``/``NEW.quantity`` on every status change). A
+    ``COALESCE`` keeps the unchanged column — ``price`` is never set NULL. The
+    rowcount guard mirrors :func:`ack_order`: zero rows means the order was not
+    in PENDING_REPLACE, which is an illegal transition.
+    """
+    tag = await pool.execute(_REPLACE_ORDER, client_order_id, new_price, new_qty)
+    if _rowcount(tag) == 0:
+        raise IllegalTransition(
+            "replace requires the order to be in PENDING_REPLACE",
+            client_order_id=client_order_id,
+        )
+
+
 async def update_status(pool: asyncpg.Pool, client_order_id: str, new_status: OrderState) -> None:
     """Advance the order state (app guard first; DB trigger is the backstop)."""
     row = await fetch_order(pool, client_order_id)
@@ -196,11 +227,22 @@ async def fetch_open_orders(pool: asyncpg.Pool) -> list[OrderRow]:
     return [OrderRow.from_record(r) for r in records]
 
 
-async def fetch_orders_for_reconcile(pool: asyncpg.Pool, broker: Broker) -> list[OrderRow]:
+async def fetch_orders_for_reconcile(
+    pool: asyncpg.Pool,
+    broker: Broker,
+    *,
+    include_pending_replace: bool = False,
+) -> list[OrderRow]:
     """Non-terminal rows for one broker — the reconciliation working set (§B).
 
     Includes ``PENDING_NEW`` (lost-ack candidates) and ``PENDING_CANCEL``
-    (stuck-cancel candidates) on top of the venue-resting states.
+    (stuck-cancel candidates) on top of the venue-resting states. Native-amend
+    brokers (Settrade) pass ``include_pending_replace=True`` so a stranded
+    ``PENDING_REPLACE`` (crash/lost-ack mid-amend) is repaired by the reconciler;
+    the default keeps the Liberator (cancel_replace) working set unchanged.
     """
-    records = await pool.fetch(_SELECT_RECONCILE_ORDERS, broker.value)
+    states = _RECONCILE_STATES
+    if include_pending_replace:
+        states = (*states, "PENDING_REPLACE")
+    records = await pool.fetch(_SELECT_RECONCILE_ORDERS, broker.value, list(states))
     return [OrderRow.from_record(r) for r in records]
