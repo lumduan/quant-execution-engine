@@ -281,6 +281,19 @@ class MemStore:
             if row["status"] in (OrderState.NEW, OrderState.PARTIALLY_FILLED)
         ]
 
+    async def fetch_orders_for_reconcile(self, pool: Any, broker: Any) -> list[OrderRow]:
+        wanted = (
+            OrderState.PENDING_NEW,
+            OrderState.NEW,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.PENDING_CANCEL,
+        )
+        return [
+            OrderRow(**row)
+            for row in self.orders.values()
+            if row["broker"] == broker and row["status"] in wanted
+        ]
+
 
 _REPO_FUNCTIONS = (
     "insert_order",
@@ -291,6 +304,7 @@ _REPO_FUNCTIONS = (
     "set_reject_reason",
     "apply_fill",
     "fetch_open_orders",
+    "fetch_orders_for_reconcile",
 )
 
 

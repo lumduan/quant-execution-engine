@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import asyncpg
 
-from src.quant_execution_engine.contracts.enums import OrderState
+from src.quant_execution_engine.contracts.enums import Broker, OrderState
 from src.quant_execution_engine.contracts.errors import IllegalTransition
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
@@ -67,6 +67,11 @@ _SUM_FILLS = (
 
 _SELECT_OPEN_ORDERS = (
     "SELECT * FROM execution.orders WHERE status IN ('NEW', 'PARTIALLY_FILLED') ORDER BY created_at"
+)
+
+_SELECT_RECONCILE_ORDERS = (
+    "SELECT * FROM execution.orders WHERE broker = $1 AND status IN "
+    "('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL') ORDER BY created_at"
 )
 
 
@@ -188,4 +193,14 @@ async def apply_fill(
 async def fetch_open_orders(pool: asyncpg.Pool) -> list[OrderRow]:
     """All venue-resting orders (NEW / PARTIALLY_FILLED) — the mass-cancel set."""
     records = await pool.fetch(_SELECT_OPEN_ORDERS)
+    return [OrderRow.from_record(r) for r in records]
+
+
+async def fetch_orders_for_reconcile(pool: asyncpg.Pool, broker: Broker) -> list[OrderRow]:
+    """Non-terminal rows for one broker — the reconciliation working set (§B).
+
+    Includes ``PENDING_NEW`` (lost-ack candidates) and ``PENDING_CANCEL``
+    (stuck-cancel candidates) on top of the venue-resting states.
+    """
+    records = await pool.fetch(_SELECT_RECONCILE_ORDERS, broker.value)
     return [OrderRow.from_record(r) for r in records]

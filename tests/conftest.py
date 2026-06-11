@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from src.quant_execution_engine.adapters.liberator import runtime as liberator_runtime
 from src.quant_execution_engine.api import deps
 from src.quant_execution_engine.api.main import create_app
 from src.quant_execution_engine.cache import redis_client as redis_module
@@ -30,6 +31,10 @@ def _reset_singletons() -> Iterator[None]:
     yield
     postgres_module._pool = None
     redis_module._client = None
+    for task in liberator_runtime._tasks:
+        task.cancel()
+    liberator_runtime._tasks.clear()
+    liberator_runtime._adapter = None
     get_settings.cache_clear()
 
 

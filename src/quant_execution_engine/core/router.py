@@ -53,11 +53,20 @@ class SubmitOutcome:
 class OrderRouter:
     """Per-request orchestrator (cheap to build; backed by process singletons)."""
 
-    def __init__(self, *, settings: Settings, pool: asyncpg.Pool, redis: Any | None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        pool: asyncpg.Pool,
+        redis: Any | None,
+        liberator_adapter: BrokerAdapter | None = None,
+    ) -> None:
         self._settings = settings
         self._pool = pool
         self._redis = redis
         self._sim = SimAdapter(default_fill_price=settings.sim_default_fill_price)
+        # Injected process singleton (api/deps.py / runtime); None = not configured.
+        self._liberator = liberator_adapter
         self._risk = RiskGate(settings, redis)
         self.kill_switch = KillSwitch(settings, redis)
 
