@@ -21,6 +21,26 @@ _CREDS: dict[str, Any] = {
     "settrade_broker_id": "098",
     "settrade_pin": SecretStr("987654"),
 }
+# broker_id + pin only (the shared-or-per-market app trio is supplied per test).
+_BASE_CREDS: dict[str, Any] = {
+    "settrade_broker_id": "023",
+    "settrade_pin": SecretStr("987654"),
+}
+_EQUITY_TRIO: dict[str, Any] = {
+    "settrade_equity_app_id": SecretStr("eq-app"),
+    "settrade_equity_app_secret": SecretStr("ZXEtc2VjcmV0"),
+    "settrade_equity_app_code": "ALGO_EQ",
+}
+_DERIV_TRIO: dict[str, Any] = {
+    "settrade_derivatives_app_id": SecretStr("dv-app"),
+    "settrade_derivatives_app_secret": SecretStr("ZHYtc2VjcmV0"),
+    "settrade_derivatives_app_code": "ALGO",
+}
+_SHARED_TRIO: dict[str, Any] = {
+    "settrade_app_id": SecretStr("sh-app"),
+    "settrade_app_secret": SecretStr("c2hhcmVk"),
+    "settrade_app_code": "SHARED",
+}
 
 
 @pytest.mark.parametrize(
@@ -131,3 +151,88 @@ async def test_start_without_runtime_is_a_no_op() -> None:
     settings = make_settings(stage="sim")
     await runtime.start_settrade_workers(settings)
     assert runtime._tasks == []
+
+
+# ----------------------------------------- Phase 4.1 credential-resolution matrix
+
+
+def _enabled_settings(**creds: Any) -> Any:
+    return make_settings(stage="micro_live", public_mode=False, **_BASE_CREDS, **creds)
+
+
+def test_per_market_only_yields_two_distinct_clients() -> None:
+    settings = _enabled_settings(**_EQUITY_TRIO, **_DERIV_TRIO)
+    assert set(runtime._configured_markets(settings)) == {Market.SET, Market.TFEX}
+    adapter = runtime.create_settrade_runtime(settings)
+    assert adapter is not None
+    assert adapter._clients[Market.SET] is not adapter._clients[Market.TFEX]
+
+
+def test_shared_only_yields_one_instance_under_both_keys() -> None:
+    settings = _enabled_settings(**_SHARED_TRIO)
+    assert set(runtime._configured_markets(settings)) == {Market.SET, Market.TFEX}
+    adapter = runtime.create_settrade_runtime(settings)
+    assert adapter is not None
+    assert adapter._clients[Market.SET] is adapter._clients[Market.TFEX]
+
+
+def test_mixed_per_market_equity_plus_shared_derivatives() -> None:
+    """Equity per-market + shared present → two instances, correct app codes."""
+    settings = _enabled_settings(**_EQUITY_TRIO, **_SHARED_TRIO)
+    adapter = runtime.create_settrade_runtime(settings)
+    assert adapter is not None
+    set_client = adapter._clients[Market.SET]
+    tfex_client = adapter._clients[Market.TFEX]
+    assert set_client is not tfex_client
+    assert set_client._app_code == "ALGO_EQ"  # per-market equity wins
+    assert tfex_client._app_code == "SHARED"  # TFEX falls back to shared
+
+
+def test_partial_equity_trio_with_shared_leaves_set_unconfigured(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A partial equity trio fails LOUD — never silently falls back to shared."""
+    partial = {k: v for k, v in _EQUITY_TRIO.items() if k != "settrade_equity_app_secret"}
+    settings = _enabled_settings(**partial, **_SHARED_TRIO)
+    with caplog.at_level("WARNING"):
+        markets = runtime._configured_markets(settings)
+    assert set(markets) == {Market.TFEX}  # SET UNCONFIGURED, TFEX via shared
+    assert "SET app trio is PARTIAL" in caplog.text
+    assert "SETTRADE_EQUITY_APP_SECRET" in caplog.text  # names the missing field
+
+
+def test_partial_derivatives_trio_without_shared_is_set_only() -> None:
+    """The other partial direction: TFEX partial, no shared → SET-only (equity)."""
+    partial = {k: v for k, v in _DERIV_TRIO.items() if k != "settrade_derivatives_app_code"}
+    settings = _enabled_settings(**_EQUITY_TRIO, **partial)
+    assert set(runtime._configured_markets(settings)) == {Market.SET}
+
+
+def test_no_app_trio_at_all_disables_the_runtime() -> None:
+    settings = _enabled_settings()  # broker_id + pin, but no app trio anywhere
+    assert runtime._configured_markets(settings) == {}
+    assert runtime.settrade_enabled(settings) is False
+    assert runtime.create_settrade_runtime(settings) is None
+
+
+def test_one_market_configured_warns(caplog: pytest.LogCaptureFixture) -> None:
+    settings = _enabled_settings(**_EQUITY_TRIO)  # SET only
+    with caplog.at_level("WARNING"):
+        adapter = runtime.create_settrade_runtime(settings)
+    assert adapter is not None
+    assert set(adapter._clients) == {Market.SET}
+    assert "only the SET market is configured" in caplog.text
+
+
+def test_broker_id_and_pin_still_required_with_per_market_trio() -> None:
+    no_pin = {k: v for k, v in _BASE_CREDS.items() if k != "settrade_pin"}
+    settings = make_settings(
+        stage="micro_live", public_mode=False, **no_pin, **_EQUITY_TRIO, **_DERIV_TRIO
+    )
+    assert runtime.settrade_enabled(settings) is False
+
+
+def test_account_no_still_not_required_with_per_market_trio() -> None:
+    settings = _enabled_settings(**_EQUITY_TRIO, **_DERIV_TRIO)
+    assert settings.settrade_account_no is None
+    assert runtime.settrade_enabled(settings) is True

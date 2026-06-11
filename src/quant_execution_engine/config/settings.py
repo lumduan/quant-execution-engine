@@ -80,6 +80,22 @@ class Settings(BaseSettings):
     settrade_broker_id: str | None = None
     settrade_account_no: str | None = None
     settrade_pin: SecretStr | None = None
+    # Per-market OAuth app overrides (Phase 4.1). The real broker InnovestX (023)
+    # splits the two markets across two OAuth apps (ALGO_EQ = SET equity, ALGO =
+    # TFEX derivatives, each with its own app_id/app_secret/app_code). A market's
+    # trio (app_id + app_secret + app_code) is read INDEPENDENTLY: complete →
+    # used; PARTIAL (1–2 fields) → that market is left UNCONFIGURED with a boot
+    # WARNING naming the missing fields (fails loud — NEVER falls back to the
+    # shared trio, so a forgotten secret can never route a market through the
+    # wrong app); absent → falls back to the shared ``settrade_app_*`` trio
+    # (the sandbox single-app path). ``broker_id``/``base_url``/``pin``/intervals
+    # stay shared across both markets.
+    settrade_equity_app_id: SecretStr | None = None
+    settrade_equity_app_secret: SecretStr | None = None
+    settrade_equity_app_code: str | None = None
+    settrade_derivatives_app_id: SecretStr | None = None
+    settrade_derivatives_app_secret: SecretStr | None = None
+    settrade_derivatives_app_code: str | None = None
     settrade_heartbeat_interval_seconds: int = 30
     settrade_circuit_breaker_threshold: int = 3
     settrade_reconcile_interval_seconds: int = 12
