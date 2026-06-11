@@ -297,7 +297,23 @@ typed rejects, kill-switch mass-cancel). 104 engine + 349 gateway tests, mypy st
 - **Cross-refs:** umbrella ROADMAP Phase 2; marketdata-engine Phase 2 (service build + proxy).
 
 ### Phase 3 — `LiberatorAdapter` (first real broker) 🔌
-**Status:** `[ ]` Proposed. **Repos:** this repo; possibly `liberator-trading-api` (own PR).
+**Status:** `[x]` **Complete (2026-06-11).** **Repos:** this repo + `liberator-trading-api`
+(auth hardening, dual-commit). **Shipped:** `adapters/liberator/` — pure SET/TFEX payload
+mapping (Buy/Sell vs Long/Short, MTL→MP, ICEBERG→Limit+icebergVol, TFEX stop fields),
+redacting httpx transport (api-key via `SecretStr`; PIN/account never logged — tested),
+`LiberatorAdapter` (place/cancel/amend-declaration/reads/heartbeat; venue rejects carry
+`errorCode`/`errMsg` text, never swallowed), **reconciliation loop v1** (cumulative-matched
+delta fills with deterministic ids, §B lost-ack fuzzy match ±5 s, bounded 60 s
+`ack_lost_unmatched`, venue terminals onto legal edges only), **heartbeat + circuit breaker**
+(trip ⇒ typed `broker_circuit_open` + mass-cancel attempted; state on `/health` +
+`/capabilities`), stage matrix (`paper` intercepts placement to sim with the session live;
+`micro_live` routes real; `live` still gated), router-level cancel+replace `amend()` with a
+new `client_order_id` (no HTTP route until Phase 4), `EXECUTION_ENGINE_LIBERATOR_*` settings,
+capability rows `adapter_installed=true`. Upstream hardening (own repo, pinned): shared
+timing-safe `verify_api_key` + UTC health timestamps. 343 tests, mypy strict, ~97 % cov.
+**Real micro_live venue validation is operator-driven** (OTP login) per the safety playbook's
+Liberator runbook. Phase plan: [`phase3-liberator-adapter.md`](phase3-liberator-adapter.md).
+**Phase 4 unblocked.**
 
 - **Objective:** route a real order to a real venue, end-to-end, idempotently.
 - **Scope (ships):** `LiberatorAdapter` composing `liberator-trading-api` over HTTP (D9 — it

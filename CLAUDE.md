@@ -13,8 +13,8 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–2 complete (2026-06-10); Phases 3–7 Proposed.** Phase 0: ADR
-> ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
+> **Current state: Phases 0–3 complete (Phase 3: 2026-06-11); Phases 4–7 Proposed.** Phase 0:
+> ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
 > Phase 1: the durable order store is **live** (`db_execution`/`execution.*` in
@@ -22,12 +22,21 @@ submit lock / rate-limit).
 > the **engine core + deterministic `SimAdapter` + gateway proxy are live** — the full sim
 > order path (`POST/GET/DELETE /orders`, `/capabilities`, owner-mode `/admin/kill-switch*`)
 > runs end-to-end through `/api/v2/engines/execution/*` with idempotent dedupe, PTRM caps,
-> and the kill-switch wired first in the submit path (plans:
+> and the kill-switch wired first in the submit path. Phase 3: **`LiberatorAdapter` — the
+> first real venue** — composes the bundled `liberator-trading-api` over HTTP (D9):
+> SET/TFEX payload mapping, redacting transport (PIN/account never logged), reconciliation
+> loop v1 (§B lost-ack fuzzy match, bounded resolution), ~30 s session heartbeat + circuit
+> breaker (trip ⇒ `broker_circuit_open` + mass-cancel; state on `/health`/`/capabilities`),
+> stage matrix (`paper` intercepts placement to sim with the session live; `micro_live`
+> routes `broker=liberator` real at PTRM-capped size), router-level cancel+replace amend,
+> `EXECUTION_ENGINE_LIBERATOR_*` settings (`SecretStr`). (Plans:
 > [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md),
-> [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md)).
-> **No real-money path exists** — `micro_live`/`live` reject with a typed error until a
-> real adapter lands. Build sequence: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md)
-> (8 phases, 0–7). Next: **Phase 3** — `LiberatorAdapter`, the first real venue.
+> [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md),
+> [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md).)
+> **`live` stays gated — no real-money default**; real micro_live venue validation is
+> operator-driven (OTP login; see the safety playbook's Liberator runbook). Build sequence:
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 4** —
+> `SettradeAdapter`, the second broker that proves the abstraction.
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -62,11 +71,15 @@ and [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normali
 
 ## Safety ladder (`EXECUTION_ENGINE_STAGE`) — the most important rule
 
-`sim` (default) → `paper` → `micro_live` → `live`. **No order reaches a real broker until the
-stage is explicitly `live` AND the global kill-switch is disengaged AND owner mode is on.** The
-kill-switch (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides every stage and is checked first
-in the submit path. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default) disables
-all order-submission endpoints. See the ROADMAP's "Safety ladder" section.
+`sim` (default) → `paper` → `micro_live` → `live`. **No order reaches a real broker below
+`micro_live`, and never without owner mode on, the kill-switch disengaged, and the broker
+runtime configured.** Since Phase 3: `paper` keeps the Liberator session live for reads but
+intercepts every placement to sim; `micro_live` routes `broker=liberator` to the real venue
+at PTRM-capped size; **`live` stays gated** (typed reject). The kill-switch
+(`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides every stage and is checked first in the
+submit path. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default) disables all
+order-submission endpoints. See the ROADMAP's "Safety ladder" section and the safety
+playbook's Liberator runbook (stage-flip rule, breaker trips).
 
 ## Network & ports (`quant-network`)
 
@@ -107,7 +120,15 @@ Docker:
 ```bash
 docker compose up                                                     # public mode, host :8400
 docker compose -f docker-compose.yml -f docker-compose.private.yml up # owner mode (broker creds via .env)
+# Owner mode + bundled Liberator upstream (internal-only; broker-free without it):
+docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-compose.liberator.yml up -d
 ```
+
+Liberator engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`):
+`LIBERATOR_BASE_URL` (default `http://liberator-trading-api:8200/api/v1`),
+`LIBERATOR_API_KEY` + `LIBERATOR_PIN` (SecretStr — required for the runtime to start),
+`LIBERATOR_HEARTBEAT_INTERVAL_SECONDS=30`, `LIBERATOR_CIRCUIT_BREAKER_THRESHOLD=3`,
+`LIBERATOR_RECONCILE_INTERVAL_SECONDS=12`.
 
 ## Quality gates
 

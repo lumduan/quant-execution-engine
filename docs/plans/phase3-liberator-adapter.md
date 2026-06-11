@@ -1,6 +1,6 @@
 # Phase 3: LiberatorAdapter — First Real Broker (sim-gated)
 
-> **Status:** In progress (started 2026-06-11)
+> **Status:** Complete (2026-06-11)
 > **Branch:** `feat/phase3-liberator-adapter`
 > **Parent plan:** [`ROADMAP.md`](ROADMAP.md) — "Phase 3 — LiberatorAdapter (first real broker)"
 > **Builds on:** [`phase2-engine-core-simadapter.md`](phase2-engine-core-simadapter.md)
@@ -412,18 +412,18 @@ ago, and I believe your help could help improve it alongside my current project.
 |---|---|---|
 | 1 | Submodule `third_party/liberator-trading-api` registered + pinned (pre-existing from scaffolding — verify only) | [x] verified |
 | 2 | `docker-compose.liberator.yml` overlay + `docker/liberator/` build assets (pre-existing — verify only; `/api/v1/health/` healthcheck confirmed valid) | [x] verified |
-| 3 | `EXECUTION_ENGINE_LIBERATOR_*` settings (base_url, api_key + pin as `SecretStr`, heartbeat/breaker/reconcile knobs) | [ ] |
-| 4 | `adapters/liberator/` wire layer: `errors.py`, `models.py`, `mapping.py`, `transport.py` | [ ] |
-| 5 | `LiberatorAdapter` — full 7-method `BrokerAdapter` + `heartbeat()` + `fetch_venue_orders()` | [ ] |
-| 6 | Reconciliation loop v1 (`reconciler.py`) + `repositories.fetch_orders_for_reconcile` | [ ] |
-| 7 | Heartbeat worker + circuit-breaker wiring (`heartbeat.py`), trip ⇒ `broker_circuit_open` + mass-cancel | [ ] |
-| 8 | Runtime singleton + lifespan workers (`runtime.py`, `api/main.py`) | [ ] |
-| 9 | Stage matrix: paper intercept / micro_live route / live gated (`core/stage.py`, `core/router.py`) | [ ] |
-| 10 | Router-level `amend()` (cancel+replace, new client_order_id; not HTTP-exposed) | [ ] |
-| 11 | `/health` + `/capabilities` surface breaker state; capability rows flip `adapter_installed=True` | [ ] |
-| 12 | Tests ≥90 % (respx; the 10 required cases) in `tests/unit/adapters/liberator/` + `tests/integration/adapters/liberator/` | [ ] |
-| 13 | Upstream auth hardening in `liberator-trading-api` (shared timing-safe `verify_api_key`, UTC timestamps) — dual-commit + pin bump | [ ] |
-| 14 | Docs: CLAUDE.md files, ROADMAP, decision log, capability matrix, safety playbook | [ ] |
+| 3 | `EXECUTION_ENGINE_LIBERATOR_*` settings (base_url, api_key + pin as `SecretStr`, heartbeat/breaker/reconcile knobs) | [x] |
+| 4 | `adapters/liberator/` wire layer: `errors.py`, `models.py`, `mapping.py`, `transport.py` | [x] |
+| 5 | `LiberatorAdapter` — full 7-method `BrokerAdapter` + `heartbeat()` + `fetch_venue_orders()` | [x] |
+| 6 | Reconciliation loop v1 (`reconciler.py`) + `repositories.fetch_orders_for_reconcile` | [x] |
+| 7 | Heartbeat worker + circuit-breaker wiring (`heartbeat.py`), trip ⇒ `broker_circuit_open` + mass-cancel | [x] |
+| 8 | Runtime singleton + lifespan workers (`runtime.py`, `api/main.py`) | [x] |
+| 9 | Stage matrix: paper intercept / micro_live route / live gated (`core/stage.py`, `core/router.py`) | [x] |
+| 10 | Router-level `amend()` (cancel+replace, new client_order_id; not HTTP-exposed) | [x] |
+| 11 | `/health` + `/capabilities` surface breaker state; capability rows flip `adapter_installed=True` | [x] |
+| 12 | Tests ≥90 % (respx; the 10 required cases) in `tests/unit/adapters/liberator/` + `tests/integration/adapters/liberator/` | [x] |
+| 13 | Upstream auth hardening in `liberator-trading-api` (shared timing-safe `verify_api_key`, UTC timestamps) — dual-commit + pin bump | [x] |
+| 14 | Docs: CLAUDE.md files, ROADMAP, decision log, capability matrix, safety playbook | [x] |
 
 ### Out of Scope (deferred, per ROADMAP)
 
@@ -560,16 +560,16 @@ heartbeat_loop: ok = adapter.heartbeat()    [GET order/health/set: 200 ∧ healt
 ## Implementation Steps
 
 1. [x] Branch `feat/phase3-liberator-adapter`; verify submodule pin + docker overlay (pre-existing).
-2. [ ] This plan document — standalone `docs(plans)` commit.
-3. [ ] `chore(deps)`: add `respx` to the dev group; `uv sync --all-groups`.
-4. [ ] `feat(config)`: Liberator settings (SecretStr) + `broker_circuit_open` rename + `.env.example`.
-5. [ ] `feat(adapters)`: wire layer — `errors.py`, `models.py`, `mapping.py`, `transport.py` + unit tests.
-6. [ ] `feat(adapters)`: `adapter.py` (place/cancel/amend/reads/heartbeat/capabilities) + unit tests.
-7. [ ] `feat(adapters)`: `reconciler.py` + `heartbeat.py` + `runtime.py` + `repositories.fetch_orders_for_reconcile` + MemStore extension + unit tests.
-8. [ ] `feat(core)`: `AdapterIntent` stage matrix, router `liberator_adapter` param + `amend()`, lifespan workers, `/health` + `/capabilities` brokers block, capability rows `adapter_installed=True` + router/API tests.
-9. [ ] Upstream hardening: submodule commit+push (`fix(auth)` in liberator-trading-api main), then `chore(submodules)` pin bump here.
-10. [ ] `docs:` CLAUDE.md / ROADMAP / decision log / capability matrix / safety playbook + Completion Notes here.
-11. [ ] Quality gate green → push → PR → merge on green CI → umbrella pin bump + CLAUDE.md row.
+2. [x] This plan document — standalone `docs(plans)` commit.
+3. [x] `chore(deps)`: add `respx` to the dev group; `uv sync --all-groups`.
+4. [x] `feat(config)`: Liberator settings (SecretStr) + `broker_circuit_open` rename + `.env.example`.
+5. [x] `feat(adapters)`: wire layer — `errors.py`, `models.py`, `mapping.py`, `transport.py` + unit tests.
+6. [x] `feat(adapters)`: `adapter.py` (place/cancel/amend/reads/heartbeat/capabilities) + unit tests.
+7. [x] `feat(adapters)`: `reconciler.py` + `heartbeat.py` + `runtime.py` + `repositories.fetch_orders_for_reconcile` + MemStore extension + unit tests.
+8. [x] `feat(core)`: `AdapterIntent` stage matrix, router `liberator_adapter` param + `amend()`, lifespan workers, `/health` + `/capabilities` brokers block, capability rows `adapter_installed=True` + router/API tests.
+9. [x] Upstream hardening: submodule commit+push (`fix(auth)` in liberator-trading-api main), then `chore(submodules)` pin bump here.
+10. [x] `docs:` CLAUDE.md / ROADMAP / decision log / capability matrix / safety playbook + Completion Notes here.
+11. [x] Quality gate green → push → PR → merge on green CI → umbrella pin bump + CLAUDE.md row.
 
 ## File Changes
 
@@ -610,16 +610,55 @@ heartbeat_loop: ok = adapter.heartbeat()    [GET order/health/set: 200 ∧ healt
 
 ## Success Criteria
 
-- [ ] A normalized order reaches Liberator (mock-verified end-to-end; live path operator-gated) and the round-trip (ack → fills → status) reconciles.
-- [ ] Re-submission of the same `client_order_id` is idempotent — prior ack returned, exactly one venue HTTP call.
-- [ ] Capability matrix reflects Liberator's real SET/TFEX support; unsupported combos reject pre-flight with typed errors before any HTTP.
-- [ ] Reconciliation loop v1 drives PENDING_NEW → NEW → PARTIALLY_FILLED → FILLED from polled venue truth; lost-ack fuzzy match works; resolution is bounded.
-- [ ] Heartbeat + circuit breaker: N consecutive failures trip the breaker; submits return `broker_circuit_open`; mass-cancel attempted; healthy poll resets; state visible in `/health` and `/capabilities`.
-- [ ] `paper` intercepts placement to sim with zero Liberator HTTP calls; `micro_live` routes real; `live` stays gated.
-- [ ] PIN/account never logged (asserted by caplog test); no credentials in any committed file.
-- [ ] Quality gate green: ruff + ruff format + mypy strict + pytest ≥90 % coverage (HTTP mocked, no live creds in CI).
-- [ ] Upstream auth hardening landed via dual-commit; submodule pin advanced.
+- [x] A normalized order reaches Liberator (mock-verified end-to-end; live path operator-gated) and the round-trip (ack → fills → status) reconciles.
+- [x] Re-submission of the same `client_order_id` is idempotent — prior ack returned, exactly one venue HTTP call (`test_required_case_4_*`).
+- [x] Capability matrix reflects Liberator's real SET/TFEX support; unsupported combos reject pre-flight with typed errors before any HTTP.
+- [x] Reconciliation loop v1 drives PENDING_NEW → NEW → PARTIALLY_FILLED → FILLED from polled venue truth; lost-ack fuzzy match works; resolution is bounded (`test_required_case_5_*`, `_6_*`).
+- [x] Heartbeat + circuit breaker: N consecutive failures trip the breaker; submits return `broker_circuit_open`; mass-cancel attempted; healthy poll resets; state visible in `/health` and `/capabilities` (`test_required_case_8_*`).
+- [x] `paper` intercepts placement to sim with zero Liberator HTTP calls; `micro_live` routes real; `live` stays gated (`test_required_case_10_*`, stage-matrix suite).
+- [x] PIN/account never logged (asserted by caplog tests at transport AND adapter level); no credentials in any committed file.
+- [x] Quality gate green: ruff + ruff format + mypy strict + pytest ≥90 % coverage (343 tests, ~96.8 % — HTTP mocked via respx, no live creds in CI).
+- [x] Upstream auth hardening landed via dual-commit; submodule pin advanced.
 
 ## Completion Notes
 
-_To be filled in after implementation._
+### Summary
+
+Shipped exactly the §Scope table: the `adapters/liberator/` package (wire models, pure
+two-direction mapping, redacting transport, the adapter, reconciler v1, heartbeat worker,
+process-singleton runtime), the `AdapterIntent` stage matrix with the paper intercept and the
+micro_live route, the router-level cancel+replace `amend()`, breaker state on
+`/health`/`/capabilities`, `EXECUTION_ENGINE_LIBERATOR_*` settings, ≥90 % respx-mocked
+coverage including all ten required cases, and the upstream auth hardening (dual-commit).
+The submodule/docker-overlay deliverables from the prompt's Steps 3a/3b already existed from
+the Phase-2-era scaffolding and were verified, not recreated. `live` remains gated; real
+micro_live venue validation is an operator runbook step (OTP login), documented in
+`order-routing-safety.md`.
+
+### Issues encountered
+
+1. **Upstream wire quirks** (verified against the pinned submodule, recorded in
+   `capability-matrix.md`): SET requires `price > 0` (≤2 dp) on every order including the
+   market family → pre-flight reject with a durable reason rather than inventing/re-quantizing
+   a price; TFEX requires `stopSymbol` on every order (defaulted to the order symbol);
+   `stopCondition` vocabulary is undocumented → ships `""` in v1, pinned at live validation.
+2. **httpx base-url join**: a leading-slash path silently replaces `/api/v1` — the transport
+   normalizes to relative joins; a dedicated load-bearing test pins it.
+3. **PTRM × amend interaction**: the duplicate-burst signature is `(account, symbol, side,
+   qty)` (price excluded), so a price-only replacement inside the window risk-rejects. Kept
+   deliberately (no PTRM exemption for replacements — decision E17) and pinned by a test:
+   the old order is already cancelled, the position ends flat, never doubled.
+4. **Upstream test compatibility**: the first draft of the shared `verify_api_key` resolved
+   the key from settings directly, which broke 74 upstream tests that patch
+   `app.services.otp_sms_service.validate_api_key`. Final design keeps `validate_api_key`
+   as the (now timing-safe) single primitive and the shared dependency delegates to it
+   lazily — upstream suite returned exactly to its pre-change baseline (240 failed / 559
+   passed; failures are pre-existing env/Redis-dependent tests, set-identical before/after).
+
+### Decisions changed from the plan
+
+- None of substance; the reconciler stage gate ("not in sim") was narrowed to
+  `micro_live`/`live` as anticipated in Design Decision 9 (recorded as E15), and the
+  upstream hardening dropped the "settings-resolved key" variant in favour of the
+  patch-compatible primitive (Issue 4) while keeping both security properties
+  (timing-safe compare, 503 fail-closed).
