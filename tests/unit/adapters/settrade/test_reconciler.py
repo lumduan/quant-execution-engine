@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import respx
+from src.quant_execution_engine.adapters.settrade.adapter import SettradeAdapter
 from src.quant_execution_engine.adapters.settrade.client import RateBudget
 from src.quant_execution_engine.adapters.settrade.models import SettradeOrderItem
 from src.quant_execution_engine.adapters.settrade.reconciler import (
@@ -16,7 +17,7 @@ from src.quant_execution_engine.adapters.settrade.reconciler import (
     fuzzy_match,
     plan_actions,
 )
-from src.quant_execution_engine.contracts.enums import OrderState
+from src.quant_execution_engine.contracts.enums import Market, OrderState
 from src.quant_execution_engine.db.models import OrderRow
 
 from tests._fakes import MemStore, patch_repositories
@@ -24,8 +25,12 @@ from tests.conftest import make_order
 from tests.unit.adapters.settrade.test_adapter_place import (
     _BASE,
     _BROKER,
+    _DERIV_CODE,
+    _EQUITY_CODE,
     _login_route,
     make_adapter,
+    make_dual_adapter,
+    make_set_only_adapter,
 )
 
 _NOW = datetime(2026, 6, 11, 8, 0, 0, tzinfo=UTC)
@@ -207,6 +212,12 @@ def _reconciler() -> SettradeReconciler:
     )
 
 
+def _reconciler_for(adapter: SettradeAdapter) -> SettradeReconciler:
+    return SettradeReconciler(
+        adapter, interval_seconds=12, pool_provider=lambda: object(), now=lambda: _NOW
+    )
+
+
 def _set_orders_url(account: str) -> str:
     return f"{_BASE}/api/seos/v3/{_BROKER}/accounts/{account}/orders"
 
@@ -300,7 +311,9 @@ async def test_rate_budget_exhausted_skips_remaining_groups(
     reconciler = _reconciler()
     # Pre-exhaust the GET bucket: every group is skipped, no venue fetch fires.
     adapter = reconciler._adapter  # noqa: SLF001 - test hook
-    adapter._client._rate["GET"] = RateBudget(remaining_second=0, remaining_minute=0)  # noqa: SLF001
+    adapter._clients[Market.SET]._rate["GET"] = RateBudget(  # noqa: SLF001 - test hook
+        remaining_second=0, remaining_minute=0
+    )
     set_a = respx.get(_set_orders_url("ACC-A")).respond(json=[])
     set_b = respx.get(_set_orders_url("ACC-B")).respond(json=[])
     with caplog.at_level(logging.WARNING):
@@ -308,6 +321,81 @@ async def test_rate_budget_exhausted_skips_remaining_groups(
     assert applied == 0
     assert not set_a.called and not set_b.called
     assert "budget exhausted" in caplog.text
+
+
+def _dual_login_routes() -> None:
+    respx.post(f"{_BASE}/api/oam/v1/{_BROKER}/broker-apps/{_EQUITY_CODE}/login").respond(
+        json={
+            "token_type": "Bearer",
+            "access_token": "equity-atk",
+            "refresh_token": "eq-rtk",
+            "expires_in": 1800,
+        }
+    )
+    respx.post(f"{_BASE}/api/oam/v1/{_BROKER}/broker-apps/{_DERIV_CODE}/login").respond(
+        json={
+            "token_type": "Bearer",
+            "access_token": "deriv-atk",
+            "refresh_token": "dv-rtk",
+            "expires_in": 1800,
+        }
+    )
+
+
+@respx.mock
+async def test_per_market_budget_skips_only_its_market(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dual adapter, SET client GET bucket exhausted → SET skipped, TFEX still polled."""
+    import logging
+
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    _dual_login_routes()
+    _row(store, OrderState.NEW, market="SET")
+    _row(store, OrderState.NEW, market="TFEX", position_effect="OPEN", symbol="S50")
+    adapter = make_dual_adapter()
+    # Exhaust ONLY the equity (SET) client's GET bucket.
+    adapter._clients[Market.SET]._rate["GET"] = RateBudget(  # noqa: SLF001 - test hook
+        remaining_second=0, remaining_minute=0
+    )
+    reconciler = _reconciler_for(adapter)
+    set_route = respx.get(_set_orders_url("ACC-TEST")).respond(json=[])
+    tfex_route = respx.get(_tfex_orders_url("ACC-TEST")).respond(json=[])
+    with caplog.at_level(logging.WARNING):
+        await reconciler.reconcile_once()
+    assert not set_route.called  # SET starved
+    assert tfex_route.called  # the healthy market's group still proceeds
+    assert "SET GET budget exhausted" in caplog.text
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_unconfigured_market_rows_freeze_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TFEX row under a SET-only adapter freezes (no fake transitions) + warns."""
+    import logging
+
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    respx.post(f"{_BASE}/api/oam/v1/{_BROKER}/broker-apps/{_EQUITY_CODE}/login").respond(
+        json={"token_type": "Bearer", "access_token": "equity-atk", "expires_in": 1800}
+    )
+    tfex_row = _row(
+        store, OrderState.PENDING_CANCEL, market="TFEX", position_effect="OPEN", symbol="S50"
+    )
+    tfex_route = respx.get(_tfex_orders_url(tfex_row.account))
+    reconciler = _reconciler_for(make_set_only_adapter())
+    with caplog.at_level(logging.WARNING):
+        applied = await reconciler.reconcile_once()
+    assert applied == 0
+    assert not tfex_route.called  # raised before any HTTP — never faked zero orders
+    # The row FROZE — no cancel_confirm / ack_lost transition fired.
+    assert store.orders[tfex_row.client_order_id]["status"] is OrderState.PENDING_CANCEL
+    assert "unavailable" in caplog.text
 
 
 @respx.mock

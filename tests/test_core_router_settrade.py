@@ -133,10 +133,10 @@ async def test_breaker_trip_typed_error_and_mass_cancel(
     # Prime the token so ensure_token() reuses the cache (no wire call) — then a
     # degraded session shows as last_wire_ok=False even with a valid token (the
     # Design Decision 6 blind spot the heartbeat catches).
-    await adapter._client.ensure_token()  # noqa: SLF001 - test hook
-    adapter._client.last_wire_ok = False  # noqa: SLF001 - test hook
+    await adapter._clients[Market.SET].ensure_token()  # noqa: SLF001 - test hook
+    adapter._clients[Market.SET].last_wire_ok = False  # noqa: SLF001 - test hook
     await heartbeat_pass(adapter, on_trip=on_trip)
-    adapter._client.last_wire_ok = False  # noqa: SLF001 - test hook
+    adapter._clients[Market.SET].last_wire_ok = False  # noqa: SLF001 - test hook
     await heartbeat_pass(adapter, on_trip=on_trip)
 
     assert swept and swept[0][0] == [resting.client_order_id]
@@ -161,6 +161,8 @@ def test_health_and_capabilities_surface_settrade_breaker_state(
     body = client.get("/health").json()
     assert body["brokers"]["settrade"]["breaker_state"] == "closed"
     assert body["brokers"]["settrade"]["session_healthy"] is None
+    # Phase 4.1: per-market session map is present pre-heartbeat (both None).
+    assert body["brokers"]["settrade"]["sessions"] == {"SET": None, "TFEX": None}
     caps = client.get("/capabilities").json()
     assert caps["brokers"]["settrade"]["breaker_state"] == "closed"
     settrade_rows = [c for c in caps["capabilities"] if c["broker"] == "settrade"]

@@ -14,7 +14,7 @@ from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.settrade.adapter import SettradeAdapter
 from src.quant_execution_engine.adapters.settrade.client import SettradeClient
 from src.quant_execution_engine.adapters.settrade.errors import SettradeTransportError
-from src.quant_execution_engine.contracts.enums import Broker
+from src.quant_execution_engine.contracts.enums import Broker, Market
 
 from tests.conftest import make_order
 
@@ -31,10 +31,18 @@ _TOKEN = {
     "refresh_token": "rtk",
     "expires_in": 1800,
 }
+# Phase 4.1 dual-adapter: distinct apps so respx distinguishes the two logins and
+# the per-app token body lets assertions read the Authorization header.
+_EQUITY_CODE = "ALGOEQ"
+_DERIV_CODE = "ALGODRV"
+_EQUITY_APP_ID = "equity-app"
+_DERIV_APP_ID = "deriv-app"
+_EQUITY_TOKEN = {**_TOKEN, "access_token": "equity-atk"}
+_DERIV_TOKEN = {**_TOKEN, "access_token": "deriv-atk"}
 
 
-def _login_url() -> str:
-    return f"{_BASE}/api/oam/v1/{_BROKER}/broker-apps/{_CODE}/login"
+def _login_url(app_code: str = _CODE) -> str:
+    return f"{_BASE}/api/oam/v1/{_BROKER}/broker-apps/{app_code}/login"
 
 
 def _set_orders_url(account: str = _ACCOUNT) -> str:
@@ -45,22 +53,58 @@ def _tfex_orders_url(account: str = _ACCOUNT) -> str:
     return f"{_BASE}/api/seosd/v3/{_BROKER}/accounts/{account}/orders"
 
 
-def make_client() -> SettradeClient:
+def make_client(app_code: str = _CODE, app_id: str = _APP_ID) -> SettradeClient:
     return SettradeClient(
         base_url=_BASE,
-        app_id=SecretStr(_APP_ID),
+        app_id=SecretStr(app_id),
         app_secret=SecretStr(_APP_SECRET),
-        app_code=_CODE,
+        app_code=app_code,
         broker_id=_BROKER,
     )
 
 
 def make_adapter(**kwargs: Any) -> SettradeAdapter:
-    return SettradeAdapter(client=make_client(), broker_id=_BROKER, pin=SecretStr(_PIN), **kwargs)
+    """Sandbox shape: ONE client serves BOTH markets (single-app InnovestX/098)."""
+    client = make_client()
+    return SettradeAdapter(
+        clients={Market.SET: client, Market.TFEX: client},
+        broker_id=_BROKER,
+        pin=SecretStr(_PIN),
+        **kwargs,
+    )
+
+
+def make_dual_adapter(**kwargs: Any) -> SettradeAdapter:
+    """Per-market shape: a distinct equity (SET) + derivatives (TFEX) client."""
+    return SettradeAdapter(
+        clients={
+            Market.SET: make_client(app_code=_EQUITY_CODE, app_id=_EQUITY_APP_ID),
+            Market.TFEX: make_client(app_code=_DERIV_CODE, app_id=_DERIV_APP_ID),
+        },
+        broker_id=_BROKER,
+        pin=SecretStr(_PIN),
+        **kwargs,
+    )
+
+
+def make_set_only_adapter(**kwargs: Any) -> SettradeAdapter:
+    """SET configured, TFEX unconfigured (a forgotten/partial derivatives trio)."""
+    return SettradeAdapter(
+        clients={Market.SET: make_client(app_code=_EQUITY_CODE, app_id=_EQUITY_APP_ID)},
+        broker_id=_BROKER,
+        pin=SecretStr(_PIN),
+        **kwargs,
+    )
 
 
 def _login_route() -> None:
     respx.post(_login_url()).respond(json=_TOKEN)
+
+
+def _dual_login_routes() -> None:
+    """Per-app login routes with distinct token bodies (read the Authorization)."""
+    respx.post(_login_url(_EQUITY_CODE)).respond(json=_EQUITY_TOKEN)
+    respx.post(_login_url(_DERIV_CODE)).respond(json=_DERIV_TOKEN)
 
 
 def _settrade_order(**overrides: Any) -> Any:
@@ -204,5 +248,81 @@ def test_make_adapter_with_injected_httpx_client() -> None:
         broker_id=_BROKER,
         client=httpx.AsyncClient(transport=transport),
     )
-    adapter = SettradeAdapter(client=client, broker_id=_BROKER, pin=SecretStr(_PIN))
+    adapter = SettradeAdapter(
+        clients={Market.SET: client, Market.TFEX: client},
+        broker_id=_BROKER,
+        pin=SecretStr(_PIN),
+    )
     assert adapter.broker is Broker.SETTRADE
+
+
+def test_empty_clients_map_is_rejected() -> None:
+    """The ctor guards against a market-less adapter (would route nothing)."""
+    with pytest.raises(ValueError, match="at least one configured market"):
+        SettradeAdapter(clients={}, broker_id=_BROKER, pin=SecretStr(_PIN))
+
+
+# --------------------------------------------------- Phase 4.1 per-market place
+
+
+@respx.mock
+async def test_place_set_routes_equity_client_only() -> None:
+    """SET place hits the equity login + order; the derivatives app is untouched."""
+    _dual_login_routes()
+    equity_login = respx.post(_login_url(_EQUITY_CODE)).respond(json=_EQUITY_TOKEN)
+    deriv_login = respx.post(_login_url(_DERIV_CODE)).respond(json=_DERIV_TOKEN)
+    order_route = respx.post(_set_orders_url()).respond(json={"orderNo": "SET-7001"})
+    adapter = make_dual_adapter()
+    ack = await adapter.place(_settrade_order())
+    assert ack.broker_order_id == "SET-7001"
+    assert equity_login.called and not deriv_login.called
+    # The order call carried the EQUITY token, never the derivatives one.
+    auth = order_route.calls.last.request.headers["Authorization"]
+    assert auth == "Bearer equity-atk"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_place_tfex_routes_derivatives_client_only() -> None:
+    """TFEX place mirrors SET on the derivatives app (the other login untouched)."""
+    _dual_login_routes()
+    equity_login = respx.post(_login_url(_EQUITY_CODE)).respond(json=_EQUITY_TOKEN)
+    deriv_login = respx.post(_login_url(_DERIV_CODE)).respond(json=_DERIV_TOKEN)
+    order_route = respx.post(_tfex_orders_url()).respond(json={"orderNo": 9001})
+    adapter = make_dual_adapter()
+    order = _settrade_order(market="TFEX", symbol="S50H26", position_effect="OPEN", price="950.0")
+    ack = await adapter.place(order)
+    assert ack.broker_order_id == "9001"
+    assert deriv_login.called and not equity_login.called
+    auth = order_route.calls.last.request.headers["Authorization"]
+    assert auth == "Bearer deriv-atk"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_place_unconfigured_market_rejects_with_zero_http() -> None:
+    """A SET-only adapter rejects a TFEX order with the no-app reason — no I/O."""
+    login = respx.post(_login_url(_EQUITY_CODE)).respond(json=_EQUITY_TOKEN)
+    tfex = respx.post(_tfex_orders_url())
+    adapter = make_set_only_adapter()
+    order = _settrade_order(market="TFEX", symbol="S50H26", position_effect="OPEN", price="950.0")
+    ack = await adapter.place(order)
+    assert ack.rejected
+    assert ack.reject_reason == "settrade: no TFEX broker app configured"
+    assert not login.called and not tfex.called  # zero HTTP recorded
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_sandbox_place_both_markets_records_one_login() -> None:
+    """The sandbox single client logs in exactly ONCE across a SET + TFEX place."""
+    login = respx.post(_login_url()).respond(json=_TOKEN)
+    respx.post(_set_orders_url()).respond(json={"orderNo": "SET-1"})
+    respx.post(_tfex_orders_url()).respond(json={"orderNo": 9001})
+    adapter = make_adapter()
+    await adapter.place(_settrade_order())
+    await adapter.place(
+        _settrade_order(market="TFEX", symbol="S50H26", position_effect="OPEN", price="950.0")
+    )
+    assert login.call_count == 1  # one shared session, one login
+    await adapter.aclose()
