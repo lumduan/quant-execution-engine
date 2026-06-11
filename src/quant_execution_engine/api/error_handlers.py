@@ -23,7 +23,7 @@ _STATUS_BY_CODE: dict[str, int] = {
     "order_not_found": status.HTTP_404_NOT_FOUND,
     "illegal_transition": status.HTTP_409_CONFLICT,
     "submit_in_flight": status.HTTP_409_CONFLICT,
-    "broker_session_down": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "broker_circuit_open": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 _THROTTLE_CAPS = frozenset({"rate_limit", "duplicate_burst"})

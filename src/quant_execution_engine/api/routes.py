@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
+from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.api.deps import (
     get_router_dep,
     get_settings_dep,
@@ -21,6 +22,7 @@ from src.quant_execution_engine.api.deps import (
     require_owner_mode,
 )
 from src.quant_execution_engine.api.schemas import (
+    BrokerRuntimeHealth,
     CapabilitiesResponse,
     HealthResponse,
     KillSwitchEngageResponse,
@@ -38,11 +40,27 @@ RouterDep = Annotated[OrderRouter, Depends(get_router_dep)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 
+def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
+    """Breaker/session state per configured broker (None when broker-free)."""
+    adapter = get_liberator_adapter()
+    if adapter is None:
+        return None
+    return {
+        "liberator": BrokerRuntimeHealth(
+            breaker_state=adapter.breaker.state.value,
+            session_healthy=adapter.last_heartbeat_ok,
+        )
+    }
+
+
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
 async def health(settings: SettingsDep) -> HealthResponse:
     """Mapped to host ``:8400`` (container ``:8000``) in compose."""
     return HealthResponse(
-        version=__version__, stage=settings.stage, public_mode=settings.public_mode
+        version=__version__,
+        stage=settings.stage,
+        public_mode=settings.public_mode,
+        brokers=_broker_runtime_health(),
     )
 
 
@@ -54,7 +72,11 @@ async def health(settings: SettingsDep) -> HealthResponse:
 )
 async def capabilities(settings: SettingsDep) -> CapabilitiesResponse:
     """The full static matrix (D7): the router enforces exactly these rows."""
-    return CapabilitiesResponse(stage=settings.stage, capabilities=CAPABILITY_MATRIX)
+    return CapabilitiesResponse(
+        stage=settings.stage,
+        capabilities=CAPABILITY_MATRIX,
+        brokers=_broker_runtime_health(),
+    )
 
 
 @router.post(

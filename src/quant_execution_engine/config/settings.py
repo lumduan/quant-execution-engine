@@ -3,7 +3,8 @@
 Env prefix ``EXECUTION_ENGINE_`` (decision E1). Safety defaults (E2/E3): the
 stage ladder defaults to ``sim``, public mode defaults to ``true`` (order
 submission disabled), and the kill-switch env flag is the boot-time backstop.
-Broker credentials never appear here in Phase 2 — no real adapter exists.
+Broker secrets (Liberator PIN / api-key, Phase 3) are ``SecretStr`` sourced
+from the gitignored ``.env`` only — never committed, never logged.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.quant_execution_engine.contracts.enums import Stage
@@ -55,6 +57,16 @@ class Settings(BaseSettings):
 
     # SimAdapter
     sim_default_fill_price: Decimal = Decimal("100")
+
+    # Broker: Liberator (Phase 3) — adapter target + secrets. Secrets are
+    # SecretStr, presence-checked only at runtime creation (settings must still
+    # load in sim, where no broker is configured); NEVER logged.
+    liberator_base_url: str = "http://liberator-trading-api:8200/api/v1"
+    liberator_api_key: SecretStr | None = None
+    liberator_pin: SecretStr | None = None
+    liberator_heartbeat_interval_seconds: int = 30
+    liberator_circuit_breaker_threshold: int = 3
+    liberator_reconcile_interval_seconds: int = 12
 
     # Informational (compose maps host port -> container :8000)
     host_port: int = 8400

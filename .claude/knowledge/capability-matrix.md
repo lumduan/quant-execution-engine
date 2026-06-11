@@ -37,3 +37,27 @@
 2. **Asymmetric amend.** `BrokerAdapter.amend()` is uniform, but `LiberatorAdapter.amend`
    degrades to cancel-then-replace (declared non-atomic); `SettradeAdapter.amend` is native.
    Callers query `GET /capabilities` to learn the semantics, never assume them.
+
+## Phase 3 validation status (2026-06-11)
+
+The **Liberator column is now validated against the live adapter code** — every cell above is
+realized 1:1 by `src/quant_execution_engine/adapters/liberator/mapping.py` (parametrized over
+all valid `(market, order_type, side, position_effect, tif)` cells) and declared via
+`CAPABILITY_MATRIX` with `adapter_installed: true` for both Liberator rows. Divergences and
+wire details discovered during the build (research notes stay accurate; these are additions):
+
+- **SET requires `price > 0` with ≤2 dp on EVERY order**, including the market family
+  (`Market`/`MP`/`ATO`/`ATC`) — the upstream wire model mandates it. The adapter rejects
+  pre-flight (no HTTP) when no indicative price can be coalesced or when a price exceeds
+  2 dp (it never silently re-quantizes a limit). TFEX `price` accepts `0`.
+- **TFEX `stopSymbol` is required on EVERY TFEX order** (defaulted to the order symbol);
+  `stopCondition` ships `""` in v1 — the venue's condition vocabulary is undocumented upstream
+  and gets pinned during operator-driven micro_live validation (a venue reject flows back
+  typed, never silent).
+- **Read-side `side` strings are `B`/`S`**, not the write-side `Buy`/`Sell`/`Long`/`Short` —
+  two mapping directions exist and both are tested.
+- **`position_effect=Auto` is not exposed** through `NormalizedOrder` (OPEN/CLOSE only, frozen
+  §C); venue rows carrying `Auto` are unrepresentable in the read view and skipped.
+- Amend stays **cancel+replace, non-atomic, with NO PTRM exemption** for the replacement
+  (decision E17): queue-priority loss + a brief no-resting-order window + a possible
+  duplicate-burst risk-reject inside the window are the declared consequences.

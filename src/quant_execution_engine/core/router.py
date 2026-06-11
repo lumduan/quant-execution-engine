@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import asyncpg
@@ -53,11 +54,20 @@ class SubmitOutcome:
 class OrderRouter:
     """Per-request orchestrator (cheap to build; backed by process singletons)."""
 
-    def __init__(self, *, settings: Settings, pool: asyncpg.Pool, redis: Any | None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        pool: asyncpg.Pool,
+        redis: Any | None,
+        liberator_adapter: BrokerAdapter | None = None,
+    ) -> None:
         self._settings = settings
         self._pool = pool
         self._redis = redis
         self._sim = SimAdapter(default_fill_price=settings.sim_default_fill_price)
+        # Injected process singleton (api/deps.py / runtime); None = not configured.
+        self._liberator = liberator_adapter
         self._risk = RiskGate(settings, redis)
         self.kill_switch = KillSwitch(settings, redis)
 
@@ -75,7 +85,12 @@ class OrderRouter:
 
         await self._risk.check(order)
 
-        adapter = resolve_adapter(self._settings.stage, order.broker, sim_adapter=self._sim)
+        adapter = resolve_adapter(
+            self._settings.stage,
+            order.broker,
+            sim_adapter=self._sim,
+            liberator_adapter=self._liberator,
+        )
         adapter.breaker.guard()
         # Venue-class field validation hook: per-(broker, market, order_type)
         # strict rules plug in here in Phases 3/4 (ADR §G); no-op in Phase 2.
@@ -172,7 +187,12 @@ class OrderRouter:
                 f"no frozen cancel edge from {row.status} (transient pending state)",
                 client_order_id=client_order_id,
             )
-        adapter = resolve_adapter(self._settings.stage, row.broker, sim_adapter=self._sim)
+        adapter = resolve_adapter(
+            self._settings.stage,
+            row.broker,
+            sim_adapter=self._sim,
+            liberator_adapter=self._liberator,
+        )
         adapter.breaker.guard()
         await repositories.update_status(self._pool, client_order_id, OrderState.PENDING_CANCEL)
         ack = await adapter.cancel(client_order_id)
@@ -182,13 +202,64 @@ class OrderRouter:
         await repositories.update_status(self._pool, client_order_id, OrderState.CANCELLED)
         return await self.get(client_order_id)
 
+    # ------------------------------------------------------------------- amend
+    async def amend(
+        self,
+        client_order_id: str,
+        *,
+        new_client_order_id: str,
+        new_price: Decimal | None = None,
+        new_qty: int | None = None,
+    ) -> SubmitOutcome:
+        """Cancel+replace orchestration (Liberator has no amend route, R2).
+
+        Not HTTP-exposed in Phase 3 (the route lands Phase 4). The old order
+        ends CANCELLED via the frozen PENDING_CANCEL path (PENDING_REPLACE is
+        reserved for native amends); the replacement enters the FULL frozen
+        submit pipeline under the caller-supplied fresh ``client_order_id``.
+        Declared consequences of ``cancel_replace`` semantics: queue priority
+        is lost and a brief no-resting-order window exists. Under an engaged
+        kill-switch the cancel leg still runs (cancels reduce risk) and the
+        replacement is rejected — the position ends flat, never doubled. The
+        replacement gets NO PTRM exemption: a price-only amend re-using the
+        same quantity inside the duplicate-burst window is risk-rejected
+        (old order already cancelled — flat, retry after the window).
+        """
+        if new_price is None and new_qty is None:
+            raise AdapterError("amend requires new_price and/or new_qty")
+        row = await repositories.fetch_order(self._pool, client_order_id)
+        if row is None:
+            raise OrderNotFound("unknown client_order_id", client_order_id=client_order_id)
+        await self.cancel(client_order_id)
+        replacement = NormalizedOrder(
+            client_order_id=new_client_order_id,
+            broker=row.broker,
+            account=row.account,
+            market=row.market,
+            symbol=row.symbol,
+            side=row.side,
+            order_type=row.order_type,
+            price=new_price if new_price is not None else row.price,
+            stop_price=row.stop_price,
+            quantity=new_qty if new_qty is not None else row.quantity,
+            display_qty=row.display_qty,
+            tif=row.tif,
+            position_effect=row.position_effect,
+        )
+        return await self.submit(replacement)
+
     async def mass_cancel(self) -> tuple[list[str], list[str]]:
         """Flatten-and-halt sweep: best-effort cancel of every open order."""
         cancelled: list[str] = []
         failed: list[str] = []
         for row in await repositories.fetch_open_orders(self._pool):
             try:
-                adapter = resolve_adapter(self._settings.stage, row.broker, sim_adapter=self._sim)
+                adapter = resolve_adapter(
+                    self._settings.stage,
+                    row.broker,
+                    sim_adapter=self._sim,
+                    liberator_adapter=self._liberator,
+                )
                 await repositories.update_status(
                     self._pool, row.client_order_id, OrderState.PENDING_CANCEL
                 )

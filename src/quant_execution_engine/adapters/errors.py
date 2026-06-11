@@ -13,6 +13,10 @@ class AdapterError(ExecutionEngineError):
 
 
 class CircuitOpenError(OrderRejectedError):
-    """The adapter's session circuit breaker is OPEN — routing halted (§G)."""
+    """The adapter's session circuit breaker is OPEN — routing halted (§G).
 
-    code: ClassVar[str] = "broker_session_down"
+    Wire code pinned ``broker_circuit_open`` by the Phase 3 spec (renamed from
+    the Phase-2 placeholder ``broker_session_down``; nothing consumed it).
+    """
+
+    code: ClassVar[str] = "broker_circuit_open"

@@ -14,6 +14,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.quant_execution_engine import __version__
+from src.quant_execution_engine.adapters.liberator.runtime import (
+    close_liberator_runtime,
+    create_liberator_runtime,
+    start_liberator_workers,
+)
 from src.quant_execution_engine.api.error_handlers import register_error_handlers
 from src.quant_execution_engine.api.routes import router
 from src.quant_execution_engine.cache.redis_client import close_redis, create_redis
@@ -44,9 +49,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - degrade, never crash the probe surface
         logger.warning("startup: postgres pool unavailable; order endpoints degraded")
     create_redis(settings.redis_url)
+    # Liberator runtime: only at broker stages in owner mode with secrets
+    # present (sim/public stays broker-free); workers per the stage matrix.
+    create_liberator_runtime(settings)
+    await start_liberator_workers(settings)
     try:
         yield
     finally:
+        await close_liberator_runtime()
         await close_redis()
         await close_pool()
 

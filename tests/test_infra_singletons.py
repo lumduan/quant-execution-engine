@@ -171,8 +171,8 @@ def test_capability_assert_supports_each_axis() -> None:
 
 def test_matrix_shape() -> None:
     assert len(capabilities.CAPABILITY_MATRIX) == 5
-    installed = [c for c in capabilities.CAPABILITY_MATRIX if c.adapter_installed]
-    assert all(c.broker is Broker.SIM for c in installed)
+    installed = {c.broker for c in capabilities.CAPABILITY_MATRIX if c.adapter_installed}
+    assert installed == {Broker.SIM, Broker.LIBERATOR}  # Settrade lands Phase 4
 
 
 # ----------------------------------------------------------------------- stage

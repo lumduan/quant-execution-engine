@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import asyncpg
 from fastapi import Depends, HTTPException, Request, status
 
+from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.cache.redis_client import get_redis
 from src.quant_execution_engine.config.settings import Settings, get_settings
 from src.quant_execution_engine.contracts.errors import PublicModeRejected
@@ -56,4 +57,8 @@ def get_router_dep(
     pool: Annotated[asyncpg.Pool, Depends(get_pool_dep)],
     redis: Annotated[Any | None, Depends(get_redis_dep)],
 ) -> OrderRouter:
-    return OrderRouter(settings=settings, pool=pool, redis=redis)
+    # The liberator adapter is a process singleton (breaker/heartbeat state
+    # must survive per-request router construction); None when not configured.
+    return OrderRouter(
+        settings=settings, pool=pool, redis=redis, liberator_adapter=get_liberator_adapter()
+    )

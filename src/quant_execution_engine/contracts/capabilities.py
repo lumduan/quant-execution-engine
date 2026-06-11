@@ -2,9 +2,10 @@
 
 The router enforces this BEFORE any venue I/O (D7): an unsupported
 ``(broker, market, order_type, tif, position_effect)`` is rejected with a
-typed error. Liberator/Settrade rows are declared now (``adapter_installed:
-false``) so real-broker-impossible orders reject up front even in sim stage;
-every Settrade ``(confirm P4)`` cell is omitted — declare, don't pretend.
+typed error. The Liberator rows are validated against the live adapter since
+Phase 3 (``adapter_installed: true``); Settrade stays declared-only
+(``adapter_installed: false``) and every ``(confirm P4)`` cell is omitted —
+declare, don't pretend.
 """
 
 from __future__ import annotations
@@ -76,7 +77,8 @@ CAPABILITY_MATRIX: tuple[CapabilitySet, ...] = (
         adapter_installed=True,
     ),
     # Liberator: SET has no stop types; TFEX has no ATO/ATC/MTL; no amend route
-    # -> cancel+replace (non-atomic, declared). Cells per capability-matrix.md.
+    # -> cancel+replace (non-atomic, declared). Cells per capability-matrix.md;
+    # installed since Phase 3 (LiberatorAdapter maps exactly these cells).
     CapabilitySet(
         broker=Broker.LIBERATOR,
         market=Market.SET,
@@ -91,7 +93,7 @@ CAPABILITY_MATRIX: tuple[CapabilitySet, ...] = (
         tifs=_ALL_TIFS,
         position_effects=(),
         amend="cancel_replace",
-        adapter_installed=False,
+        adapter_installed=True,
     ),
     CapabilitySet(
         broker=Broker.LIBERATOR,
@@ -106,7 +108,7 @@ CAPABILITY_MATRIX: tuple[CapabilitySet, ...] = (
         tifs=_ALL_TIFS,
         position_effects=(PositionEffect.OPEN, PositionEffect.CLOSE),
         amend="cancel_replace",
-        adapter_installed=False,
+        adapter_installed=True,
     ),
     # Settrade (derivatives only): every "(confirm P4)" cell omitted — only
     # LIMIT/STOP/STOP_LIMIT/ICEBERG and DAY are declared until Phase 4 confirms.
