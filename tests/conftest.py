@@ -18,6 +18,7 @@ from src.quant_execution_engine.cache import redis_client as redis_module
 from src.quant_execution_engine.config.settings import Settings, get_settings
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.db import postgres as postgres_module
+from src.quant_execution_engine.events.hub import reset_event_hub
 from src.quant_execution_engine.order_book import runtime as order_book_runtime
 
 
@@ -48,6 +49,7 @@ def _reset_singletons() -> Iterator[None]:
     order_book_runtime._service = None
     order_book_runtime._router = None
     sim_pricing._pricer = None
+    reset_event_hub()
     get_settings.cache_clear()
 
 

@@ -25,14 +25,17 @@ from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal, RepositoryError
 from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
+from src.quant_execution_engine.events.hub import get_event_hub
+from src.quant_execution_engine.events.models import FillEvent
 
 logger = logging.getLogger(__name__)
 
 _INSERT_ORDER = (
     "INSERT INTO execution.orders "
     "(client_order_id, broker, broker_order_id, account, symbol, market, side, "
-    "order_type, price, stop_price, quantity, display_qty, tif, position_effect) "
-    "VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+    "order_type, price, stop_price, quantity, display_qty, tif, position_effect, "
+    "strategy_id) "
+    "VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"
 )
 
 _SELECT_ORDER = "SELECT * FROM execution.orders WHERE client_order_id = $1"
@@ -82,6 +85,8 @@ _SELECT_RECONCILE_ORDERS = (
     "ORDER BY created_at"
 )
 
+_SELECT_CIDS_FOR_STRATEGY = "SELECT client_order_id FROM execution.orders WHERE strategy_id = $1"
+
 
 def _rowcount(command_tag: str) -> int:
     """Parse the trailing row count from an asyncpg command tag (e.g. ``UPDATE 1``)."""
@@ -91,11 +96,15 @@ def _rowcount(command_tag: str) -> int:
         raise RepositoryError(f"unparseable command tag: {command_tag!r}") from exc
 
 
-async def insert_order(pool: asyncpg.Pool, order: NormalizedOrder) -> None:
+async def insert_order(
+    pool: asyncpg.Pool, order: NormalizedOrder, strategy_id: str | None = None
+) -> None:
     """Persist the order at the entry state (DB DEFAULT ``PENDING_NEW``).
 
     Committed BEFORE any venue I/O (hard rule 5). A PK collision raises
-    :class:`DuplicateOrderSignal` — the durable dedupe backstop.
+    :class:`DuplicateOrderSignal` — the durable dedupe backstop. ``strategy_id``
+    is the persisted ``X-Strategy-Id`` (D16); on success the hub records the
+    cid→strategy attribution and emits the ``PENDING_NEW`` birth event.
     """
     try:
         await pool.execute(
@@ -113,9 +122,19 @@ async def insert_order(pool: asyncpg.Pool, order: NormalizedOrder) -> None:
             order.display_qty,
             order.tif.value,
             order.position_effect.value if order.position_effect else None,
+            strategy_id,
         )
     except asyncpg.exceptions.UniqueViolationError as exc:
         raise DuplicateOrderSignal(order.client_order_id) from exc
+    hub = get_event_hub()
+    if hub is not None:
+        if strategy_id is not None:
+            hub.register_strategy(order.client_order_id, strategy_id)
+        hub.publish(
+            client_order_id=order.client_order_id,
+            engine_state=OrderState.PENDING_NEW,
+            strategy_id=strategy_id,
+        )
 
 
 async def fetch_order(pool: asyncpg.Pool, client_order_id: str) -> OrderRow | None:
@@ -142,6 +161,13 @@ async def ack_order(pool: asyncpg.Pool, client_order_id: str, broker_order_id: s
             "ack requires the order to be in PENDING_NEW",
             client_order_id=client_order_id,
         )
+    hub = get_event_hub()
+    if hub is not None:
+        hub.publish(
+            client_order_id=client_order_id,
+            engine_state=OrderState.NEW,
+            broker_order_id=broker_order_id,
+        )
 
 
 async def replace_order(
@@ -165,6 +191,16 @@ async def replace_order(
             "replace requires the order to be in PENDING_REPLACE",
             client_order_id=client_order_id,
         )
+    hub = get_event_hub()
+    if hub is not None:
+        # NEW (the amended-resting state) carrying the amended values so a
+        # subscriber sees the new price/qty without a re-read.
+        hub.publish(
+            client_order_id=client_order_id,
+            engine_state=OrderState.NEW,
+            price=new_price,
+            quantity=new_qty,
+        )
 
 
 async def update_status(pool: asyncpg.Pool, client_order_id: str, new_status: OrderState) -> None:
@@ -175,12 +211,20 @@ async def update_status(pool: asyncpg.Pool, client_order_id: str, new_status: Or
             "cannot transition an unknown order", client_order_id=client_order_id
         )
     if row.status is new_status:
-        return  # same-status is a legal no-op; skip the pointless write
+        return  # same-status is a legal no-op; skip the pointless write (and event)
     state_machine.assert_legal(row.status, new_status, client_order_id=client_order_id)
     try:
         await pool.execute(_UPDATE_STATUS, client_order_id, new_status.value)
     except asyncpg.exceptions.CheckViolationError as exc:
         raise IllegalTransition(str(exc), client_order_id=client_order_id) from exc
+    hub = get_event_hub()
+    if hub is not None:
+        hub.publish(
+            client_order_id=client_order_id,
+            engine_state=new_status,
+            strategy_id=row.strategy_id,
+            broker_order_id=row.broker_order_id,
+        )
 
 
 async def set_reject_reason(pool: asyncpg.Pool, client_order_id: str, reason: str) -> None:
@@ -206,7 +250,9 @@ async def apply_fill(
     reconcile workers.
     """
     async with pool.acquire() as conn, conn.transaction():
-        await conn.execute(_INSERT_FILL, client_order_id, broker_fill_id, price, quantity, exec_ts)
+        insert_tag = await conn.execute(
+            _INSERT_FILL, client_order_id, broker_fill_id, price, quantity, exec_ts
+        )
         filled = await conn.fetchval(_SUM_FILLS, client_order_id)
         target = OrderState.FILLED if int(filled) >= total_quantity else OrderState.PARTIALLY_FILLED
         current = await conn.fetchval(
@@ -218,6 +264,21 @@ async def apply_fill(
                 await conn.execute(_UPDATE_STATUS, client_order_id, target.value)
             except asyncpg.exceptions.CheckViolationError as exc:
                 raise IllegalTransition(str(exc), client_order_id=client_order_id) from exc
+    # Publish AFTER the transaction commits (never inside it). A redelivered fill
+    # (ON CONFLICT DO NOTHING ⇒ "INSERT 0 0") is a no-op and emits nothing — the
+    # stream stays at-least-once-clean like the durable write.
+    hub = get_event_hub()
+    if hub is not None and _rowcount(insert_tag) > 0:
+        hub.publish(
+            client_order_id=client_order_id,
+            engine_state=target,
+            fill=FillEvent(
+                broker_fill_id=broker_fill_id,
+                price=price,
+                quantity=quantity,
+                exec_ts=exec_ts,
+            ),
+        )
     return target
 
 
@@ -246,3 +307,15 @@ async def fetch_orders_for_reconcile(
         states = (*states, "PENDING_REPLACE")
     records = await pool.fetch(_SELECT_RECONCILE_ORDERS, broker.value, list(states))
     return [OrderRow.from_record(r) for r in records]
+
+
+async def fetch_client_order_ids_for_strategy(pool: asyncpg.Pool, strategy_id: str) -> set[str]:
+    """All cids ever submitted under ``strategy_id`` (the stream seed set, D16).
+
+    ``GET /orders/stream?strategy_id=`` loads this once at subscribe time so that
+    reconciler-/restart-discovered events (which carry no in-memory attribution)
+    still match the strategy filter. Low-volume table; the partial index on
+    ``strategy_id`` covers it.
+    """
+    records = await pool.fetch(_SELECT_CIDS_FOR_STRATEGY, strategy_id)
+    return {r["client_order_id"] for r in records}

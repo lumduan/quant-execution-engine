@@ -16,9 +16,20 @@ from src.quant_execution_engine.contracts.errors import (
     StageRejected,
 )
 from src.quant_execution_engine.core.router import OrderRouter
+from src.quant_execution_engine.events.hub import EventHub, create_event_hub
 
 from tests._fakes import FakeRedis, MemStore, patch_repositories
 from tests.conftest import make_order, make_settings
+
+
+def _hub() -> EventHub:
+    """Install + return the process-singleton hub for stream assertions."""
+    return create_event_hub(make_settings())
+
+
+def _states_for(hub: EventHub, client_order_id: str) -> list[OrderState]:
+    """Engine states streamed for one order, in seq order (via the ring)."""
+    return [e.engine_state for e in hub._ring if e.client_order_id == client_order_id]
 
 
 def _router(
@@ -241,3 +252,76 @@ async def test_get_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     router, _, _ = _router(monkeypatch)
     with pytest.raises(OrderNotFound):
         await router.get("nope")
+
+
+# ------------------------------------------------------- Phase-5 stream events
+
+
+async def test_submit_threads_strategy_id_to_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hub()
+    router, store, _ = _router(monkeypatch)
+    order = make_order(metadata={"sim_fills": []})
+    await router.submit(order, strategy_id="csm")
+    assert store.orders[order.client_order_id]["strategy_id"] == "csm"
+
+
+async def test_golden_path_streams_pending_new_new_filled_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = _hub()
+    router, _, _ = _router(monkeypatch)
+    order = make_order()  # default ⇒ single full fill
+    await router.submit(order, strategy_id="csm")
+    assert _states_for(hub, order.client_order_id) == [
+        OrderState.PENDING_NEW,
+        OrderState.NEW,
+        OrderState.FILLED,
+    ]
+    # Every event carries the strategy attribution.
+    assert all(
+        e.strategy_id == "csm" for e in hub._ring if e.client_order_id == order.client_order_id
+    )
+
+
+async def test_partial_fill_plan_streams_one_event_per_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = _hub()
+    router, _, _ = _router(monkeypatch)
+    order = make_order(quantity=100, metadata={"sim_fills": [40, 60]})
+    await router.submit(order)
+    assert _states_for(hub, order.client_order_id) == [
+        OrderState.PENDING_NEW,
+        OrderState.NEW,
+        OrderState.PARTIALLY_FILLED,
+        OrderState.FILLED,
+    ]
+
+
+async def test_kill_switch_mass_cancel_streams_pending_cancel_then_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = _hub()
+    router, _, _ = _router(monkeypatch)
+    resting = make_order(symbol="AAA", metadata={"sim_fills": []})
+    await router.submit(resting)
+    cancelled, failed = await router.mass_cancel()
+    assert cancelled == [resting.client_order_id] and failed == []
+    # The sweep emits PENDING_CANCEL then CANCELLED on the stream (success criterion).
+    states = _states_for(hub, resting.client_order_id)
+    assert states[-2:] == [OrderState.PENDING_CANCEL, OrderState.CANCELLED]
+
+
+async def test_rejected_order_streams_pending_new_then_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = _hub()
+    router, _, _ = _router(monkeypatch)
+    order = make_order(metadata={"sim_reject": "venue says no"})
+    await router.submit(order)
+    assert _states_for(hub, order.client_order_id) == [
+        OrderState.PENDING_NEW,
+        OrderState.REJECTED,
+    ]

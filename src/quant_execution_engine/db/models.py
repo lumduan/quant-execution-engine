@@ -40,6 +40,9 @@ class OrderRow(BaseModel):
     position_effect: PositionEffect | None
     status: OrderState
     reject_reason: str | None
+    # Phase 5 (D16): the X-Strategy-Id header, persisted (own infra-db migration).
+    # Nullable — pre-Phase-5 orders and header-less submits carry None.
+    strategy_id: str | None
     created_at: datetime
     updated_at: datetime
 

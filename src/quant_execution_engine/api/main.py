@@ -27,9 +27,11 @@ from src.quant_execution_engine.adapters.settrade.runtime import (
 from src.quant_execution_engine.adapters.sim_pricing import close_sim_pricer, create_sim_pricer
 from src.quant_execution_engine.api.error_handlers import register_error_handlers
 from src.quant_execution_engine.api.routes import router
+from src.quant_execution_engine.api.streams import router as streams_router
 from src.quant_execution_engine.cache.redis_client import close_redis, create_redis
 from src.quant_execution_engine.config.settings import get_settings
 from src.quant_execution_engine.db.postgres import close_pool, create_pool
+from src.quant_execution_engine.events.hub import create_event_hub, reset_event_hub
 from src.quant_execution_engine.logging_config import configure_logging
 from src.quant_execution_engine.order_book.runtime import (
     close_order_book_runtime,
@@ -51,6 +53,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         settings.stage,
         settings.kill_switch_engaged,
     )
+    # Event hub FIRST (before the pool / any broker runtime): no durable
+    # transition can publish before the hub exists, so no state change is missed
+    # (D15). In-process, no async teardown — just reset the singleton on exit.
+    create_event_hub(settings)
     try:
         await create_pool(
             settings.pg_dsn,
@@ -82,6 +88,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await close_liberator_runtime()
         await close_redis()
         await close_pool()
+        reset_event_hub()
 
 
 def create_app() -> FastAPI:
@@ -92,6 +99,9 @@ def create_app() -> FastAPI:
         summary="Canonical order router + sole broker order-routing-credential owner.",
         lifespan=lifespan,
     )
+    # streams BEFORE the core router: /orders/stream must out-rank the
+    # /orders/{client_order_id} path parameter (match order = registration order).
+    app.include_router(streams_router)
     app.include_router(router)
     register_error_handlers(app)
     return app

@@ -32,6 +32,8 @@ from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
 from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
+from src.quant_execution_engine.events.hub import get_event_hub
+from src.quant_execution_engine.events.models import FillEvent
 
 # --------------------------------------------------------------------- asyncpg
 
@@ -248,7 +250,9 @@ class MemStore:
     def _now(self) -> datetime:
         return datetime.now(UTC)
 
-    def seed(self, order: NormalizedOrder, status: OrderState) -> None:
+    def seed(
+        self, order: NormalizedOrder, status: OrderState, *, strategy_id: str | None = None
+    ) -> None:
         """Insert directly at a given state (test fixture helper)."""
         now = self._now()
         self.orders[order.client_order_id] = {
@@ -268,15 +272,27 @@ class MemStore:
             "position_effect": order.position_effect,
             "status": status,
             "reject_reason": None,
+            "strategy_id": strategy_id,
             "created_at": now,
             "updated_at": now,
         }
         self.fills.setdefault(order.client_order_id, [])
 
-    async def insert_order(self, pool: Any, order: NormalizedOrder) -> None:
+    async def insert_order(
+        self, pool: Any, order: NormalizedOrder, strategy_id: str | None = None
+    ) -> None:
         if order.client_order_id in self.orders:
             raise DuplicateOrderSignal(order.client_order_id)
-        self.seed(order, OrderState.PENDING_NEW)
+        self.seed(order, OrderState.PENDING_NEW, strategy_id=strategy_id)
+        hub = get_event_hub()
+        if hub is not None:
+            if strategy_id is not None:
+                hub.register_strategy(order.client_order_id, strategy_id)
+            hub.publish(
+                client_order_id=order.client_order_id,
+                engine_state=OrderState.PENDING_NEW,
+                strategy_id=strategy_id,
+            )
 
     async def fetch_order(self, pool: Any, client_order_id: str) -> OrderRow | None:
         row = self.orders.get(client_order_id)
@@ -301,6 +317,13 @@ class MemStore:
         row["status"] = OrderState.NEW
         row["broker_order_id"] = broker_order_id
         row["updated_at"] = self._now()
+        hub = get_event_hub()
+        if hub is not None:
+            hub.publish(
+                client_order_id=client_order_id,
+                engine_state=OrderState.NEW,
+                broker_order_id=broker_order_id,
+            )
 
     async def replace_order(
         self,
@@ -321,6 +344,14 @@ class MemStore:
         if new_qty is not None:
             row["quantity"] = new_qty
         row["updated_at"] = self._now()
+        hub = get_event_hub()
+        if hub is not None:
+            hub.publish(
+                client_order_id=client_order_id,
+                engine_state=OrderState.NEW,
+                price=new_price,
+                quantity=new_qty,
+            )
 
     async def update_status(self, pool: Any, client_order_id: str, new_status: OrderState) -> None:
         row = self.orders.get(client_order_id)
@@ -333,6 +364,14 @@ class MemStore:
         state_machine.assert_legal(row["status"], new_status, client_order_id=client_order_id)
         row["status"] = new_status
         row["updated_at"] = self._now()
+        hub = get_event_hub()
+        if hub is not None:
+            hub.publish(
+                client_order_id=client_order_id,
+                engine_state=new_status,
+                strategy_id=row["strategy_id"],
+                broker_order_id=row["broker_order_id"],
+            )
 
     async def set_reject_reason(self, pool: Any, client_order_id: str, reason: str) -> None:
         self.orders[client_order_id]["reject_reason"] = reason
@@ -349,7 +388,8 @@ class MemStore:
         total_quantity: int,
     ) -> OrderState:
         fills = self.fills.setdefault(client_order_id, [])
-        if not any(f["broker_fill_id"] == broker_fill_id for f in fills):
+        newly_recorded = not any(f["broker_fill_id"] == broker_fill_id for f in fills)
+        if newly_recorded:
             fills.append(
                 {
                     "broker_fill_id": broker_fill_id,
@@ -360,7 +400,25 @@ class MemStore:
             )
         filled = sum(f["quantity"] for f in fills)
         target = OrderState.FILLED if filled >= total_quantity else OrderState.PARTIALLY_FILLED
-        await self.update_status(pool, client_order_id, target)
+        # Flip the status WITHOUT the publishing update_status — apply_fill emits a
+        # single fill-bearing event (mirrors db.repositories.apply_fill).
+        row = self.orders[client_order_id]
+        if row["status"] is not target:
+            state_machine.assert_legal(row["status"], target, client_order_id=client_order_id)
+            row["status"] = target
+            row["updated_at"] = self._now()
+        hub = get_event_hub()
+        if hub is not None and newly_recorded:
+            hub.publish(
+                client_order_id=client_order_id,
+                engine_state=target,
+                fill=FillEvent(
+                    broker_fill_id=broker_fill_id,
+                    price=price,
+                    quantity=quantity,
+                    exec_ts=exec_ts,
+                ),
+            )
         return target
 
     async def fetch_open_orders(self, pool: Any) -> list[OrderRow]:
@@ -391,6 +449,9 @@ class MemStore:
             if row["broker"] == broker and row["status"] in wanted
         ]
 
+    async def fetch_client_order_ids_for_strategy(self, pool: Any, strategy_id: str) -> set[str]:
+        return {cid for cid, row in self.orders.items() if row["strategy_id"] == strategy_id}
+
 
 _REPO_FUNCTIONS = (
     "insert_order",
@@ -403,6 +464,7 @@ _REPO_FUNCTIONS = (
     "apply_fill",
     "fetch_open_orders",
     "fetch_orders_for_reconcile",
+    "fetch_client_order_ids_for_strategy",
 )
 
 

@@ -22,6 +22,7 @@ _STATUS_BY_CODE: dict[str, int] = {
     "risk_rejected": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "order_not_found": status.HTTP_404_NOT_FOUND,
     "order_book_unavailable": status.HTTP_404_NOT_FOUND,
+    "order_stream_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
     "illegal_transition": status.HTTP_409_CONFLICT,
     "submit_in_flight": status.HTTP_409_CONFLICT,
     "amend_rejected": status.HTTP_409_CONFLICT,

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from src.quant_execution_engine.api.routes import _order_book_events, order_book_stream
+from src.quant_execution_engine.api.streams import _order_book_events, order_book_stream
 from src.quant_execution_engine.contracts.enums import Market
 from src.quant_execution_engine.order_book import runtime as order_book_runtime
 from src.quant_execution_engine.order_book.models import (

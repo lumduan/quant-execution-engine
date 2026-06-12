@@ -124,8 +124,14 @@ class OrderRouter:
         )
 
     # ------------------------------------------------------------------ submit
-    async def submit(self, order: NormalizedOrder) -> SubmitOutcome:
-        """The full frozen submit pipeline."""
+    async def submit(self, order: NormalizedOrder, strategy_id: str | None = None) -> SubmitOutcome:
+        """The full frozen submit pipeline.
+
+        ``strategy_id`` (the ``X-Strategy-Id`` header, D16) is persisted with the
+        order and echoed on every order-update event — it is transport metadata,
+        not part of the frozen ``NormalizedOrder`` contract, so it threads
+        alongside the order, never inside it.
+        """
         await self.kill_switch.assert_disengaged()  # FIRST (hard rule 3)
 
         existing = await repositories.fetch_order_result(self._pool, order.client_order_id)
@@ -149,7 +155,7 @@ class OrderRouter:
             if not acquired:
                 return await self._await_concurrent(order.client_order_id)
             try:
-                await repositories.insert_order(self._pool, order)
+                await repositories.insert_order(self._pool, order, strategy_id)
             except DuplicateOrderSignal:
                 row = await repositories.fetch_order_result(self._pool, order.client_order_id)
                 if row is None:  # pragma: no cover - PK fired, row must exist
@@ -308,7 +314,9 @@ class OrderRouter:
             )
         await self.cancel(row.client_order_id)
         replacement = _amended_order(row, new_client_order_id, new_price=new_price, new_qty=new_qty)
-        return await self.submit(replacement)
+        # The replacement inherits the original's strategy attribution (D16) so
+        # the stream keeps both legs under one strategy_id.
+        return await self.submit(replacement, row.strategy_id)
 
     async def _amend_native(
         self,
