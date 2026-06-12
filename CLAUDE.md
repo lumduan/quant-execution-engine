@@ -13,8 +13,8 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–4.1 complete (Phase 4 + 4.1: 2026-06-11) + Phase 5 engine side
-> complete (2026-06-12); Phase 5.1 + Phases 6–7 Proposed.** Phase 0:
+> **Current state: Phases 0–5.1 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
+> Phase 5.1 strategy side: 2026-06-12); Phases 6–7 Proposed.** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -84,11 +84,25 @@ submit lock / rate-limit).
 > cells are unchanged.** 853 tests, 95.72% cov. The strategy-side scope (the `*_EXECUTION_MODE`
 > flags + the end-to-end sim trade loop) split to **Phase 5.1** by operator decision. (Plan:
 > [`docs/plans/phase5-strategy-execution-path-order-streaming.md`](docs/plans/phase5-strategy-execution-path-order-streaming.md).)
+> **Phase 5.1 (2026-06-12): strategy side complete — both strategies are first-class callers**
+> (no engine code change; this repo's PR was docs-only): `csm-set` PR #16 (`CSM_EXECUTION_MODE`,
+> 72 new tests, new modules 96–100% cov) and `tfex-s50-multi-tf-swing` PR #18
+> (`TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE`, 81 new tests, 97.83% cov) each gained local wire
+> mirrors + an `ExecutionEngineAdapter` (gateway-only, `X-API-Key` + `X-Strategy-Id`, same-cid
+> transport retry, SSE with `Last-Event-ID` reconnect + seq watermark) + a `run_sim_loop`
+> (subscribe-before-submit, single-source fill accounting, GET-residual reconcile; tfex infers
+> `position_effect` OPEN/CLOSE against the evolving position) — **library + verify-script only**,
+> default `off`, `live` rejected under strategy public mode; gateway PR #24 now forwards
+> `X-Strategy-Id` (it was being stripped — D16 attribution proven live in `execution.orders`).
+> Live-verified end-to-end in sim 2026-06-12 (csm PTT 100 @ 35.50 FILLED via SSE; tfex S50Z2026
+> OPEN→CLOSE→flat). (Plan:
+> [`docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md`](docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md);
+> consumer contract: [`.claude/knowledge/order-update-stream.md`](.claude/knowledge/order-update-stream.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
 > operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
 > Liberator + Settrade runbooks). Build sequence:
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 5.1** —
-> strategy execution flags + the end-to-end sim trade loop (in the strategy repos).
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 6** —
+> safety, ops & reconciliation hardening.
 
 ### Ownership boundaries (the whole point of this service)
 
