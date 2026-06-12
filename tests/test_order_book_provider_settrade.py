@@ -273,3 +273,90 @@ async def test_sdk_calls_run_off_the_event_loop(monkeypatch: pytest.MonkeyPatch)
     loop_thread = threading.current_thread().ident
     assert sdk_threads and all(t != loop_thread for t in sdk_threads)
     await provider.stop()
+
+
+# --------------------------------------------------- live SDK wire shape (v3)
+
+
+def test_parser_money_dict_prices_exact_decimal() -> None:
+    """BidOfferV3 prices arrive as google.type.Money dicts (units + nanos).
+
+    Regression from the live venue run (2026-06-12): Decimal must be exact —
+    units=61 nanos=250000000 is 61.25, never 61.249999….
+    """
+    payload = {
+        "symbol": "AOT",
+        "bid_flag": "NORMAL",
+        "ask_flag": "NORMAL",
+        "bid_price1": {"currency_code": "THB", "units": "61", "nanos": 250000000},
+        "bid_volume1": "1500",
+        "ask_price1": {"currency_code": "THB", "units": 61, "nanos": 500000000},
+        "ask_volume1": 900,
+        "bid_price2": {"currency_code": "THB", "units": "0", "nanos": 0},  # ATO zero -> drop
+        "bid_volume2": "10",
+    }
+    book = parse_settrade_bid_offer(payload, symbol="AOT", market=Market.SET, received_at=_NOW)
+    assert book is not None
+    assert book.bid_levels[0].price == Decimal("61.25")
+    assert str(book.bid_levels[0].price) == "61.25"  # 9-dp Money tail stripped
+    assert book.bid_levels[0].volume == 1500
+    assert book.ask_levels[0].price == Decimal("61.5")
+    assert len(book.bid_levels) == 1  # the zero-Money level was dropped
+
+
+def test_parser_money_integral_price_not_scientific() -> None:
+    """An integral Money price (e.g. S50M26 at 775) renders 775, not 7.75E+2."""
+    payload = {
+        "bid_price1": {"units": "775", "nanos": 0},
+        "bid_volume1": 3,
+        "ask_price1": {"units": "775", "nanos": 100000000},
+        "ask_volume1": 2,
+    }
+    book = parse_settrade_bid_offer(payload, symbol="S50M26", market=Market.TFEX, received_at=_NOW)
+    assert book is not None
+    assert str(book.bid_levels[0].price) == "775"
+    assert book.ask_levels[0].price == Decimal("775.1")
+
+
+async def test_deliver_unwraps_sdk_envelope(_patch_sdk: None) -> None:
+    """The live SDK wraps messages as {"is_success": True, "data": {...}}."""
+    books: list[OrderBook] = []
+    provider = SettradeOrderBookProvider(
+        on_book=books.append,
+        on_error=lambda _s, _r: None,
+        market_credentials={Market.SET: _creds()},
+        broker_id="023",
+    )
+    await provider.start()
+    provider._parse_and_emit(
+        "AOT",
+        Market.SET,
+        {"is_success": True, "data": _payload()},
+    )
+    assert len(books) == 1 and books[0].symbol == "AOT"
+    await provider.stop()
+
+
+async def test_deliver_envelope_rejection_reports_on_error(
+    _patch_sdk: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """is_success=False (e.g. rejectSubscriptions) feeds failover, emits nothing."""
+    import logging
+
+    books: list[OrderBook] = []
+    errors: list[str] = []
+    provider = SettradeOrderBookProvider(
+        on_book=books.append,
+        on_error=lambda _s, r: errors.append(r),
+        market_credentials={Market.SET: _creds()},
+        broker_id="023",
+    )
+    await provider.start()
+    with caplog.at_level(logging.WARNING):
+        provider._parse_and_emit(
+            "AOT", Market.SET, {"is_success": False, "message": "rejectSubscriptions"}
+        )
+    assert books == []
+    assert errors and "rejectSubscriptions" in errors[0]
+    assert "order_book.settrade_push_rejected" in caplog.text
+    await provider.stop()

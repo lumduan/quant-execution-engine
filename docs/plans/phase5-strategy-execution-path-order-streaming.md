@@ -556,6 +556,26 @@ Five findings surfaced and were fixed during review:
    route's consumer. The SSE tests therefore drive the async generators directly rather than
    through `TestClient` streaming.
 
+Three more surfaced in the **live real-venue validation (2026-06-12, read-only; AOT + S50M26)**
+and were fixed the same day (details in
+[`order-book-service.md`](../../.claude/knowledge/order-book-service.md#real-venue-validation-2026-06-12-read-only-aot--set-s50m26--tfex)):
+
+6. **The Liberator WS host serves an incomplete TLS chain** (leaf only) — every verifying
+   client fails `CERTIFICATE_VERIFY_FAILED`. Fixed by bundling the public GlobalSign
+   intermediate (`providers/liberator_ca_chain.pem`) into a certifi-based `wss://` context
+   (+ the `ORDER_BOOK_LIBERATOR_EXTRA_CA_PEM` operator override). Verification stays ON.
+   **Result: both symbols verified streaming live** (S50M26: 93 normalized updates in 25 s).
+7. **The Settrade SDK realtime API differs from the sketch**: `RealtimeDataConnection` has no
+   `start()` (the CallBacker starts on `Subscriber.start()`), and the callback payload is an
+   `{"is_success", "data"}` envelope around a `BidOfferV3` protobuf dict whose prices are
+   `google.type.Money` `{units, nanos}` objects. Fixed: envelope unwrap (+ rejection →
+   `on_error`), exact-Decimal Money parsing.
+8. **Settrade realtime is venue-gated**: with both per-market logins succeeding, the
+   dispatcher rejects `subscribe_bid_offer` with `DISPATCH-UM-04` "User is inactive" —
+   realtime streaming is not enabled for the InnovestX apps/user. **Operator prerequisite**
+   (portal-side), analogous to the missing trading PIN for `micro_live`; the provider
+   surfaces it as a typed failover signal, so the router fails over to Liberator as designed.
+
 ---
 
 ## Prompt

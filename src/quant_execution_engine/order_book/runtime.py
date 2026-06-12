@@ -92,6 +92,7 @@ def _build_providers(settings: Settings) -> dict[OrderBookSource, OrderBookProvi
             on_error=_on_error,
             base_url=settings.liberator_base_url,
             api_key=settings.liberator_api_key,
+            extra_ca_pem=settings.order_book_liberator_extra_ca_pem,
         )
     return providers
 

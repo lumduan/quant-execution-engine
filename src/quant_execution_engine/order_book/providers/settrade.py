@@ -50,16 +50,31 @@ def _import_sdk() -> Any:
 
 
 def _decimal_or_none(raw: object) -> Decimal | None:
-    """Parse a str/float/int price to ``Decimal`` (via ``str``); drop ≤ 0/bad."""
+    """Parse a price to ``Decimal``; drop ≤ 0/bad.
+
+    The live SDK delivers ``BidOfferV3`` protobuf prices as ``google.type.Money``
+    dicts ``{"currency_code", "units", "nanos"}`` (nanos = 10⁻⁹ units; verified
+    against the venue 2026-06-12). Scalar str/float/int is also accepted (the
+    flat shape the contract sketch described, and what tests feed).
+    """
     if raw is None:
         return None
-    try:
-        value = Decimal(str(raw))
-    except (InvalidOperation, ValueError):
-        return None
+    if isinstance(raw, Mapping):
+        try:
+            units = Decimal(str(raw.get("units", 0)))
+            nanos = Decimal(str(raw.get("nanos", 0)))
+        except (InvalidOperation, ValueError):
+            return None
+        value = units + nanos.scaleb(-9)
+    else:
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
     if value <= 0:
         return None
-    return value
+    # Strip the Money 9-dp tail (61.250000000 -> 61.25) without 1E+2 notation.
+    return value.quantize(Decimal(1)) if value == value.to_integral_value() else value.normalize()
 
 
 def _levels(payload: Mapping[str, Any], price_key: str, volume_key: str) -> list[OrderBookLevel]:
@@ -169,8 +184,10 @@ class SettradeOrderBookProvider(OrderBookProvider):
             app_code=creds.app_code,
             broker_id=self._broker_id,
         )
+        # No connection-level start(): the SDK's RealtimeDataConnection has
+        # none (verified against settrade-v2 source) — the MQTT CallBacker
+        # starts on the first Subscriber.start().
         realtime = investor.RealtimeDataConnection()
-        realtime.start()
         self._investors[market] = investor
         self._realtimes[market] = realtime
         logger.info("order_book.settrade_connected market=%s", market.value)
@@ -224,10 +241,29 @@ class SettradeOrderBookProvider(OrderBookProvider):
         loop.call_soon_threadsafe(self._parse_and_emit, symbol, market, dict(payload))
 
     def _parse_and_emit(self, symbol: str, market: Market, payload: Mapping[str, Any]) -> None:
-        """Runs ON the event loop: parse + emit (or report) safely."""
+        """Runs ON the event loop: unwrap the SDK envelope, parse + emit safely.
+
+        The live SDK wraps every message as ``{"is_success": bool, "data": {…}}``
+        (``util.mqtt_to_message``); a rejection (e.g. ``rejectSubscriptions``)
+        arrives with ``is_success=False`` and feeds the failover signal. Bare
+        flat payloads (tests / future shapes) parse as-is.
+        """
+        data: Mapping[str, Any] = payload
+        if "is_success" in payload:
+            if not payload.get("is_success"):
+                reason = str(payload.get("message", payload))[:200]
+                logger.warning(
+                    "order_book.settrade_push_rejected symbol=%s reason=%s", symbol, reason
+                )
+                self._on_error(self.name, f"push rejected {symbol}: {reason}")
+                return
+            inner = payload.get("data")
+            if not isinstance(inner, Mapping):
+                return
+            data = inner
         try:
             book = parse_settrade_bid_offer(
-                payload, symbol=symbol, market=market, received_at=datetime.now(UTC)
+                data, symbol=symbol, market=market, received_at=datetime.now(UTC)
             )
         except (ProviderError, ValueError) as exc:
             logger.warning("order_book.settrade_parse_failed symbol=%s err=%r", symbol, exc)

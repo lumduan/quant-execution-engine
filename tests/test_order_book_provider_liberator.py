@@ -436,3 +436,37 @@ async def test_handle_frame_ignores_other_namespace_chatter(
     assert "order_book.liberator_parse_skip" not in caplog.text
     assert books == [] and ws.sent == []
     await provider.stop()
+
+
+# ----------------------------------------------------------------- TLS chain
+
+
+def test_build_ssl_context_with_bundled_intermediate(tmp_path: Any) -> None:
+    """The bundled PUBLIC GlobalSign intermediate loads on top of certifi.
+
+    Regression: the venue's WS host serves an incomplete chain (leaf only);
+    the default context fails CERTIFICATE_VERIFY_FAILED. Verification stays ON.
+    """
+    from src.quant_execution_engine.order_book.providers.liberator import (
+        _BUNDLED_CHAIN_PEM,
+        build_ssl_context,
+    )
+
+    assert _BUNDLED_CHAIN_PEM.exists()
+    ctx = build_ssl_context()
+    stats = ctx.cert_store_stats()
+    assert stats["x509_ca"] > 0
+    # An operator extra PEM loads on top (reuse the bundled file as the extra).
+    extra = tmp_path / "extra.pem"
+    extra.write_text(_BUNDLED_CHAIN_PEM.read_text())
+    ctx2 = build_ssl_context(str(extra))
+    assert ctx2.cert_store_stats()["x509_ca"] >= stats["x509_ca"]
+
+
+def test_ssl_for_wss_only_and_cached() -> None:
+    """wss:// gets the chain-completing context (cached); ws:// gets None."""
+    provider = _provider()
+    assert provider._ssl_for("ws://127.0.0.1:1234/socket.io/") is None
+    ctx = provider._ssl_for("wss://anoucementweb4.liberator.co.th/socket.io/")
+    assert ctx is not None
+    assert provider._ssl_for("wss://anoucementweb4.liberator.co.th/x") is ctx  # cached

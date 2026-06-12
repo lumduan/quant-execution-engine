@@ -20,12 +20,15 @@ import asyncio
 import contextlib
 import logging
 import random
+import ssl
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+import certifi
 import httpx
 from pydantic import SecretStr
 from websockets.asyncio.client import connect
@@ -50,6 +53,28 @@ _BACKOFF_BASE = 1.0
 _BACKOFF_CAP = 60.0
 _HEALTHY_RESET_SECONDS = 30.0
 _RAW_LOG_TRUNCATE = 120
+
+# The venue's WS host serves an INCOMPLETE TLS chain (leaf only — verified
+# live 2026-06-12: "unable to verify the first certificate"). Browsers paper
+# over this with AIA chasing; Python does not. We complete the chain with the
+# bundled PUBLIC GlobalSign intermediate so verification stays ON — disabling
+# TLS verification on a trading data feed is not an option.
+_BUNDLED_CHAIN_PEM = Path(__file__).with_name("liberator_ca_chain.pem")
+
+
+def build_ssl_context(extra_ca_pem: str | None = None) -> ssl.SSLContext:
+    """certifi roots + the bundled venue intermediate (+ an operator extra).
+
+    ``extra_ca_pem`` (``EXECUTION_ENGINE_ORDER_BOOK_LIBERATOR_EXTRA_CA_PEM``)
+    lets an operator drop in a replacement intermediate if the venue rotates
+    its chain before a code update ships.
+    """
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.load_verify_locations(cafile=str(_BUNDLED_CHAIN_PEM))
+    if extra_ca_pem:
+        context.load_verify_locations(cafile=extra_ca_pem)
+    return context
+
 
 # (room, sequence, bid levels, ask levels) — the parsed BidOfferV2 update.
 _ParsedBook = tuple[int, int, list[OrderBookLevel], list[OrderBookLevel]]
@@ -137,12 +162,15 @@ class LiberatorOrderBookProvider(OrderBookProvider):
         api_key: SecretStr,
         http_client: httpx.AsyncClient | None = None,
         connect_timeout: float = 10.0,
+        extra_ca_pem: str | None = None,
     ) -> None:
         super().__init__(on_book=on_book, on_error=on_error)
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._owns_http = http_client is None
         self._http = http_client or httpx.AsyncClient(timeout=connect_timeout)
+        self._extra_ca_pem = extra_ca_pem
+        self._ssl_context: ssl.SSLContext | None = None  # built lazily, cached
         # symbol -> subscription; room id -> subscription (for incoming frames).
         self._subs: dict[str, _Subscription] = {}
         self._by_room: dict[int, _Subscription] = {}
@@ -268,10 +296,23 @@ class LiberatorOrderBookProvider(OrderBookProvider):
             if asyncio.get_running_loop().time() - connected_at >= _HEALTHY_RESET_SECONDS:
                 attempt = 0
 
+    def _ssl_for(self, ws_url: str) -> ssl.SSLContext | None:
+        """The chain-completing context for ``wss://``; ``None`` for plain ws.
+
+        (The local-test path uses ``ws://``, where the ``ssl`` argument must
+        be absent; for ``wss://`` the default context would fail on the
+        venue's incomplete chain — see :func:`build_ssl_context`.)
+        """
+        if not ws_url.startswith("wss://"):
+            return None
+        if self._ssl_context is None:
+            self._ssl_context = build_ssl_context(self._extra_ca_pem)
+        return self._ssl_context
+
     async def _connect_once(self) -> None:
         """One session: ticket → handshake → join rooms → recv loop."""
         ws_url = await self._acquire_ticket()
-        async with connect(ws_url) as ws:
+        async with connect(ws_url, ssl=self._ssl_for(ws_url)) as ws:
             await self._handshake(ws)
             self._ws = ws
             try:

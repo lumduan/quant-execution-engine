@@ -184,7 +184,41 @@ symbols, subscriber count) when the service is on (`null` when off).
 | `STREAM_SUBSCRIBER_QUEUE_SIZE` | `256` | shared per-subscriber back-pressure bound |
 | `STREAM_KEEPALIVE_SECONDS` | `15` | SSE keep-alive comment interval |
 
-New deps: `websockets`, `settrade-v2` (lazy, market-data-only).
+New deps: `websockets`, `settrade-v2` (lazy, market-data-only), `certifi` (explicit — the
+Liberator WS TLS context builds on it).
+
+## Real-venue validation (2026-06-12, read-only; AOT = SET, S50M26 = TFEX)
+
+- **Liberator: VERIFIED LIVE.** Both symbols streamed normalized books during the morning
+  session (AOT 10×10 depth, S50M26 93 updates in 25 s), Decimal-exact. Three wire findings
+  fixed during validation:
+  1. **The venue WS host serves an INCOMPLETE TLS chain** (leaf `*.liberator.co.th` only;
+     `unable to verify the first certificate`). Fixed by completing the chain client-side:
+     the PUBLIC GlobalSign RSA OV SSL CA 2018 intermediate (sha256
+     `B6:76:FF:A3:…:76:4A`, expires 2028-11-21, chains to GlobalSign Root R3 in certifi) is
+     bundled as `providers/liberator_ca_chain.pem` and loaded into the `wss://` context via
+     `build_ssl_context()`. **Verification is never disabled.** Operator override for a
+     venue chain rotation: `EXECUTION_ENGINE_ORDER_BOOK_LIBERATOR_EXTRA_CA_PEM`.
+  2. The ws-ticket needs no fresh OTP while the upstream session is live
+     (`/ws-ticket/health` → `ws_token_available: true`); a dead session is an operator
+     OTP-runbook matter (order-routing-safety.md), not a provider concern.
+- **Settrade: code path verified up to a venue-side authorization wall.** Per-market OAuth
+  logins succeed (ALGO_EQ + ALGO), the realtime connection builds, but `subscribe_bid_offer`
+  is rejected by the dispatcher with **`DISPATCH-UM-04` "User is inactive"** — realtime
+  streaming is not enabled for the InnovestX apps/user. **Operator prerequisite** (like the
+  missing trading PIN for micro_live): enable realtime/market-data at the Settrade/InnovestX
+  developer portal. The provider surfaces the rejection as a typed failover signal, so with
+  `ORDER_BOOK_PRIMARY_PROVIDER=settrade` the router fails over to Liberator as designed.
+  Two SDK wire findings fixed during validation:
+  1. `RealtimeDataConnection` has **no `start()`** — the MQTT CallBacker starts on the first
+     `Subscriber.start()`.
+  2. The callback payload is `{"is_success": bool, "data": {…}}` (`util.mqtt_to_message`)
+     wrapping a **`BidOfferV3` protobuf** dict (snake_case, default values included):
+     prices are `google.type.Money` dicts `{"units", "nanos"}` (nanos = 10⁻⁹ — parsed with
+     exact Decimal arithmetic, 9-dp tail stripped), volumes int64 (possibly str), flags
+     enum names (`NORMAL`/`ATO`/`ATC`/`UNDEFINED_FLAG`); zero-Money prices during ATO/ATC
+     are dropped like any ≤0 level. `is_success=False` (e.g. `rejectSubscriptions`) feeds
+     `on_error`, never the cache.
 
 ## Deferred (§K)
 

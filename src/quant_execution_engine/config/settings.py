@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     order_book_failover_window_seconds: int = 30
     order_book_cache_max_age_seconds: int = 5
     order_book_cache_max_symbols: int = 500
+    # Optional operator override: path to an extra CA PEM for the Liberator WS
+    # host. The venue serves an incomplete TLS chain (leaf only) so the public
+    # GlobalSign intermediate is bundled in-package; this knob covers a
+    # venue-side chain rotation before a code update ships. Verification is
+    # never disabled.
+    order_book_liberator_extra_ca_pem: str | None = None
     # Sim fill-price fallback hop 2 (last close) + order-update stream knobs. The
     # stream_* values are consumed by the streaming sub-steps (3E–3G); they land
     # here once so settings stay a single source of truth. ``market_data_api_key``
