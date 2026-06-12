@@ -16,10 +16,11 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–4.1 complete + Phase 5 engine side complete (2026-06-12) — ADR accepted;
-order store live; engine core + SimAdapter + gateway proxy live; `LiberatorAdapter` +
-`SettradeAdapter` (both real venues) live; the normalized order-update stream out + the
-dual-provider order book service live; Phase 5.1 + Phases 6–7 Proposed.** The full order path
+**Status: Phases 0–5.1 complete (Phase 5 engine side + Phase 5.1 strategy side: 2026-06-12) —
+ADR accepted; order store live; engine core + SimAdapter + gateway proxy live;
+`LiberatorAdapter` + `SettradeAdapter` (both real venues) live; the normalized order-update
+stream out + the dual-provider order book service live; both strategies run the end-to-end sim
+trade loop behind `*_EXECUTION_MODE` flags; Phases 6–7 Proposed.** The full order path
 runs end-to-end through the gateway: submit/dedupe/fills/cancel/**native-amend** over the
 durable store, PTRM + kill-switch + stage ladder wired from the first path. Two real brokers
 route the **same** `NormalizedOrder` by `broker`/account (Liberator cancel+replace amend;
@@ -30,8 +31,9 @@ live fill prices, and `X-Strategy-Id` identity — all additive and default-off;
 the kill-switch, PTRM, and the frozen contracts are **unchanged**. **`live` stays gated — no
 real-money default**; `micro_live` is the highest rung the adapters exercise, operator-driven.
 The strategy-side scope (the `*_EXECUTION_MODE` flags + the end-to-end sim trade loop) split to
-**Phase 5.1** by operator decision (2026-06-12). Next: **Phase 5.1** (strategy execution flags
-+ sim trade loop, in the strategy repos).
+**Phase 5.1** by operator decision and **shipped the same day** (2026-06-12): csm-set PR #16,
+tfex PR #18, gateway PR #24 (`X-Strategy-Id` forwarding), live-verified end-to-end in sim.
+Next: **Phase 6** (safety, ops & reconciliation hardening).
 
 ---
 
@@ -532,23 +534,36 @@ Phase 5.1**. Phase plan:
   [`.claude/knowledge/order-book-service.md`](../../.claude/knowledge/order-book-service.md).
 
 ### Phase 5.1 — Strategy execution flags + sim trade loop 📈
-**Status:** `[ ]` Proposed (**unblocked 2026-06-12** by Phase 5 engine side). **Repos:**
-`strategies/csm-set`, `strategies/tfex-s50-multi-tf-swing` (own PRs). The split-out
-strategy-side scope: strategies become first-class callers of the now-shipped engine surface.
+**Status:** `[x]` **Complete (2026-06-12).** **Repos:** `strategies/csm-set` (PR #16 →
+`live-test`), `strategies/tfex-s50-multi-tf-swing` (PR #18 → `main`), plus a one-line
+`quant-api-gateway` fix (PR #24 — forward `X-Strategy-Id` in `_proxy`/`_proxy_sse`; the proxy
+had been stripping it, so D16 attribution could not work through the gateway). The split-out
+strategy-side scope: strategies became first-class callers of the Phase 5 engine surface.
 
-- **Objective:** a strategy runs an end-to-end **sim** trade loop with no broker code in it.
-- **Scope (ships):** csm-set gains `CSM_EXECUTION_MODE = off|sim|live` (default `off`/`sim`);
-  tfex gains `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE`, exercising TFEX `position_effect`
-  (OPEN/CLOSE) + futures order types; strategies submit `NormalizedOrder`s via `POST /orders`
-  and consume `GET /orders/stream` **through the gateway** (`X-Strategy-Id` per request); **no
-  broker code in any strategy**.
-- **Non-goals:** no strategy sends `live` orders (cutover stays behind the flag, default sim);
-  no engine change (the surface shipped in Phase 5).
-- **Acceptance:** a strategy runs signal → `NormalizedOrder` → fill stream → position entirely
-  in sim, with no broker code in the strategy; `live` remains explicitly flagged + gated.
-- **Quality gate:** each strategy repo's own gate.
-- **Cross-refs:** umbrella ROADMAP Phase 5; tfex execution-mode flag mirrors its OHLCV
-  `mirror|engine` reader-flag rollout.
+- **Objective (met):** a strategy runs an end-to-end **sim** trade loop with no broker code in it.
+- **Scope (shipped):** csm-set `CSM_EXECUTION_MODE = off|sim|live` (default `off`) + tfex
+  `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE`, each with `*_EXECUTION_ACCOUNT`/`*_EXECUTION_BROKER`
+  and settings-level gating (`live`+public-mode rejected at construction); per-repo local wire
+  mirrors (engine-true enums, Decimal-as-string, no cross-repo imports); `ExecutionEngineAdapter`
+  (gateway-only, `X-API-Key` + `X-Strategy-Id`, same-cid transport retry per ADR §A, typed
+  envelopes terminal, hand-rolled SSE with `Last-Event-ID` reconnect + client seq watermark +
+  connect handshake); `run_sim_loop` (subscribe-before-submit, single-source fill accounting,
+  VWAP, `GET /orders/{cid}` residual reconcile; tfex: `position_effect` OPEN/CLOSE inferred
+  against the evolving position, flip → typed error); committed verify scripts; **library +
+  verify-script only** (pipeline wiring deferred). **No engine code change.**
+- **Acceptance (met, live 2026-06-12):** both verify scripts passed through the gateway against
+  the owner-mode sim engine — csm `PTT` BUY 100 @ 35.50 FILLED via SSE → position updated;
+  tfex `S50Z2026` entry OPEN → exit CLOSE → flat; all three `execution.orders` rows stamped
+  with the correct `strategy_id` (gateway forwarding proven); engine restored to the
+  broker-free public default. `live` stays gated everywhere.
+- **Quality gate:** csm 72 new tests (new modules 96–100% cov; + a CI repair commit for
+  pre-existing breakage: `types-PyYAML` dev stubs, docker-smoke external-network creation);
+  tfex 81 new tests, suite 747 passed, 97.83% cov; gateway 363 tests, 90.93% cov.
+- **Cross-refs:** plan
+  [`phase5.1-strategy-execution-flags-sim-trade-loop.md`](phase5.1-strategy-execution-flags-sim-trade-loop.md);
+  the strategy consumer contract appended to
+  [`.claude/knowledge/order-update-stream.md`](../../.claude/knowledge/order-update-stream.md);
+  umbrella ROADMAP Phase 5.
 
 ### Phase 6 — Safety, ops & reconciliation hardening 🛡️
 **Status:** `[ ]` Proposed. **Repo:** this repo (own PR).

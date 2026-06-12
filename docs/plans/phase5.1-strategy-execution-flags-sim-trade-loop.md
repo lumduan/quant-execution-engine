@@ -3,7 +3,8 @@
 **Feature:** feature-execution-engine — Phase 5.1: Strategy execution flags + sim trade loop
 **Branch:** `docs/phase5.1-strategy-execution-flags-sim-trade-loop` (this repo, docs-only) — code lands in the strategy repos
 **Created:** 2026-06-12
-**Status:** In Progress
+**Status:** Complete
+**Completed:** 2026-06-12
 **Depends On:** Phase 5 engine side (Complete — engine PR #10, infra-db PR #15, gateway PR #23, all merged)
 
 ---
@@ -497,24 +498,65 @@ All implementation coding/tests by `claude-opus-4-8` subagents; design/review/er
 
 ## Success Criteria
 
-- [ ] `CSM_EXECUTION_MODE=sim`: csm-set submits a `NormalizedOrder` via the gateway, receives
+- [x] `CSM_EXECUTION_MODE=sim`: csm-set submits a `NormalizedOrder` via the gateway, receives
       SSE fill events, and updates its sim portfolio position (live verify evidence below).
-- [ ] `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE=sim`: same loop with correct
+- [x] `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE=sim`: same loop with correct
       `position_effect=OPEN/CLOSE` and integer contracts.
-- [ ] `EXECUTION_MODE=off` (default): zero-code path — no adapter instantiated, no HTTP call;
+- [x] `EXECUTION_MODE=off` (default): zero-code path — no adapter instantiated, no HTTP call;
       existing internal sims unchanged.
-- [ ] `EXECUTION_MODE=live` + `PUBLIC_MODE=true`: `ValueError` at `Settings()` construction.
-- [ ] `execution.orders.strategy_id` stamped through the gateway (`csm-set` /
+- [x] `EXECUTION_MODE=live` + `PUBLIC_MODE=true`: `ValueError` at `Settings()` construction.
+- [x] `execution.orders.strategy_id` stamped through the gateway (`csm-set` /
       `tfex-s50-multi-tf-swing`) — proves the gateway forwarding fix live.
-- [ ] mypy strict, zero `type: ignore`; per-repo quality gates green; coverage ≥90% on the new
-      execution modules; no new third-party dependencies.
-- [ ] No `float` at any money boundary; no broker credential or broker code in any strategy.
-- [ ] Four PRs merged + umbrella pins committed; all knowledge/CLAUDE.md files updated.
+- [x] mypy strict, zero `type: ignore`; per-repo quality gates green; coverage ≥90% on the new
+      execution modules; no new third-party dependencies (`types-PyYAML` is a dev-only stub
+      package repairing pre-existing CI breakage, not a runtime dep).
+- [x] No `float` at any money boundary; no broker credential or broker code in any strategy.
+- [x] Four PRs merged + umbrella pins committed; all knowledge/CLAUDE.md files updated.
 
 ---
 
 ## Completion Notes
 
-*(To be filled on completion: PR numbers/SHAs, per-repo test counts + coverage, live verify
-evidence — cids, stream events, final positions, `strategy_id` stamp check — and the engine
-restore-to-public confirmation.)*
+**Completed 2026-06-12.** All four PRs landed; live end-to-end verify passed on the real
+stack the same day.
+
+### PRs
+
+| Repo | PR | Commits | Result |
+|---|---|---|---|
+| `lumduan/quant-api-gateway` | #24 → `main` | `438d526` (merge `d66febe`) | Merged — `X-Strategy-Id` forwarded in `_proxy` + `_proxy_sse`; 363 tests, cov 90.93% |
+| `lumduan/csm-set` | #16 → `live-test` | `0f75ea8` + CI repair `c633cd0` | Merged — 72 new tests (18 models / 27 adapter / 17 sim loop / 10 settings); new modules 96–100% cov; `c633cd0` repaired pre-existing CI breakage (missing `types-PyYAML` stubs for `src/csm/live/portfolio.py`; docker-smoke runner lacked the external `quant-network`) surfaced — not introduced — by the PR |
+| `lumduan/tfex-s50-multi-tf-swing` | #18 → `main` | `890f33f` (merge `4b73998`) | Merged — 81 new tests (25/27/18/11); suite 747 passed / 5 skipped, cov 97.83% (execution pkg: models/errors 100%, adapter 96%, sim_loop 98%) |
+| `lumduan/quant-execution-engine` | this docs PR → `main` | plan doc + knowledge addendum + status flips | Docs only — no engine code change |
+
+### Live verify evidence (2026-06-12)
+
+Engine flipped to owner-mode `sim` (`docker compose -f docker-compose.yml -f
+docker-compose.private.yml up -d`; `/health` → `stage: sim, public_mode: false`); gateway at
+host `:8080` rebuilt from merged PR #24. Both runs through the gateway proxy only:
+
+- **csm-set** — `scripts/verify_execution_sim.py --symbol PTT --side BUY --qty 100 --price 35.50`:
+  cid `c8a86370-15d6-44a9-b80f-27bb1c210319` → `FILLED`, filled_qty 100, avg 35.50, sim
+  position `PTT qty=100 avg=35.50`, exit 0. The request log shows the stream `GET … 200`
+  strictly before the `POST … 201` — subscribe-before-submit held live; the fill was applied
+  from the SSE stream (single-source), not the ack.
+- **tfex** — `scripts/verify_execution_sim.py --symbol S50Z2026 --contracts 1 --price 970.0`
+  (entry + exit in one run): entry cid `76f5bca7-4138-477e-b547-6ae4516d38e2`
+  (`position_effect=OPEN`) → `FILLED` 1 @ 970.0; exit cid
+  `0232cc03-a3fa-4f8a-85ae-84649d70b413` (`position_effect=CLOSE`) → `FILLED`; final position
+  flat; exit 0.
+- **Attribution (D16) proven through the proxy** — `execution.orders` rows for all three cids
+  carry the correct `strategy_id` (`csm-set` / `tfex-s50-multi-tf-swing`); gateway read-back
+  `GET /orders/c8a86370-…` → `FILLED`, `avg_fill_price: "35.500000"` (Decimal-as-string).
+- **Engine restored** to the broker-free public default afterwards (`docker compose up -d`;
+  `/health` → `public_mode: true`, stage `sim`).
+
+### Notes
+
+- The cid-retry interpretation (Design Decision 1 — same cid on transport retry, per ADR §A)
+  and the engine-true enum mirrors were locked in during review; an initial mirror drift
+  (`PublicStatus` carrying invented `PENDING`/`OPEN` values) was caught in code review before
+  push — recorded here as a reminder that **the mirrors' fixtures must be written from the
+  engine contract, never from the mirror itself**.
+- `live` remains gated everywhere: strategy settings reject `live`+public-mode at
+  construction; the engine stage ladder is unchanged.
