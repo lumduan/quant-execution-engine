@@ -4,7 +4,9 @@ Public mode answers only health, capabilities, and reads (E3); order
 submission, cancel, amend, and the kill-switch admin are owner-mode. The amend
 HTTP route (``PATCH /orders/{cid}``) lands in Phase 4 — the promise the Phase-3
 ``router.amend`` docstring made is now kept. The ``/admin/*`` routes are
-engine-direct only — the gateway never proxies them.
+engine-direct only — the gateway never proxies them. The Phase-5 streaming
+read surface (order-book snapshots/SSE + ``GET /orders/stream``) lives in
+``api/streams.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_ad
 from src.quant_execution_engine.api.deps import (
     get_router_dep,
     get_settings_dep,
+    get_strategy_id,
     require_api_key,
     require_owner_mode,
 )
@@ -30,12 +33,17 @@ from src.quant_execution_engine.api.schemas import (
     HealthResponse,
     KillSwitchEngageResponse,
     KillSwitchStateResponse,
+    OrderBookHealth,
 )
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
+from src.quant_execution_engine.order_book.runtime import (
+    get_order_book_router,
+    get_order_book_service,
+)
 
 router = APIRouter()
 
@@ -66,6 +74,20 @@ def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
     return brokers or None
 
 
+def _order_book_health() -> OrderBookHealth | None:
+    """Order-book runtime state for /health (None when the service is off)."""
+    service = get_order_book_service()
+    ob_router = get_order_book_router()
+    if service is None or ob_router is None:
+        return None
+    return OrderBookHealth(
+        active_provider=ob_router.active.value,
+        providers=[provider.name.value for provider in ob_router.providers],
+        cached_symbols=service.cached_symbol_count,
+        subscribers=service.subscriber_count,
+    )
+
+
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
 async def health(settings: SettingsDep) -> HealthResponse:
     """Mapped to host ``:8400`` (container ``:8000``) in compose."""
@@ -74,6 +96,7 @@ async def health(settings: SettingsDep) -> HealthResponse:
         stage=settings.stage,
         public_mode=settings.public_mode,
         brokers=_broker_runtime_health(),
+        order_book=_order_book_health(),
     )
 
 
@@ -98,9 +121,17 @@ async def capabilities(settings: SettingsDep) -> CapabilitiesResponse:
     status_code=status.HTTP_201_CREATED,
     summary="Submit a NormalizedOrder (idempotent on client_order_id)",
 )
-async def submit_order(order: NormalizedOrder, order_router: RouterDep) -> JSONResponse:
-    """201 on first accept; 200 with the prior result on an idempotent resend."""
-    outcome = await order_router.submit(order)
+async def submit_order(
+    order: NormalizedOrder,
+    order_router: RouterDep,
+    strategy_id: Annotated[str | None, Depends(get_strategy_id)],
+) -> JSONResponse:
+    """201 on first accept; 200 with the prior result on an idempotent resend.
+
+    The optional ``X-Strategy-Id`` header (D16) is stamped onto the order and
+    echoed on the order-update stream; absent it, behavior is unchanged.
+    """
+    outcome = await order_router.submit(order, strategy_id=strategy_id)
     return JSONResponse(
         status_code=status.HTTP_200_OK if outcome.duplicate else status.HTTP_201_CREATED,
         content=outcome.result.wire_dump(),

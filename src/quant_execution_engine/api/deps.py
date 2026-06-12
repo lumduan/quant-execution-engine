@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 from typing import Annotated, Any
 
 import asyncpg
@@ -11,6 +12,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
+from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.cache.redis_client import get_redis
 from src.quant_execution_engine.config.settings import Settings, get_settings
 from src.quant_execution_engine.contracts.errors import PublicModeRejected
@@ -19,9 +21,37 @@ from src.quant_execution_engine.db.postgres import get_pool
 
 logger = logging.getLogger(__name__)
 
+# Conservative slug charset for the strategy identifier (D16): letters, digits,
+# and a small set of separators. Bounds length to keep the header trusted but
+# tightly shaped (it is stamped durably into execution.orders.strategy_id).
+_STRATEGY_ID_MAX_LEN = 64
+_STRATEGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
 
 def get_settings_dep() -> Settings:
     return get_settings()
+
+
+def get_strategy_id(request: Request) -> str | None:
+    """Read + validate the optional ``X-Strategy-Id`` header (D16).
+
+    Absent/blank → ``None`` (anonymous submit, behaves exactly as before). A
+    present value is length- and charset-checked; a violation is a 422 (the
+    header is transport metadata, not order data, but it must be a clean slug
+    before it is persisted).
+    """
+    raw = request.headers.get("X-Strategy-Id")
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) > _STRATEGY_ID_MAX_LEN or _STRATEGY_ID_PATTERN.match(value) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid X-Strategy-Id",
+        )
+    return value
 
 
 def get_pool_dep() -> asyncpg.Pool:
@@ -66,4 +96,5 @@ def get_router_dep(
         redis=redis,
         liberator_adapter=get_liberator_adapter(),
         settrade_adapter=get_settrade_adapter(),
+        sim_price_source=get_sim_pricer(),
     )

@@ -26,7 +26,7 @@
 | **Amend** | ✗ no route → **cancel+replace** (non-atomic) | ✅ **native** `PATCH .../change` (`PENDING_REPLACE → NEW`) | ✅ |
 | Cancel | orderNo list (≤50) + PIN | `PATCH .../cancel` + bulk `PATCH /cancel` + PIN | ✅ |
 | Reconcile query | `GET /orders*` | `GET /orders` (cumulative matched, rejectCode/Reason, canCancel/canChange); `GET /trades` → Phase 5 | in-proc |
-| Order-update stream | indirect (ws-ticket; engine normalizes by reconcile) | **native** `subscribe_{derivatives,equity}_order` (MQTT) — Phase 5 | synthetic |
+| Order-update stream | indirect (ws-ticket; engine normalizes by reconcile) | **native** `subscribe_{derivatives,equity}_order` (MQTT) — **Phase 5: engine-side normalized stream shipped** (`GET /orders/stream`, SSE), **reconciler-fed for both brokers**; Settrade native MQTT push as a direct transition source deferred (§I/D23) | synthetic |
 | Client idempotency key | ✗ | ✗ | n/a |
 
 ## The two structural consequences

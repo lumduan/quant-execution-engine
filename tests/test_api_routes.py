@@ -245,6 +245,40 @@ def test_kill_switch_admin_engage_mass_cancel_disengage(
     assert client.post("/orders", json=order_payload(symbol="OK")).status_code == 201
 
 
+# ------------------------------------------------------------- strategy id (D16)
+
+
+def test_submit_with_strategy_id_header_reaches_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _ = _owner_client(monkeypatch)
+    body = order_payload()
+    response = client.post("/orders", json=body, headers={"X-Strategy-Id": "csm-set"})
+    assert response.status_code == 201
+    # The header is stamped onto the persisted order (and thus the stream).
+    assert store.orders[body["client_order_id"]]["strategy_id"] == "csm-set"
+
+
+def test_submit_without_strategy_id_header_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _ = _owner_client(monkeypatch)
+    body = order_payload()
+    assert client.post("/orders", json=body).status_code == 201
+    assert store.orders[body["client_order_id"]]["strategy_id"] is None
+
+
+def test_submit_invalid_strategy_id_header_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _ = _owner_client(monkeypatch)
+    body = order_payload()
+    # A space is outside the conservative slug charset.
+    response = client.post("/orders", json=body, headers={"X-Strategy-Id": "bad id"})
+    assert response.status_code == 422
+    assert store.orders == {}  # rejected before any insert
+
+
 def test_kill_switch_env_pinned_disengage_409(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

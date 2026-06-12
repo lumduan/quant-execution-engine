@@ -11,9 +11,16 @@ from src.quant_execution_engine.contracts.enums import Broker, OrderState
 from src.quant_execution_engine.contracts.errors import IllegalTransition
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
+from src.quant_execution_engine.events.hub import EventHub, create_event_hub, get_event_hub
 
 from tests._fakes import FakeConn, FakePool, check_violation, unique_violation
-from tests.conftest import make_order
+from tests.conftest import make_order, make_settings
+
+
+def _hub() -> EventHub:
+    """A real process-singleton hub for the publish-hook assertions."""
+    return create_event_hub(make_settings())
+
 
 _NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 
@@ -36,6 +43,7 @@ def order_record(**overrides: Any) -> dict[str, Any]:
         "position_effect": None,
         "status": "PENDING_NEW",
         "reject_reason": None,
+        "strategy_id": None,
         "created_at": _NOW,
         "updated_at": _NOW,
     }
@@ -224,3 +232,118 @@ async def test_fetch_orders_for_reconcile_pending_replace_flag() -> None:
     )
     assert "PENDING_REPLACE" in extended.calls[0][2][1]
     assert [r.status for r in rows] == [OrderState.PENDING_REPLACE]
+
+
+# --------------------------------------------------------------- Phase-5 hooks
+
+
+async def test_insert_order_persists_strategy_id_and_registers_lru() -> None:
+    hub = _hub()
+    conn = FakeConn(execute_results=["INSERT 0 1"])
+    order = make_order()
+    await repositories.insert_order(FakePool(conn), order, "csm")
+    _, _, args = conn.calls[0]
+    assert args[13] == "csm"  # $14 = strategy_id
+    # PENDING_NEW birth event fired with the strategy attribution.
+    birth = next(e for e in hub._ring if e.client_order_id == order.client_order_id)
+    assert birth.engine_state is OrderState.PENDING_NEW
+    assert birth.strategy_id == "csm"
+    # The LRU now attributes a later anonymous publish for this cid.
+    later = hub.publish(client_order_id=order.client_order_id, engine_state=OrderState.NEW)
+    assert later is not None and later.strategy_id == "csm"
+
+
+async def test_insert_order_duplicate_publishes_nothing() -> None:
+    hub = _hub()
+    dup = FakeConn(raise_map={"INSERT INTO execution.orders": unique_violation()})
+    with pytest.raises(DuplicateOrderSignal):
+        await repositories.insert_order(FakePool(dup), make_order(), "csm")
+    assert list(hub._ring) == []
+
+
+async def test_ack_order_publishes_new_with_broker_id() -> None:
+    hub = _hub()
+    conn = FakeConn(execute_results=["UPDATE 1"])
+    await repositories.ack_order(FakePool(conn), "cid", "SIM-1")
+    event = hub._ring[-1]
+    assert event.engine_state is OrderState.NEW
+    assert event.broker_order_id == "SIM-1"
+    # The rowcount guard failure path publishes nothing.
+    stale = FakeConn(execute_results=["UPDATE 0"])
+    with pytest.raises(IllegalTransition):
+        await repositories.ack_order(FakePool(stale), "cid", "SIM-1")
+    assert len(hub._ring) == 1
+
+
+async def test_replace_order_publishes_new_with_amended_values() -> None:
+    hub = _hub()
+    conn = FakeConn(execute_results=["UPDATE 1"])
+    await repositories.replace_order(FakePool(conn), "cid", Decimal("9.50"), 80)
+    event = hub._ring[-1]
+    assert event.engine_state is OrderState.NEW
+    assert event.price == Decimal("9.50")
+    assert event.quantity == 80
+
+
+async def test_update_status_publishes_target_and_noop_publishes_nothing() -> None:
+    hub = _hub()
+    conn = FakeConn(
+        fetchrow_results=[order_record(status="NEW", strategy_id="csm", broker_order_id="SIM-1")],
+        execute_results=["UPDATE 1"],
+    )
+    await repositories.update_status(FakePool(conn), "cid", OrderState.PENDING_CANCEL)
+    event = hub._ring[-1]
+    assert event.engine_state is OrderState.PENDING_CANCEL
+    assert event.strategy_id == "csm"
+    assert event.broker_order_id == "SIM-1"
+    # Same-status no-op publishes nothing.
+    noop = FakeConn(fetchrow_results=[order_record(status="NEW")])
+    await repositories.update_status(FakePool(noop), "cid", OrderState.NEW)
+    assert len(hub._ring) == 1
+
+
+async def test_apply_fill_publishes_fill_after_commit_and_redelivery_is_silent() -> None:
+    hub = _hub()
+    conn = FakeConn(fetchval_results=[40, "NEW"], execute_results=["INSERT 0 1", "UPDATE 1"])
+    await repositories.apply_fill(
+        FakePool(conn),
+        "cid",
+        broker_fill_id="F-1",
+        price=Decimal("100"),
+        quantity=40,
+        exec_ts=_NOW,
+        total_quantity=100,
+    )
+    event = hub._ring[-1]
+    assert event.engine_state is OrderState.PARTIALLY_FILLED
+    assert event.fill is not None
+    assert event.fill.broker_fill_id == "F-1"
+    assert event.fill.quantity == 40
+    # Redelivery (ON CONFLICT DO NOTHING ⇒ INSERT 0 0) publishes nothing.
+    redeliver = FakeConn(fetchval_results=[40, "PARTIALLY_FILLED"], execute_results=["INSERT 0 0"])
+    await repositories.apply_fill(
+        FakePool(redeliver),
+        "cid",
+        broker_fill_id="F-1",
+        price=Decimal("100"),
+        quantity=40,
+        exec_ts=_NOW,
+        total_quantity=100,
+    )
+    assert len(hub._ring) == 1
+
+
+async def test_hooks_are_noop_when_no_hub_running() -> None:
+    # With no hub created, the hooks short-circuit on get_event_hub() is None.
+    assert get_event_hub() is None
+    conn = FakeConn(execute_results=["UPDATE 1"])
+    await repositories.ack_order(FakePool(conn), "cid", "SIM-1")  # no raise
+
+
+async def test_fetch_client_order_ids_for_strategy_sql_and_shape() -> None:
+    conn = FakeConn(fetch_results=[[{"client_order_id": "a"}, {"client_order_id": "b"}]])
+    cids = await repositories.fetch_client_order_ids_for_strategy(FakePool(conn), "csm")
+    assert cids == {"a", "b"}
+    method, sql, args = conn.calls[0]
+    assert "WHERE strategy_id = $1" in sql
+    assert args == ("csm",)

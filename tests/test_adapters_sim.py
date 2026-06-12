@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from src.quant_execution_engine.adapters.sim import SimAdapter
 from src.quant_execution_engine.contracts.enums import Broker
+from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 from tests.conftest import make_order
 
@@ -99,3 +100,43 @@ def test_capabilities_are_the_sim_rows() -> None:
     rows = _adapter().capabilities()
     assert {entry.market for entry in rows} == {"SET", "TFEX"}
     assert all(entry.broker is Broker.SIM and entry.adapter_installed for entry in rows)
+
+
+# ----------------------------------------------------- price-source injection
+
+
+class _FixedPriceSource:
+    """A FillPriceSource that returns a configured price (or None)."""
+
+    def __init__(self, price: Decimal | None) -> None:
+        self.price = price
+        self.calls: list[str] = []
+
+    async def fill_price(self, order: NormalizedOrder) -> Decimal | None:
+        self.calls.append(order.client_order_id)
+        return self.price
+
+
+async def test_price_source_price_used_for_all_fills() -> None:
+    source = _FixedPriceSource(Decimal("77.25"))
+    adapter = SimAdapter(
+        default_fill_price=Decimal("100"), now=lambda: _FIXED_NOW, price_source=source
+    )
+    ack = await adapter.place(make_order(quantity=100, metadata={"sim_fills": [40, 60]}))
+    assert [f.price for f in ack.fills] == [Decimal("77.25"), Decimal("77.25")]
+    assert len(source.calls) == 1  # priced once, applied to the whole plan
+
+
+async def test_price_source_none_falls_back_to_reference_price() -> None:
+    source = _FixedPriceSource(None)
+    adapter = SimAdapter(
+        default_fill_price=Decimal("100"), now=lambda: _FIXED_NOW, price_source=source
+    )
+    ack = await adapter.place(make_order(price="55.5"))
+    assert ack.fills[0].price == Decimal("55.5")  # the order's LIMIT reference
+
+
+async def test_price_source_absent_is_unchanged_phase2_behavior() -> None:
+    # No price_source ⇒ bit-for-bit the reference-price path.
+    plain = await _adapter().place(make_order(price="55.5"))
+    assert plain.fills[0].price == Decimal("55.5")

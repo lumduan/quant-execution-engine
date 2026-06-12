@@ -16,15 +16,22 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–4 complete (Phase 4: 2026-06-11) — ADR accepted; order store live; engine
-core + SimAdapter + gateway proxy live; `LiberatorAdapter` + `SettradeAdapter` (both real
-venues) live; Phases 5–7 Proposed.** The full order path runs end-to-end through the gateway:
-submit/dedupe/fills/cancel/**native-amend** over the durable store, PTRM + kill-switch + stage
-ladder wired from the first path. Two real brokers now route the **same** `NormalizedOrder` by
-`broker`/account (Liberator cancel+replace amend; Settrade native amend via `PATCH /orders/{cid}`).
-**`live` stays gated — no real-money default**; `micro_live` is the highest rung the adapters
-exercise, operator-driven. Next: **Phase 5** (strategy execution path + the normalized
-order-update stream out).
+**Status: Phases 0–4.1 complete + Phase 5 engine side complete (2026-06-12) — ADR accepted;
+order store live; engine core + SimAdapter + gateway proxy live; `LiberatorAdapter` +
+`SettradeAdapter` (both real venues) live; the normalized order-update stream out + the
+dual-provider order book service live; Phase 5.1 + Phases 6–7 Proposed.** The full order path
+runs end-to-end through the gateway: submit/dedupe/fills/cancel/**native-amend** over the
+durable store, PTRM + kill-switch + stage ladder wired from the first path. Two real brokers
+route the **same** `NormalizedOrder` by `broker`/account (Liberator cancel+replace amend;
+Settrade native amend via `PATCH /orders/{cid}`). **Phase 5 (engine side)** shipped the
+normalized **order-update stream out** (`GET /orders/stream`, D12 realised), the in-engine
+**dual-provider order book** (Settrade realtime + Liberator WebSocket) feeding `SimAdapter`
+live fill prices, and `X-Strategy-Id` identity — all additive and default-off; `live` gating,
+the kill-switch, PTRM, and the frozen contracts are **unchanged**. **`live` stays gated — no
+real-money default**; `micro_live` is the highest rung the adapters exercise, operator-driven.
+The strategy-side scope (the `*_EXECUTION_MODE` flags + the end-to-end sim trade loop) split to
+**Phase 5.1** by operator decision (2026-06-12). Next: **Phase 5.1** (strategy execution flags
++ sim trade loop, in the strategy repos).
 
 ---
 
@@ -116,7 +123,7 @@ the cited extraction and the Phase 4 validation section.
 | Amend | ✗ **no amend route** → adapter does **cancel + replace** | ✅ **native** `PATCH /orders/{order_no}/change` (`newPrice?`/`newVolume?`/SET `newIcebergVolume?`) over `PENDING_REPLACE → NEW` | ✅ native |
 | Cancel | `POST /order/cancelled/{set,tfex}` by `orderNo` list (≤50) + PIN | `PATCH /orders/{order_no}/cancel` + bulk `PATCH /cancel` + PIN | ✅ |
 | Query (reconcile) | `GET /orders`, `/orders/{account_no}`, `/orders/summary` (status, matched/balance/cancelled, reject_code, can_cancel) | `GET /orders` (cumulative `matchQty`/`matched`, `rejectCode`/`rejectReason`, `canCancel`/`canChange`); `GET /trades` reserved for Phase 5 | in-proc state |
-| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | **native** `RealtimeDataConnection.subscribe_{derivatives,equity}_order(...)` (MQTT) — **Phase 5** | synthetic events |
+| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | **native** `RealtimeDataConnection.subscribe_{derivatives,equity}_order(...)` (MQTT) — **Phase 5: engine-side normalized stream shipped** (`GET /orders/stream`, SSE), **reconciler-fed for both brokers**; Settrade native MQTT push as a direct transition source deferred (§I/D23) | synthetic events |
 | Client idempotency key | ✗ (broker `orderNo` only) | ✗ (broker `orderNo`/`order_no` only) | n/a |
 
 **Two findings that shape the design:**
@@ -197,7 +204,7 @@ PENDING_NEW ───────────────► NEW ──fill(part
 | **`quant-infra-db`** | New `execution` schema (Phase 1): `orders` / `fills` / append-only `order_events`. Its own PR. |
 | **`quant-api-gateway`** | Proxy route `/api/v2/engines/execution/*` → `:8400` + register the 5th engine (Phase 2). Its own PR. **No broker credential.** |
 | **`liberator-trading-api`** (existing) | Becomes a `LiberatorAdapter` **target** over HTTP (Phase 3), **vendored as a git submodule** under `third_party/liberator-trading-api/` and bundled into this repo's owner-mode bring-up (`docker-compose.liberator.yml`) as an **internal-only** upstream (no host port). May add a normalized order-update hook. No strategy calls it directly anymore. |
-| **`strategies/csm-set`, `strategies/tfex-s50-multi-tf-swing`** | Gain an execution path behind `*_EXECUTION_MODE = off\|sim\|live` (Phase 5). Submit `NormalizedOrder`s; never speak a broker API. |
+| **`strategies/csm-set`, `strategies/tfex-s50-multi-tf-swing`** | Gain an execution path behind `*_EXECUTION_MODE = off\|sim\|live` (**Phase 5.1**). Submit `NormalizedOrder`s; consume `GET /orders/stream`; never speak a broker API. |
 
 ---
 
@@ -457,24 +464,89 @@ explicit `micro_live`-flip prerequisite. Phase plan:
   [`.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md).
 
 ### Phase 5 — Strategy execution path + order-update streaming 📡
-**Status:** `[ ]` Proposed (**unblocked 2026-06-11** by Phase 4). **Repos:** `strategies/csm-set`,
-`strategies/tfex-s50-multi-tf-swing`, this repo (own PRs). Settrade's native MQTT push
-(`subscribe_{derivatives,equity}_order`) feeds the normalized stream directly; Liberator's is
-poll-reconciled into the same shape (R3). The Settrade adapter's `GET /trades` surface is
-reserved for this phase (the reconciler v1 deliberately uses cumulative-watermark deltas, not
-per-fill trades).
+**Status:** `[x]` **Engine side complete (2026-06-12).** **Repo:** this repo
+(`feature/phase5-strategy-execution-path-order-streaming`); infra-db
+[PR #15](https://github.com/lumduan/quant-infra-db/pull/15) (`strategy_id` column, open);
+gateway streaming-proxy in its own PR after the engine PR. **Shipped:** the normalized
+**order-update stream out** (umbrella **D12** realised) + the **dual-provider order book
+service** + `SimAdapter` live fill pricing + strategy identity — all **additive and
+default-off**, with `live`/`micro_live` gating, the kill-switch path, PTRM, and the frozen
+`NormalizedOrder` / 13-edge state machine / capability **cells** unchanged.
+`events/` — frozen `OrderUpdateEvent`/`FillEvent`/`GapMarker` (`Decimal`-as-string wire;
+`status` via the one existing `to_public_status` mapping, E8); an in-process `EventHub`
+(monotonic `seq`, ring-buffer `Last-Event-ID` replay, bounded per-subscriber queues with
+drop-oldest + `gap` markers, cid→strategy LRU, **exception-proof `publish`** — the order path
+never fails on stream plumbing). **Publish hooks** in the five repository writers
+`insert_order` (the `PENDING_NEW` birth) / `ack_order` / `replace_order` / `update_status` /
+`apply_fill` — the choke points every one of the 13 frozen edges funnels through (incl. the
+kill-switch mass-cancel sweep); `apply_fill` publishes only for newly-inserted fills.
+**`GET /orders/stream`** (`api/streams.py`) — SSE, `id:`=seq / `event:`=engine-state frames
+(strict 9-state subset + `gap`/`resync_required` advisories), conjunctive
+`strategy_id`/`client_order_id` filters, `Last-Event-ID` replay. **D16 strategy identity** —
+`X-Strategy-Id` header → the new nullable `execution.orders.strategy_id` (infra-db PR #15);
+events echo it; the stream **DB-seeds** a strategy's historical cids at subscribe time so
+reconciler-discovered events for pre-restart orders match. `order_book/` — normalized frozen
+`OrderBook`/`OrderBookLevel`, an in-memory LRU cache with refcounted SSE fan-out, a **Settrade**
+provider (SDK realtime behind a lazy `_import_sdk` seam, all blocking SDK work on
+`asyncio.to_thread`, `call_soon_threadsafe` bridge — **E21 order-routing SDK ban unchanged**), a
+**Liberator** provider (ws-ticket + raw `websockets` Engine.IO v4 client, **no `curl_cffi`**,
+default-namespaces-then-`BidOfferV2` join order, mid-session live join/leave, jittered reconnect
+with fresh ticket + re-join), a failover **router** (N consecutive errors in a window →
+secondary + structured `order_book.provider_switch`; per-symbol overrides; no auto-failback),
+and a lifespan-wired **runtime** (default off — bit-for-bit unchanged engine). **`GET
+/order-book/{symbol}`** (404 cold; market omitted probes SET→TFEX) + **`/stream`**; additive
+`/health` `order_book` block. **`SimAdapter` live pricing** (D21) — `SimFillPricer`: book best
+ask/bid (limit-bounded) → market-data engine last 1d close (limit-bounded) → `None` (the
+adapter's own `_reference_price`); price-only — with **no source injected the adapter is
+bit-for-bit Phase-2**. Decisions **D14–D24** (the cross-cutting D-series continuation); open
+questions **§H–§K**. New deps `websockets` + lazy market-data-only `settrade-v2`. **853 tests,
+95.72% cov**, mypy strict, ruff clean. **D23 deferred to §I** (a Settrade native-push
+reconcile-kick would breach the D18 SDK containment — the SDK may not leak into `adapters/`).
+The strategy-side acceptance (a strategy's signal→order→fill→position sim loop) **moves to
+Phase 5.1**. Phase plan:
+[`phase5-strategy-execution-path-order-streaming.md`](phase5-strategy-execution-path-order-streaming.md).
+**Phase 5.1 unblocked.**
+
+- **Objective (engine side):** ship the normalized order-update stream out + the order book
+  service so a strategy can react to fills/rejects/transitions without polling.
+- **Scope (shipped):** the normalized **order-update stream out** (SSE; gateway proxies it);
+  in-engine dual-provider order book (Settrade realtime + Liberator WS) → `SimAdapter` live
+  fill prices + snapshot/SSE reads; `X-Strategy-Id` identity persisted (infra-db PR #15);
+  D14–D24; §H–§K.
+- **Non-goals:** the strategy-repo flags + sim trade loop (→ **Phase 5.1**); any change to
+  `live`/`micro_live` gating, the kill-switch, PTRM, or the frozen contracts; per-strategy
+  auth (§J); Settrade native push as a direct transition source (§I/D23); multi-worker fan-out
+  (§H); durable book storage / depth > 10 / auto-failback (§K).
+- **Acceptance (met):** sim order → `PENDING_NEW → NEW → FILLED` on the stream (partials one
+  event each); kill-switch sweep events stream; `Last-Event-ID` reconnect misses nothing in the
+  ring, else `resync_required`; `?strategy_id=` filters (incl. DB-seeded pre-restart orders);
+  both order-book parsers produce identical normalized books; failover switches + logs;
+  `SimAdapter` fills at best bid/offer when warm and falls back (and logs) when cold; with no
+  source injected, Phase-2 bit-exact; gate green; `live` gating unchanged.
+- **Quality gate:** ruff + mypy strict + pytest ≥90% on `adapters/` + state machine +
+  `order_book/` + `events/` (853 tests, 95.72% cov).
+- **Cross-refs:** umbrella ROADMAP Phase 5; D14–D24 in
+  [`.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md); the stream +
+  order-book references in
+  [`.claude/knowledge/order-update-stream.md`](../../.claude/knowledge/order-update-stream.md),
+  [`.claude/knowledge/order-book-service.md`](../../.claude/knowledge/order-book-service.md).
+
+### Phase 5.1 — Strategy execution flags + sim trade loop 📈
+**Status:** `[ ]` Proposed (**unblocked 2026-06-12** by Phase 5 engine side). **Repos:**
+`strategies/csm-set`, `strategies/tfex-s50-multi-tf-swing` (own PRs). The split-out
+strategy-side scope: strategies become first-class callers of the now-shipped engine surface.
 
 - **Objective:** a strategy runs an end-to-end **sim** trade loop with no broker code in it.
-- **Scope (ships):** the normalized **order-update stream out** (WS/events) of fills + status
-  changes (D12; gateway proxies the WS) — Settrade's native `subscribe_derivatives_order`
-  feeds it, Liberator's is polled/reconciled into the same shape; csm-set gains
-  `CSM_EXECUTION_MODE = off|sim|live` (default `off`/`sim`); tfex gains
-  `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE`, exercising TFEX `position_effect` (OPEN/CLOSE) +
-  futures order types.
-- **Non-goals:** no strategy sends `live` orders (cutover stays behind the flag, default sim).
+- **Scope (ships):** csm-set gains `CSM_EXECUTION_MODE = off|sim|live` (default `off`/`sim`);
+  tfex gains `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE`, exercising TFEX `position_effect`
+  (OPEN/CLOSE) + futures order types; strategies submit `NormalizedOrder`s via `POST /orders`
+  and consume `GET /orders/stream` **through the gateway** (`X-Strategy-Id` per request); **no
+  broker code in any strategy**.
+- **Non-goals:** no strategy sends `live` orders (cutover stays behind the flag, default sim);
+  no engine change (the surface shipped in Phase 5).
 - **Acceptance:** a strategy runs signal → `NormalizedOrder` → fill stream → position entirely
   in sim, with no broker code in the strategy; `live` remains explicitly flagged + gated.
-- **Quality gate:** each repo's own gate; engine ≥90% on the stream + adapter glue.
+- **Quality gate:** each strategy repo's own gate.
 - **Cross-refs:** umbrella ROADMAP Phase 5; tfex execution-mode flag mirrors its OHLCV
   `mirror|engine` reader-flag rollout.
 
@@ -555,6 +627,25 @@ per-fill trades).
 - **Streaming creep.** ✅ **PINNED (ADR §G):** D1 reaffirmed — execution plane only;
   market-data / order-book streams are strictly **external, read-only dependencies** (e.g.
   price-band checks); never owned here.
+
+### Phase 5 additions (2026-06-12): §H–§K
+
+Continuing §A–§G — pinned-as-deferred in the Phase 5 plan (the §A–§G preamble above is
+unchanged):
+
+- **§H — Single-process fan-out.** The `EventHub` is in-process; the engine runs one uvicorn
+  worker. Multi-worker / multi-instance fan-out (Redis pub/sub, mirroring the kill-switch
+  pattern) is **deferred** until a second worker exists — revisit in Phase 6.
+- **§I — Settrade push as a transition source + `GET /trades`.** Phase 5 ships at most the D23
+  reconcile-kick (itself deferred — it would breach D18 SDK containment). Driving frozen edges
+  directly from venue push payloads, and per-fill granularity from `GET /trades` (replacing the
+  E18/E24 watermark deltas), stay **deferred** until the push protocol is observed at micro_live.
+- **§J — Least-privilege strategy auth.** Per-strategy API keys / JWT claims binding a key to a
+  `strategy_id` (submit/read/stream scoped to own orders) are **deferred**; the shared-key +
+  `X-Strategy-Id` header model ships now, and the durable column makes the upgrade additive.
+- **§K — Order-book extensions.** Durable book persistence, market-impact modelling, depth > 10,
+  auto-failback to primary, a 4h/derived-feed story — all **deferred** to the execution plane
+  until a concrete consumer exists (D1/D17 discipline).
 
 ---
 
