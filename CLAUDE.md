@@ -204,7 +204,7 @@ fallback). `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
 Order book + streaming env (Phase 5; `EXECUTION_ENGINE_` prefix, see `.env.example`): the order
 book service is **additive and default-off** — `ORDER_BOOK_ENABLED=false` (master switch, D24)
 keeps the engine bit-for-bit unchanged; enabling it also needs at least one configured provider
-(reusing the Liberator api-key / per-market Settrade trios). `ORDER_BOOK_PRIMARY_PROVIDER=settrade`
+(reusing the Liberator api-key / per-market Settrade trios). `ORDER_BOOK_PRIMARY_PROVIDER=liberator` (default; Settrade realtime is venue-gated until enabled at the InnovestX portal)
 (`settrade|liberator`), `ORDER_BOOK_SYMBOL_OVERRIDES={}` (JSON symbol→provider),
 `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD=3` + `ORDER_BOOK_FAILOVER_WINDOW_SECONDS=30` (consecutive-error
 failover, D20), `ORDER_BOOK_CACHE_MAX_AGE_SECONDS=5` + `ORDER_BOOK_CACHE_MAX_SYMBOLS=500` (LRU).

@@ -108,7 +108,10 @@ class Settings(BaseSettings):
     # existing behavior is bit-for-bit unchanged until an operator opts in. The
     # endpoints carry no order data/credential and are public-mode-readable.
     order_book_enabled: bool = False
-    order_book_primary_provider: Literal["settrade", "liberator"] = "settrade"
+    # Default LIBERATOR (operator decision 2026-06-12): verified streaming live;
+    # InnovestX/Settrade realtime is venue-gated (DISPATCH-UM-04 "User is
+    # inactive") until enabled at the portal.
+    order_book_primary_provider: Literal["settrade", "liberator"] = "liberator"
     # JSON map symbol -> provider name, e.g. '{"AOT": "liberator"}'.
     order_book_symbol_overrides: dict[str, str] = Field(default_factory=dict)
     order_book_failover_error_threshold: int = 3

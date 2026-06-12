@@ -173,7 +173,7 @@ symbols, subscriber count) when the service is on (`null` when off).
 | Setting | Default | Effect |
 |---|---|---|
 | `ORDER_BOOK_ENABLED` | `false` | Master switch (D24) — off keeps the engine bit-for-bit unchanged. Enabling also needs ≥1 configurable provider (Liberator api-key / a Settrade per-market trio). |
-| `ORDER_BOOK_PRIMARY_PROVIDER` | `settrade` | `settrade \| liberator` (falls back to the only configured provider) |
+| `ORDER_BOOK_PRIMARY_PROVIDER` | `liberator` | `settrade \| liberator` (falls back to the only configured provider; default flipped to liberator 2026-06-12 — Settrade realtime venue-gated DISPATCH-UM-04) |
 | `ORDER_BOOK_SYMBOL_OVERRIDES` | `{}` | JSON map symbol → provider |
 | `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD` | `3` | consecutive errors before switch |
 | `ORDER_BOOK_FAILOVER_WINDOW_SECONDS` | `30` | error-counting window |

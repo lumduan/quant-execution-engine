@@ -308,7 +308,7 @@ tolerated. Cache: in-memory LRU keyed `(symbol, market)`, `max_symbols` 500, `ma
 | Setting | Default | Effect |
 |---|---|---|
 | `ORDER_BOOK_ENABLED` | `false` | Master switch for the whole service (D24) |
-| `ORDER_BOOK_PRIMARY_PROVIDER` | `settrade` | `settrade \| liberator` |
+| `ORDER_BOOK_PRIMARY_PROVIDER` | `liberator` | `settrade \| liberator` (default flipped 2026-06-12: Settrade realtime venue-gated) |
 | `ORDER_BOOK_SYMBOL_OVERRIDES` | `{}` | JSON map symbol → provider |
 | `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD` | `3` | consecutive errors before switch |
 | `ORDER_BOOK_FAILOVER_WINDOW_SECONDS` | `30` | error-counting window |
