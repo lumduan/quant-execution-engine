@@ -30,6 +30,11 @@ from src.quant_execution_engine.cache.redis_client import close_redis, create_re
 from src.quant_execution_engine.config.settings import get_settings
 from src.quant_execution_engine.db.postgres import close_pool, create_pool
 from src.quant_execution_engine.logging_config import configure_logging
+from src.quant_execution_engine.order_book.runtime import (
+    close_order_book_runtime,
+    create_order_book_runtime,
+    start_order_book_workers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +65,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await start_liberator_workers(settings)
     create_settrade_runtime(settings)
     await start_settrade_workers(settings)
+    # Order book service (Phase 5): default-off; a no-op unless an operator opts
+    # in with a configured provider. Closed first so feeds stop before brokers.
+    create_order_book_runtime(settings)
+    await start_order_book_workers(settings)
     try:
         yield
     finally:
+        await close_order_book_runtime()
         await close_settrade_runtime()
         await close_liberator_runtime()
         await close_redis()

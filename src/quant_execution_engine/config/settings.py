@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.quant_execution_engine.contracts.enums import Stage
@@ -100,6 +101,27 @@ class Settings(BaseSettings):
     settrade_circuit_breaker_threshold: int = 3
     settrade_reconcile_interval_seconds: int = 12
     settrade_token_refresh_margin_seconds: int = 100
+
+    # Order book service (Phase 5) — a normalized, read-only L2 cache fed by the
+    # Settrade realtime + Liberator WebSocket feeds (ADR D17–D24). The whole
+    # service defaults OFF (D24): nothing connects, no SDK imports, the engine's
+    # existing behavior is bit-for-bit unchanged until an operator opts in. The
+    # endpoints carry no order data/credential and are public-mode-readable.
+    order_book_enabled: bool = False
+    order_book_primary_provider: Literal["settrade", "liberator"] = "settrade"
+    # JSON map symbol -> provider name, e.g. '{"AOT": "liberator"}'.
+    order_book_symbol_overrides: dict[str, str] = Field(default_factory=dict)
+    order_book_failover_error_threshold: int = 3
+    order_book_failover_window_seconds: int = 30
+    order_book_cache_max_age_seconds: int = 5
+    order_book_cache_max_symbols: int = 500
+    # Sim fill-price fallback hop 2 (last close) + order-update stream knobs. The
+    # stream_* values are consumed by the streaming sub-steps (3E–3G); they land
+    # here once so settings stay a single source of truth.
+    market_data_base_url: str | None = None
+    stream_keepalive_seconds: int = 15
+    stream_ring_buffer_size: int = 1024
+    stream_subscriber_queue_size: int = 256
 
     # Informational (compose maps host port -> container :8000)
     host_port: int = 8400

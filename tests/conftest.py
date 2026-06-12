@@ -17,6 +17,7 @@ from src.quant_execution_engine.cache import redis_client as redis_module
 from src.quant_execution_engine.config.settings import Settings, get_settings
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.db import postgres as postgres_module
+from src.quant_execution_engine.order_book import runtime as order_book_runtime
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -40,6 +41,11 @@ def _reset_singletons() -> Iterator[None]:
         task.cancel()
     settrade_runtime._tasks.clear()
     settrade_runtime._adapter = None
+    for task in order_book_runtime._tasks:
+        task.cancel()
+    order_book_runtime._tasks.clear()
+    order_book_runtime._service = None
+    order_book_runtime._router = None
     get_settings.cache_clear()
 
 

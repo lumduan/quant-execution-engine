@@ -22,7 +22,9 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "redis>=5",
+    "settrade-v2>=2.2.1",
     "uvicorn[standard]>=0.30",
+    "websockets>=16.0",
 ]
 
 [dependency-groups]
