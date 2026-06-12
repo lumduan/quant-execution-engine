@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from src.quant_execution_engine.adapters import sim_pricing
 from src.quant_execution_engine.adapters.liberator import runtime as liberator_runtime
 from src.quant_execution_engine.adapters.settrade import runtime as settrade_runtime
 from src.quant_execution_engine.api import deps
@@ -46,6 +47,7 @@ def _reset_singletons() -> Iterator[None]:
     order_book_runtime._tasks.clear()
     order_book_runtime._service = None
     order_book_runtime._router = None
+    sim_pricing._pricer = None
     get_settings.cache_clear()
 
 

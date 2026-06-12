@@ -8,11 +8,25 @@ providers and the router.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+from src.quant_execution_engine.contracts.errors import OrderRejectedError
 from src.quant_execution_engine.errors import ExecutionEngineError
 
 
 class OrderBookError(ExecutionEngineError):
     """Base for every order-book-subpackage error."""
+
+
+class OrderBookUnavailable(OrderRejectedError):
+    """No fresh book is cached for the symbol (or the service is disabled).
+
+    Routes through the shared typed-error envelope exactly like
+    ``order_not_found`` — the ``code`` maps to ``404`` in ``error_handlers``.
+    These reads carry no order data, so the rejection is informational only.
+    """
+
+    code: ClassVar[str] = "order_book_unavailable"
 
 
 class ProviderError(OrderBookError):

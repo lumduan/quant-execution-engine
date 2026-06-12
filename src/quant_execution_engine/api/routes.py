@@ -9,10 +9,13 @@ engine-direct only — the gateway never proxies them.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
@@ -30,17 +33,29 @@ from src.quant_execution_engine.api.schemas import (
     HealthResponse,
     KillSwitchEngageResponse,
     KillSwitchStateResponse,
+    OrderBookHealth,
 )
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
+from src.quant_execution_engine.contracts.enums import Market
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
+from src.quant_execution_engine.order_book.errors import OrderBookUnavailable
+from src.quant_execution_engine.order_book.models import OrderBook
+from src.quant_execution_engine.order_book.runtime import (
+    get_order_book_router,
+    get_order_book_service,
+)
+from src.quant_execution_engine.order_book.service import OrderBookService
 
 router = APIRouter()
 
 RouterDep = Annotated[OrderRouter, Depends(get_router_dep)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
+
+# Markets probed, in order, when a snapshot request omits ``market`` (D24).
+_PROBE_MARKETS: tuple[Market, ...] = (Market.SET, Market.TFEX)
 
 
 def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
@@ -66,6 +81,20 @@ def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
     return brokers or None
 
 
+def _order_book_health() -> OrderBookHealth | None:
+    """Order-book runtime state for /health (None when the service is off)."""
+    service = get_order_book_service()
+    ob_router = get_order_book_router()
+    if service is None or ob_router is None:
+        return None
+    return OrderBookHealth(
+        active_provider=ob_router.active.value,
+        providers=[provider.name.value for provider in ob_router.providers],
+        cached_symbols=service.cached_symbol_count,
+        subscribers=service.subscriber_count,
+    )
+
+
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
 async def health(settings: SettingsDep) -> HealthResponse:
     """Mapped to host ``:8400`` (container ``:8000``) in compose."""
@@ -74,6 +103,7 @@ async def health(settings: SettingsDep) -> HealthResponse:
         stage=settings.stage,
         public_mode=settings.public_mode,
         brokers=_broker_runtime_health(),
+        order_book=_order_book_health(),
     )
 
 
@@ -89,6 +119,78 @@ async def capabilities(settings: SettingsDep) -> CapabilitiesResponse:
         stage=settings.stage,
         capabilities=CAPABILITY_MATRIX,
         brokers=_broker_runtime_health(),
+    )
+
+
+def _require_service() -> OrderBookService:
+    """The running order-book service, or a typed 404 when it is disabled."""
+    service = get_order_book_service()
+    if service is None:
+        raise OrderBookUnavailable("order book service is disabled")
+    return service
+
+
+def _snapshot(service: OrderBookService, symbol: str, market: Market | None) -> OrderBook:
+    """Read a fresh cached book; probe SET then TFEX when market is omitted."""
+    markets = (market,) if market is not None else _PROBE_MARKETS
+    for candidate in markets:
+        book = service.get(symbol, candidate)
+        if book is not None:
+            return book
+    raise OrderBookUnavailable(f"no fresh order book cached for {symbol}")
+
+
+@router.get(
+    "/order-book/{symbol}",
+    dependencies=[Depends(require_api_key)],
+    summary="Cached L2 snapshot (public-mode readable; 404 cold)",
+)
+async def order_book_snapshot(symbol: str, market: Market | None = None) -> JSONResponse:
+    """Normalized best-of-book read (D24). 404 when disabled or no fresh book."""
+    book = _snapshot(_require_service(), symbol, market)
+    return JSONResponse(status_code=status.HTTP_200_OK, content=book.wire_dump())
+
+
+def _sse_frame(book: OrderBook) -> str:
+    """One ``data:`` SSE frame carrying the normalized book (Decimal strings)."""
+    return f"data: {json.dumps(book.wire_dump())}\n\n"
+
+
+async def _order_book_events(
+    service: OrderBookService, symbol: str, market: Market, keepalive_seconds: float
+) -> AsyncGenerator[str, None]:
+    """Snapshot-then-updates SSE generator; keep-alive comments while idle.
+
+    A client disconnect surfaces as cancellation/GeneratorExit — the
+    ``async with`` releases the refcounted subscription (no disconnect polling).
+    """
+    async with service.subscription(symbol, market) as queue:
+        snapshot = service.get(symbol, market)
+        if snapshot is not None:
+            yield _sse_frame(snapshot)
+        while True:
+            try:
+                book = await asyncio.wait_for(queue.get(), timeout=keepalive_seconds)
+            except TimeoutError:
+                yield ": keep-alive\n\n"
+            else:
+                yield _sse_frame(book)
+
+
+@router.get(
+    "/order-book/{symbol}/stream",
+    dependencies=[Depends(require_api_key)],
+    summary="SSE of normalized book updates (snapshot-then-updates)",
+)
+async def order_book_stream(
+    symbol: str, market: Market, settings: SettingsDep
+) -> StreamingResponse:
+    """``text/event-stream`` of book updates for ``(symbol, market)`` (D24)."""
+    service = _require_service()
+    return StreamingResponse(
+        _order_book_events(service, symbol, market, settings.stream_keepalive_seconds),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

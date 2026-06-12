@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
+from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.cache.redis_client import get_redis
 from src.quant_execution_engine.config.settings import Settings, get_settings
 from src.quant_execution_engine.contracts.errors import PublicModeRejected
@@ -66,4 +67,5 @@ def get_router_dep(
         redis=redis,
         liberator_adapter=get_liberator_adapter(),
         settrade_adapter=get_settrade_adapter(),
+        sim_price_source=get_sim_pricer(),
     )

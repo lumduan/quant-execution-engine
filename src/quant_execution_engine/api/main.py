@@ -24,6 +24,7 @@ from src.quant_execution_engine.adapters.settrade.runtime import (
     create_settrade_runtime,
     start_settrade_workers,
 )
+from src.quant_execution_engine.adapters.sim_pricing import close_sim_pricer, create_sim_pricer
 from src.quant_execution_engine.api.error_handlers import register_error_handlers
 from src.quant_execution_engine.api.routes import router
 from src.quant_execution_engine.cache.redis_client import close_redis, create_redis
@@ -69,9 +70,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # in with a configured provider. Closed first so feeds stop before brokers.
     create_order_book_runtime(settings)
     await start_order_book_workers(settings)
+    # Sim fill-price chain (D21): reads the order-book service above + the
+    # market-data engine; built after the order book, closed before it.
+    create_sim_pricer(settings)
     try:
         yield
     finally:
+        await close_sim_pricer()
         await close_order_book_runtime()
         await close_settrade_runtime()
         await close_liberator_runtime()

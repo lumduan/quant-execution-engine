@@ -19,7 +19,7 @@ import asyncpg
 
 from src.quant_execution_engine.adapters.base import AmendAck, BrokerAdapter
 from src.quant_execution_engine.adapters.errors import AdapterError
-from src.quant_execution_engine.adapters.sim import SimAdapter
+from src.quant_execution_engine.adapters.sim import FillPriceSource, SimAdapter
 from src.quant_execution_engine.cache.single_flight import single_flight
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts import capabilities
@@ -92,11 +92,15 @@ class OrderRouter:
         redis: Any | None,
         liberator_adapter: BrokerAdapter | None = None,
         settrade_adapter: BrokerAdapter | None = None,
+        sim_price_source: FillPriceSource | None = None,
     ) -> None:
         self._settings = settings
         self._pool = pool
         self._redis = redis
-        self._sim = SimAdapter(default_fill_price=settings.sim_default_fill_price)
+        self._sim = SimAdapter(
+            default_fill_price=settings.sim_default_fill_price,
+            price_source=sim_price_source,
+        )
         # Injected process singletons (api/deps.py / runtime); None = not configured.
         self._liberator = liberator_adapter
         self._settrade = settrade_adapter

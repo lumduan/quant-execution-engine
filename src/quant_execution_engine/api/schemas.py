@@ -21,6 +21,15 @@ class BrokerRuntimeHealth(BaseModel):
     sessions: dict[str, bool | None] | None = None
 
 
+class OrderBookHealth(BaseModel):
+    """Order-book service runtime state (Phase 5 additive — None when off)."""
+
+    active_provider: str  # the current failover-active provider
+    providers: list[str]  # every configured provider
+    cached_symbols: int  # (symbol, market) keys currently held
+    subscribers: int  # live SSE subscriber queues across all keys
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str = "quant-execution-engine"
@@ -28,6 +37,7 @@ class HealthResponse(BaseModel):
     stage: Stage
     public_mode: bool
     brokers: dict[str, BrokerRuntimeHealth] | None = None
+    order_book: OrderBookHealth | None = None
 
 
 class CapabilitiesResponse(BaseModel):

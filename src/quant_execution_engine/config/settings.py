@@ -117,8 +117,11 @@ class Settings(BaseSettings):
     order_book_cache_max_symbols: int = 500
     # Sim fill-price fallback hop 2 (last close) + order-update stream knobs. The
     # stream_* values are consumed by the streaming sub-steps (3E–3G); they land
-    # here once so settings stay a single source of truth.
+    # here once so settings stay a single source of truth. ``market_data_api_key``
+    # is the read key for the marketdata engine (SecretStr — sent as X-API-Key,
+    # NEVER logged); the base URL gates the whole fallback hop.
     market_data_base_url: str | None = None
+    market_data_api_key: SecretStr | None = None
     stream_keepalive_seconds: int = 15
     stream_ring_buffer_size: int = 1024
     stream_subscriber_queue_size: int = 256

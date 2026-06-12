@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
@@ -38,6 +38,17 @@ from src.quant_execution_engine.contracts.enums import Broker, OrderType, Tif
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 
+class FillPriceSource(Protocol):
+    """A price oracle for sim fills (the dependency arrow points IN here).
+
+    ``sim`` depends on this Protocol, never on ``order_book``/``sim_pricing`` —
+    the concrete ``SimFillPricer`` imports ``order_book``, ``sim`` imports
+    nothing new. ``None`` means "no opinion"; sim then uses its reference price.
+    """
+
+    async def fill_price(self, order: NormalizedOrder) -> Decimal | None: ...
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -52,10 +63,12 @@ class SimAdapter(BrokerAdapter):
         *,
         default_fill_price: Decimal,
         now: Callable[[], datetime] = _utc_now,
+        price_source: FillPriceSource | None = None,
     ) -> None:
         super().__init__()
         self._default_fill_price = default_fill_price
         self._now = now
+        self._price_source = price_source
 
     def _reference_price(self, order: NormalizedOrder) -> Decimal:
         """LIMIT/STOP_LIMIT at price; STOP at stop_price; else the sim default."""
@@ -96,7 +109,9 @@ class SimAdapter(BrokerAdapter):
         if isinstance(plan, str):
             return PlaceAck(rejected=True, reject_reason=plan)
         prefix = order.client_order_id[:8]
-        price = self._reference_price(order)
+        price = (await self._price_source.fill_price(order)) if self._price_source else None
+        if price is None:
+            price = self._reference_price(order)
         exec_ts = self._now()
         fills = tuple(
             FillReport(

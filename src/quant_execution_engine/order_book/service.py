@@ -19,6 +19,7 @@ import contextlib
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from src.quant_execution_engine.contracts.enums import Market
@@ -108,21 +109,46 @@ class OrderBookService:
                 evicted_key[1].value,
             )
 
+    # ---------------------------------------------------------- introspection
+
+    @property
+    def cached_symbol_count(self) -> int:
+        """Number of ``(symbol, market)`` keys currently held (fresh or stale)."""
+        return len(self._cache)
+
+    @property
+    def subscriber_count(self) -> int:
+        """Total live subscriber queues across every key (for /health)."""
+        return sum(len(subs.queues) for subs in self._subscribers.values())
+
     # ---------------------------------------------------------------- stream
 
-    async def stream(self, symbol: str, market: Market) -> AsyncIterator[OrderBook]:
-        """Yield books for ``(symbol, market)`` until the consumer stops.
+    @asynccontextmanager
+    async def subscription(
+        self, symbol: str, market: Market
+    ) -> AsyncIterator[asyncio.Queue[OrderBook]]:
+        """Hold a refcounted subscription, yielding its bounded queue.
 
-        Entering acquires a refcounted subscription (0→1 ⇒ router.subscribe);
-        the ``finally`` releases it (1→0 ⇒ router.unsubscribe).
+        Entering acquires the subscription (0→1 ⇒ router.subscribe); the
+        ``finally`` releases it (1→0 ⇒ router.unsubscribe). The SSE route reads
+        the queue with ``asyncio.wait_for`` so a keep-alive timeout cancels a
+        plain ``queue.get()`` (safe + re-callable) — never an async generator.
         """
         queue: asyncio.Queue[OrderBook] = asyncio.Queue(maxsize=self._subscriber_queue_size)
         await self._acquire(symbol, market, queue)
         try:
-            while True:
-                yield await queue.get()
+            yield queue
         finally:
             await self._release(symbol, market, queue)
+
+    async def stream(self, symbol: str, market: Market) -> AsyncIterator[OrderBook]:
+        """Yield books for ``(symbol, market)`` until the consumer stops.
+
+        A thin wrapper over :meth:`subscription` (behavior unchanged).
+        """
+        async with self.subscription(symbol, market) as queue:
+            while True:
+                yield await queue.get()
 
     async def _acquire(self, symbol: str, market: Market, queue: asyncio.Queue[OrderBook]) -> None:
         key: _Key = (symbol, market)

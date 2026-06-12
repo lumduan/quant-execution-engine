@@ -181,6 +181,11 @@ def get_order_book_service() -> OrderBookService | None:
     return _service
 
 
+def get_order_book_router() -> ProviderRouter | None:
+    """The failover router singleton (for /health active/providers); None off."""
+    return _router
+
+
 async def close_order_book_runtime() -> None:
     """Stop providers + tasks, clear the singletons (idempotent)."""
     global _service, _router
