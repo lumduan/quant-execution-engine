@@ -3,8 +3,8 @@
 **Feature:** `feature-execution-engine` — Phase 5 (engine side)
 **Branch:** `feature/phase5-strategy-execution-path-order-streaming`
 **Created:** 2026-06-12
-**Status:** In Progress
-**Completed:** —
+**Status:** Complete (engine side)
+**Completed:** 2026-06-12
 **Depends On:** Phase 4.1 (Complete, 2026-06-11)
 
 ---
@@ -103,8 +103,8 @@ Phase 5.1.
 | `order_book/runtime.py` | process singleton, lifespan start/stop, default **off** | Complete |
 | `GET /order-book/{symbol}[/stream]` | snapshot (404 cold) + SSE | Complete |
 | `SimAdapter` price source | book cache → market-data engine → limit/stop/default | Complete |
-| `quant-infra-db` PR | `13_*.sql`: nullable `execution.orders.strategy_id` + index | Complete |
-| `quant-api-gateway` PR | streaming proxy (`client.stream()`), PATCH proxy verified/added | Complete |
+| `quant-infra-db` PR | `15_*.sql`: nullable `execution.orders.strategy_id` + partial index | PR #15 open |
+| `quant-api-gateway` PR | streaming proxy (`client.stream()`), PATCH proxy verified/added | Pending (own PR) |
 
 ### Out of Scope (Phase 5)
 
@@ -468,11 +468,93 @@ Continuing the ADR's pinned §A–§G:
 
 ### Summary
 
-*(to be completed at phase close)*
+**Engine side complete (2026-06-12).** Phase 5 shipped the normalized **order-update stream
+out** (umbrella D12 realised) plus the **dual-provider order book service** and the
+`SimAdapter` live fill-price chain — all additive and default-off, with `live`/`micro_live`
+gating, the kill-switch path, PTRM, and the frozen `NormalizedOrder` / 13-edge state machine /
+capability cells **unchanged**. Concretely:
+
+- **`events/`** (D14/D15/D22) — frozen `OrderUpdateEvent` + `FillEvent` + `GapMarker`
+  (`Decimal`-as-string wire; `status` derived via the one existing `to_public_status` mapping,
+  E8); an in-process `EventHub` with a monotonic `seq`, ring-buffer `Last-Event-ID` replay,
+  bounded per-subscriber queues (drop-oldest + `gap` marker), a cid→strategy LRU, and an
+  exception-proof `publish` (the order path can never fail on stream plumbing).
+- **Repository publish hooks** in the five write functions `insert_order` (the `PENDING_NEW`
+  birth) / `ack_order` / `replace_order` / `update_status` / `apply_fill` — the proven choke
+  points every one of the 13 frozen edges funnels through, including the kill-switch
+  mass-cancel sweep; publish is post-success, non-blocking, and `apply_fill` publishes only for
+  newly-inserted fills (redeliveries emit nothing).
+- **`GET /orders/stream`** (`api/streams.py`) — SSE, `id:`=seq / `event:`=engine-state frames
+  (strict 9-state subset + `gap`/`resync_required` advisories), conjunctive
+  `strategy_id`/`client_order_id` filters, `Last-Event-ID` replay from the ring, keep-alive
+  comments, no-buffering headers.
+- **D16 strategy identity** — `X-Strategy-Id` header (slug-validated, 422 on violation) →
+  the new nullable `execution.orders.strategy_id` column (infra-db PR #15); events echo it;
+  the stream seeds a strategy's historical cids from the store at subscribe time so
+  reconciler-discovered events for pre-restart orders still match (DB-seeded, restart-safe).
+- **`order_book/`** (D17–D20, D22, D24) — normalized frozen `OrderBook`/`OrderBookLevel`,
+  an in-memory LRU cache (max-symbols / max-age) with refcounted SSE fan-out, a **Settrade**
+  provider (SDK realtime behind a lazy `_import_sdk` seam, all blocking SDK work on
+  `asyncio.to_thread`, `call_soon_threadsafe` bridge — E21 order-routing SDK ban unchanged), a
+  **Liberator** provider (ws-ticket + raw `websockets` Engine.IO v4 client, **no `curl_cffi`**,
+  default-namespaces-then-`BidOfferV2` join order, mid-session live join/leave, jittered
+  reconnect with a fresh ticket + re-join), a failover **router** (N consecutive errors in a
+  window → secondary + structured `order_book.provider_switch`; per-symbol overrides; no
+  auto-failback), and a lifespan-wired **runtime** (default off — bit-for-bit unchanged engine).
+- **`GET /order-book/{symbol}`** (404 cold; market omitted probes SET→TFEX) + **`/stream`**
+  (snapshot-then-updates SSE); additive `/health` `order_book` block.
+- **`SimAdapter` live pricing** (D21) — `SimFillPricer` resolves the fill price book best
+  ask/bid (limit-bounded) → market-data engine last 1d close (limit-bounded) → `None` (the
+  adapter's own `_reference_price`); price-only, and with **no source injected the adapter is
+  bit-for-bit Phase-2** (fill plans, FOK/IOC semantics untouched).
+- **New deps:** `websockets`, `settrade-v2` (lazy, market-data-only). **New env knobs**
+  (`EXECUTION_ENGINE_` prefix): `ORDER_BOOK_ENABLED` (default false), `ORDER_BOOK_PRIMARY_PROVIDER`,
+  `ORDER_BOOK_SYMBOL_OVERRIDES`, `ORDER_BOOK_FAILOVER_{ERROR_THRESHOLD,WINDOW_SECONDS}`,
+  `ORDER_BOOK_CACHE_{MAX_AGE_SECONDS,MAX_SYMBOLS}`, `MARKET_DATA_BASE_URL`, `MARKET_DATA_API_KEY`,
+  `STREAM_{KEEPALIVE_SECONDS,RING_BUFFER_SIZE,SUBSCRIBER_QUEUE_SIZE}`.
+
+**Gate:** 853 tests passed, 95.72% total coverage, `mypy --strict`, `ruff` clean. Three engine
+commits — `3530fc4` (order book), `f1e8991` (endpoints + sim pricing), `92c30b5`
+(events/stream) — atop the pre-code plan-doc commit `dcc84ee`. The infra-db `strategy_id`
+migration is **PR #15 (open)** in `lumduan/quant-infra-db`; the gateway streaming-proxy lands
+in its own PR after the engine PR merges.
+
+**D23 deferred:** the Settrade native order-push reconcile-kick is **not** shipped — wiring the
+SDK realtime *order* subscription as a transition source would breach the D18 SDK containment
+(the SDK may not leak into the `adapters/` layer), so it moves to **§I**. The stream is already
+fed by the reconciler + sim + router write paths regardless.
+
+**Scope split (operator decision, 2026-06-12):** this phase is **engine-side only**. The
+strategy-side scope — `CSM_EXECUTION_MODE` / `TFEX_S50_MULTI_TF_SWING_EXECUTION_MODE` flags and
+the end-to-end strategy sim trade loop — moves to **Phase 5.1** in the strategy repos; the
+original Phase-5 acceptance ("a strategy runs signal → `NormalizedOrder` → fill stream →
+position entirely in sim") completes there.
 
 ### Issues Encountered
 
-*(to be completed at phase close)*
+Five findings surfaced and were fixed during review:
+
+1. **Liberator mid-session subscribe never joined its room.** A new symbol subscribed while
+   the socket was already up was tracked but its `BidOfferV2` room was only joined at the next
+   reconnect — silently starving the subscriber. Fixed by resolving + joining (and, on
+   unsubscribe, leaving) the room **live on the open socket**.
+2. **Default-namespace chatter spammed the parse-skip WARNING.** The joined default namespaces
+   (`StockV2`/`TickerV2`/…) stream their own event frames continuously, which the generic
+   parse-skip path logged as malformed. Fixed by **namespace-scoping** the warning — only a
+   malformed frame *inside* `BidOfferV2` warns; everything else is silently ignored.
+3. **Settrade SDK login / MQTT-connect / subscribe ran blocking on the event loop.** The SDK's
+   `Investor` login, `RealtimeDataConnection().start()`, and even `import settrade_v2` itself
+   (NTP + version-check HTTP) all do blocking network I/O. Fixed by moving every blocking SDK
+   call onto **`asyncio.to_thread`**, with the sync callback bridged back via
+   `loop.call_soon_threadsafe` (the loop is never blocked — asserted off-loop in tests).
+4. **Route registration order captured `stream`.** Splitting `api/streams.py` out of
+   `routes.py` initially registered the streams router *second*, so `/orders/{client_order_id}`
+   matched `stream` as a path param and shadowed `/orders/stream`. Fixed by registering the
+   **streams router first** so `/orders/stream` out-ranks `/orders/{cid}`.
+5. **SSE consumption tests must drive the generators directly.** `TestClient` runs the route on
+   a separate `anyio` portal loop, so a cross-loop `queue.put` from the test never wakes the
+   route's consumer. The SSE tests therefore drive the async generators directly rather than
+   through `TestClient` streaming.
 
 ---
 
@@ -745,5 +827,5 @@ fill-price fallback chain, and kill-switch mass-cancel events appearing in the o
 
 **Document Version:** 1.0
 **Author:** AI Agent (Claude Fable 5)
-**Status:** In Progress
-**Completed:** —
+**Status:** Complete (engine side)
+**Completed:** 2026-06-12

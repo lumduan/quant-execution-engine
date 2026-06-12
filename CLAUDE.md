@@ -13,7 +13,8 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–4.1 complete (Phase 4 + 4.1: 2026-06-11); Phases 5–7 Proposed.** Phase 0:
+> **Current state: Phases 0–4.1 complete (Phase 4 + 4.1: 2026-06-11) + Phase 5 engine side
+> complete (2026-06-12); Phase 5.1 + Phases 6–7 Proposed.** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -60,11 +61,34 @@ submit lock / rate-limit).
 > [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md),
 > [`docs/plans/phase4-settrade-adapter.md`](docs/plans/phase4-settrade-adapter.md),
 > [`docs/plans/phase4.1-settrade-per-market-apps.md`](docs/plans/phase4.1-settrade-per-market-apps.md).)
+> **Phase 5 (2026-06-12): engine side complete — the normalized order-update stream out + a
+> dual-provider order book service.** The engine now pushes the **normalized order-update stream
+> out** (umbrella **D12** realised): `GET /orders/stream` (SSE; `id:`=seq / `event:`=engine-state
+> frames — a strict 9-state subset + `gap`/`resync_required` advisories; `strategy_id`/`client_order_id`
+> filters; `Last-Event-ID` ring-buffer replay) fed by an in-process `EventHub` whose `publish`
+> hooks sit in the **five** repository writers (`insert_order`/`ack_order`/`replace_order`/`update_status`/`apply_fill`)
+> every one of the 13 frozen edges funnels through — post-success, non-blocking, exception-proof
+> (**the stream is advisory, the durable store is truth**). `X-Strategy-Id` (D16) stamps a new
+> nullable `execution.orders.strategy_id` (`quant-infra-db` PR #15) so stream filtering survives
+> restarts (DB-seeded). A new **in-engine, read-only order book service** (D17) normalizes a
+> **dual-provider** L2 feed — **Settrade** realtime (`settrade-v2` SDK contained behind a lazy
+> import + `asyncio.to_thread`, **E21 order-routing SDK ban unchanged**) + **Liberator** ws-ticket
+> + raw `websockets` Engine.IO v4 client (**no `curl_cffi`**) — with consecutive-error failover
+> (D20), an LRU cache, `GET /order-book/{symbol}[/stream]`, and an additive `/health` `order_book`
+> block; it feeds `SimAdapter` **live fill prices** (D21: book best bid/offer → market-data last
+> close → reference, all limit-bounded; **with no source injected the sim is bit-for-bit Phase-2**).
+> All **additive and default-off** (`ORDER_BOOK_ENABLED=false`): the broker-free `docker compose up`
+> default is bit-for-bit unchanged. Decisions **D14–D24** (the cross-cutting D-series continuation,
+> not the E-series — streaming is umbrella D12); open questions **§H–§K**. **`live`/`micro_live`
+> gating, the kill-switch, PTRM, and the frozen `NormalizedOrder` / state machine / capability
+> cells are unchanged.** 853 tests, 95.72% cov. The strategy-side scope (the `*_EXECUTION_MODE`
+> flags + the end-to-end sim trade loop) split to **Phase 5.1** by operator decision. (Plan:
+> [`docs/plans/phase5-strategy-execution-path-order-streaming.md`](docs/plans/phase5-strategy-execution-path-order-streaming.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
 > operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
 > Liberator + Settrade runbooks). Build sequence:
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 5** —
-> strategy execution path + the normalized order-update stream out.
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 5.1** —
+> strategy execution flags + the end-to-end sim trade loop (in the strategy repos).
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -122,7 +146,7 @@ amend).
 | Health check | `curl http://localhost:8400/health` |
 | Durable order store | `quant-postgres:5432` (`execution.*`, `db_execution`) |
 | Own Redis sidecar | in this repo's compose (`quant-execution-redis`, distinct from the gateway's Redis) |
-| Gateway proxy surface | `POST\|GET\|DELETE /api/v2/engines/execution/*` (orders, status, capabilities, order-update WS) |
+| Gateway proxy surface | `POST\|GET\|DELETE\|PATCH /api/v2/engines/execution/*` (orders, status, capabilities, native amend) + **SSE streams** `GET /orders/stream` and `GET /order-book/{symbol}[/stream]` (non-buffering pass-through) |
 
 Use **service hostnames inside containers**, not `localhost`. Host ports exist only for
 developer access.
@@ -176,6 +200,20 @@ optional overrides so a broker can split its books across two OAuth apps (Innove
 fallback). `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
 `SETTRADE_CIRCUIT_BREAKER_THRESHOLD=3`, `SETTRADE_RECONCILE_INTERVAL_SECONDS=12`,
 `SETTRADE_TOKEN_REFRESH_MARGIN_SECONDS=100`.
+
+Order book + streaming env (Phase 5; `EXECUTION_ENGINE_` prefix, see `.env.example`): the order
+book service is **additive and default-off** — `ORDER_BOOK_ENABLED=false` (master switch, D24)
+keeps the engine bit-for-bit unchanged; enabling it also needs at least one configured provider
+(reusing the Liberator api-key / per-market Settrade trios). `ORDER_BOOK_PRIMARY_PROVIDER=settrade`
+(`settrade|liberator`), `ORDER_BOOK_SYMBOL_OVERRIDES={}` (JSON symbol→provider),
+`ORDER_BOOK_FAILOVER_ERROR_THRESHOLD=3` + `ORDER_BOOK_FAILOVER_WINDOW_SECONDS=30` (consecutive-error
+failover, D20), `ORDER_BOOK_CACHE_MAX_AGE_SECONDS=5` + `ORDER_BOOK_CACHE_MAX_SYMBOLS=500` (LRU).
+`MARKET_DATA_BASE_URL` (optional — the `SimAdapter` last-close fallback hop, D21) +
+`MARKET_DATA_API_KEY` (SecretStr). The order-update stream knobs: `STREAM_KEEPALIVE_SECONDS=15`
+(SSE comment interval), `STREAM_RING_BUFFER_SIZE=1024` (`Last-Event-ID` replay window),
+`STREAM_SUBSCRIBER_QUEUE_SIZE=256` (per-subscriber back-pressure bound). New deps: `websockets`,
+`settrade-v2` (lazy, market-data-only). **`live`/`micro_live` gating is unchanged** — these feeds
+are read-only market data.
 
 ## Quality gates
 
@@ -254,6 +292,8 @@ Tear down in reverse; only `quant-infra-db` down removes `quant-network`.
   [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normalized-order-contract.md),
   [`.claude/knowledge/order-state-machine.md`](.claude/knowledge/order-state-machine.md)
 - **Decision log:** [`.claude/knowledge/decision-log.md`](.claude/knowledge/decision-log.md)
+- **Order-update stream schema/contract (Phase 5):** [`.claude/knowledge/order-update-stream.md`](.claude/knowledge/order-update-stream.md)
+- **Order book service architecture (Phase 5):** [`.claude/knowledge/order-book-service.md`](.claude/knowledge/order-book-service.md)
 - **Order-routing safety playbook:** [`.claude/playbooks/order-routing-safety.md`](.claude/playbooks/order-routing-safety.md)
 - **Pattern precedent (standalone credential-owner engine):** `../quant-marketdata-engine/CLAUDE.md`
 - **Umbrella system map:** [`../CLAUDE.md`](../CLAUDE.md)
