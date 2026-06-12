@@ -177,6 +177,37 @@ curl -N -H "X-API-Key: $INTERNAL_API_KEY" \
   "http://localhost:8000/api/v2/engines/execution/orders/stream?strategy_id=csm-set"
 ```
 
+## Strategy consumer contract (Phase 5.1)
+
+How the strategy repos (`csm-set`, `tfex-s50-multi-tf-swing`) consume this stream — the
+client-side invariants their `ExecutionEngineAdapter` / `run_sim_loop` implement (Phase 5.1;
+plan: [`../../docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md`](../../docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md)):
+
+- **Gateway-only, attributed.** All calls ride `/api/v2/engines/execution/*` with `X-API-Key`
+  + `X-Strategy-Id` on every request (the gateway forwards both since its PR #24); the stream
+  filter is the `?strategy_id=` query param.
+- **Subscribe before submit.** One SSE connection per strategy run, opened **before** the
+  first `POST /orders`. The `SimAdapter` fills synchronously, so the POST ack can already be
+  `FILLED` — subscribing first guarantees those transition events are still delivered, not
+  raced.
+- **Single-source fill accounting.** Position deltas are applied **only** from stream `fill`
+  payloads; the POST ack never moves a position. Reconcile fallback: on per-order timeout or
+  stream reset, `GET /orders/{cid}` and apply the **residual** (`filled_qty − applied_qty`)
+  at `avg_fill_price`. This makes the ack-already-FILLED + replay overlap a non-event.
+- **Client seq watermark.** The adapter tracks the max delivered `seq` and drops anything at
+  or below it — the guard for duplicates across *client* reconnects (the server only dedupes
+  its own subscribe/replay overlap). Reconnects send `Last-Event-ID: <watermark>`.
+- **Advisories.** `resync_required` → the adapter raises a typed `StreamResetError(after_seq)`
+  and the loop degrades to GET-polling for in-flight orders. `gap` → WARNING + continue (the
+  timeout + GET-residual path recovers a lost terminal event).
+- **Same-cid transport retry.** A bare transport 5xx/timeout retries the **same**
+  `client_order_id` (ADR §A at-least-once + dedupe; a 200 prior-ack parses like the 201). A
+  typed `{"error": …}` envelope — including 503 `kill_switch_engaged` — is terminal, never
+  retried. Only a new *logical* order gets a fresh UUIDv4.
+- **Local wire mirrors.** Strategies define their own Pydantic mirrors of
+  `OrderUpdateEvent`/`NormalizedOrder*` (Decimal-as-string, `Literal` enums) — no cross-repo
+  imports; this file + the phase plan are the schema source of truth for those mirrors.
+
 ## Cross-references
 
 - Decisions D14–D24 → [`decision-log.md`](decision-log.md#phase-5-realisation-decisions-d14d24-2026-06-12)
