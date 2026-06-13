@@ -718,6 +718,7 @@ unchanged):
 ## Cross-references
 
 - Cross-cutting roadmap → [`../../../plans/feature-execution-engine/ROADMAP.md`](../../../plans/feature-execution-engine/ROADMAP.md)
+- Feature sub-plan → [`liberator-session-self-heal/ROADMAP.md`](liberator-session-self-heal/ROADMAP.md) — auto-login the Liberator broker session when it dies (refactor + enable the bundled `SessionMonitorService`; proposed 2026-06-13)
 - Architecture ADR (Phase-0 gate) → [`../../../.claude/knowledge/feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md)
 - Broker research (cited) → [`../../.claude/knowledge/broker-research-liberator.md`](../../.claude/knowledge/broker-research-liberator.md),
   [`../../.claude/knowledge/broker-research-settrade.md`](../../.claude/knowledge/broker-research-settrade.md)
