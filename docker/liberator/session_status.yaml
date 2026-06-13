@@ -1,21 +1,9 @@
 # Container config for the bundled liberator-trading-api overlay.
-# test_payload is the session-monitor liveness probe; the monitor ships DISABLED
-# (session_monitor.enabled/auto_connect = false) so this is inert. Placeholder
-# accountNo/pin only — never real credentials (those live in the gitignored .env).
+# Session monitor ships DISABLED (auto_connect: false) until Phase 5.
+# Liveness probe is now GET /api/v1/profile (read-only, auth-token-only — Phase 1);
+# the former test_payload block (placeholder accountNo/pin for the order pre-place
+# probe) is gone — the probe is self-contained and needs no account number or PIN.
 session_status:
-  test_payload:
-    accountNo: '00000000'
-    icebergVol: 0
-    volume: 1
-    symbol: CPALL
-    side: Buy
-    pin: '000000'
-    price: 1.0
-    priceType: Limit
-    validityType: Day
-    nvdr: false
-    ip: ''
-    tstamp: ''
   monitoring:
     enabled: true
     interval_seconds: 300
@@ -37,4 +25,3 @@ session_monitor:
   service_pause_minutes: 30
   health_check_on_startup: false
   log_level: info
-
