@@ -206,3 +206,100 @@ The Liberator stage-flip rule applies verbatim: cancels resolve their adapter fr
 stage, so **before changing `EXECUTION_ENGINE_STAGE` while `broker=settrade` orders are open,
 engage the kill-switch (mass-cancels everything), verify `GET /health`, then flip and
 disengage.** Do not rely on the reconciler to fix mis-routed cancels.
+
+## Kill-switch trip procedure (Phase 6)
+
+The runtime kill-switch is the real-money **flatten-and-halt**: it rejects every new submit with
+a typed error AND mass-cancels open orders. It is owner-mode + API-key, engine-direct (never
+proxied), and the env flag (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) is the boot-time backstop that
+**pins over** a runtime disengage. Phase 6 hardened the admin trip to be idempotent,
+structured-logged, and operator-attributed.
+
+### Engage (trip it)
+
+```bash
+# Owner-mode + API-key; optional X-Operator-Id for the audit log.
+curl -X POST http://localhost:8400/admin/kill-switch/engage \
+  -H "X-API-Key: $EXECUTION_ENGINE_API_KEY" \
+  -H "X-Operator-Id: alice"      # optional; logged as "anonymous" if omitted
+```
+
+- **Response** (`200`): `{"engaged": true, "already_engaged": false, "cancelled_count": N,
+  "cancelled": [<cid>...], "failed": [<cid>...]}`. `cancelled_count == len(cancelled)`; `failed`
+  lists cids the best-effort sweep could not cancel (diagnose those individually).
+- **Structured log:** one JSON line `{"event": "kill_switch.engaged", "operator": "...",
+  "cancelled_count": N, "failed_count": M}` — grep the engine log for `kill_switch.engaged`. Never
+  any secret.
+- **Expected audit trail:** each open order is swept through the frozen cancel path, so
+  `execution.order_events` gains a `PENDING_CANCEL → CANCELLED` pair per order (the genuine
+  append-only rows — there is **no** literal `kill_switch_cancel` event_type; the kill-switch
+  framing lives in the structured log + `cancelled_count`). Confirm via
+  `GET /admin/orders/{cid}/audit` (below) or a date-range export.
+- **Idempotent:** engaging again returns `200` with `already_engaged=true` and
+  `cancelled_count=0` — it runs **no second sweep**. Safe to retry.
+- **Stranded `PENDING_REPLACE` caveat (Settrade native amend):** mass-cancel **skips
+  `PENDING_REPLACE` rows by construction** (no frozen cancel edge from that state). After an
+  engage, a stranded amend is NOT swept by the first sweep — **re-run engage (or wait one
+  reconcile pass)** so `replace_resolve` returns the row to `NEW`/`PARTIALLY_FILLED` first, then a
+  subsequent engage cancels it. (Same note as the Settrade native-amend runbook above.)
+
+### Disengage (clear the runtime trip)
+
+```bash
+curl -X POST http://localhost:8400/admin/kill-switch/disengage \
+  -H "X-API-Key: $EXECUTION_ENGINE_API_KEY" -H "X-Operator-Id: alice"
+```
+
+- **Response** (`200`): `{"engaged": false, "source": "..."}`. Emits a structured
+  `kill_switch.disengaged` log with the operator identity.
+- **Already clear → `409 kill_switch_not_engaged`** (distinct from the env-pinned conflict).
+- **Env-pinned wins:** if `EXECUTION_ENGINE_KILL_SWITCH_ENGAGED=true`, disengage raises
+  `409 kill_switch_env_pinned` — the runtime cannot override the env flag; clear the env flag and
+  restart to truly disengage.
+- After disengage, a fresh submit is accepted again; verify with a sim order or `GET /health`.
+
+> **Stage-flip precedent reaffirmed.** This trip is exactly the tool the stage-flip rule mandates:
+> **before changing `EXECUTION_ENGINE_STAGE` while orders are open, engage the kill-switch
+> (mass-cancels everything) first, verify `GET /health`, then flip and disengage.** Verified
+> end-to-end by the Phase 6 5-order fault-injection test (engage → all CANCELLED + audit rows →
+> fresh submit rejected → disengage → fresh submit accepted).
+
+## Audit export procedure (Phase 6)
+
+Two owner-mode reads over the append-only `execution.order_events` store, for reconciliation and
+post-incident review. Both are **synthesized** from the existing columns — there is **no
+`quant-infra-db` schema change** — and are reads only (no DB write). `403 public_mode` outside
+owner mode.
+
+### Single-order trail
+
+```bash
+curl http://localhost:8400/admin/orders/{client_order_id}/audit \
+  -H "X-API-Key: $EXECUTION_ENGINE_API_KEY"
+```
+
+- Returns the order header (`client_order_id`/`broker`/`symbol`) plus its **ordered** events; each
+  event carries the synthesized `seq` (1-based per-order ordinal), `from_status`/`to_status`,
+  `event_type` (a derived `(from,to)` label — `create`/`ack`/`replace`/`fill`/`cancel_request`/
+  `cancel`/`replace_request`/`reject`/`expire`), `broker_order_id` + opaque `metadata` (both from
+  the stored `event` JSONB), and `occurred_at` (UTC ISO-8601).
+- `404 order_not_found` when the cid is not in `execution.orders`.
+
+### Date-range NDJSON export (reconciliation)
+
+```bash
+# Streaming NDJSON (one JSON object per line); from_ts inclusive, to_ts exclusive.
+curl "http://localhost:8400/admin/audit/export?from_ts=2026-06-13T00:00:00Z&to_ts=2026-06-14T00:00:00Z&strategy_id=csm-set" \
+  -H "X-API-Key: $EXECUTION_ENGINE_API_KEY" -o audit_2026-06-13_2026-06-14.ndjson
+```
+
+- `Content-Type: application/x-ndjson`; a `Content-Disposition: attachment; filename="audit_<lo>_<hi>.ndjson"`
+  names the range (`all` when a bound is omitted).
+- Filters (all optional): `from_ts` (inclusive `created_at >=`), `to_ts` (exclusive
+  `created_at <`), `strategy_id` (joins `execution.orders.strategy_id` — the D16 attribution
+  column; needs the strategy to have stamped `X-Strategy-Id`).
+- **Streams as fetched** via a server-side cursor (500-row batches) — a large date range never
+  buffers in memory. Each line carries `event_id`/`client_order_id`/`from_status`/`to_status`/the
+  decoded `event` object/`strategy_id`/`created_at`.
+- Use it to diff engine truth against a venue statement for a trading day; the `event_id` order is
+  total and stable even for events that share a `created_at` inside one transaction.

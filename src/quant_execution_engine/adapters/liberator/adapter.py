@@ -44,6 +44,7 @@ from src.quant_execution_engine.adapters.liberator.models import (
     parse_order_items,
 )
 from src.quant_execution_engine.adapters.liberator.transport import LiberatorTransport
+from src.quant_execution_engine.adapters.rate_limit import TokenBucket
 from src.quant_execution_engine.adapters.session import SessionCircuitBreaker
 from src.quant_execution_engine.contracts.capabilities import (
     CAPABILITY_MATRIX,
@@ -73,12 +74,18 @@ class LiberatorAdapter(BrokerAdapter):
         transport: LiberatorTransport,
         pin: SecretStr,
         breaker_threshold: int = 3,
+        post_rate_limit: float = 5.0,
         resolve_order: OrderIdResolver | None = None,
     ) -> None:
         super().__init__()
         self.breaker = SessionCircuitBreaker(failure_threshold=breaker_threshold)
         self._transport = transport
         self._pin = pin
+        # Venue-facing placement cap (Phase 6 / D2): a token bucket on the
+        # placement path ONLY. cancel()/heartbeat()/reconciler fetches stay
+        # unthrottled — a cancel or a liveness probe must never queue behind a
+        # placement burst. ``rate <= 0`` disables it.
+        self._place_limiter = TokenBucket(post_rate_limit, name="liberator_post")
         self._resolve_order = resolve_order
         # cid -> (orderNo, market); warm path for cancels of orders this
         # process placed. The injected resolver is the durable fallback.
@@ -91,6 +98,10 @@ class LiberatorAdapter(BrokerAdapter):
             payload = mapping.to_place_payload(order, pin=self._pin.get_secret_value())
         except LiberatorMappingError as exc:
             return PlaceAck(rejected=True, reject_reason=str(exc))
+        # Throttle the placement path to the venue's request budget (D2) — a
+        # mapping-rejected order never reaches here, so it consumes no token. On
+        # exhaustion this awaits (back-pressure); it never drops or raises.
+        await self._place_limiter.acquire()
         envelope = await self._transport.post(mapping.place_path(order.market), payload)
         if not envelope.ok:
             return PlaceAck(rejected=True, reject_reason=envelope.reject_reason())

@@ -88,6 +88,8 @@ def create_liberator_runtime(settings: Settings) -> LiberatorAdapter | None:
         transport=transport,
         pin=settings.liberator_pin,
         breaker_threshold=settings.liberator_circuit_breaker_threshold,
+        # Venue-facing placement cap (D2) — place() only.
+        post_rate_limit=settings.liberator_post_rate_limit,
         resolve_order=_resolve_order_from_store,
     )
     logger.info("liberator runtime created (stage=%s)", settings.stage)

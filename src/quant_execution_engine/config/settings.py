@@ -50,7 +50,35 @@ class Settings(BaseSettings):
     risk_max_order_qty: int = 1000
     risk_max_order_value: Decimal = Decimal("1000000")
     risk_max_orders_per_second: int = 5
+    # Legacy Phase-2 burst window. Retained so older .env files still load, but
+    # the Phase-6 unified duplicate-burst guard uses ``duplicate_burst_window_seconds``
+    # below (Design Decision §1); this value is no longer read by the burst check.
     risk_duplicate_burst_window_seconds: int = 2
+
+    # Per-account PTRM caps (Phase 6 / A1). JSON maps account -> cap. When an
+    # account is present in a map its cap binds; an account absent from the map
+    # falls back to the global ``risk_max_*`` cap above (never a silent skip).
+    # Enforced in EVERY stage, including ``sim`` — the risk gate is not
+    # mode-dependent. Notional is ``Decimal`` end-to-end.
+    account_max_notional: dict[str, Decimal] = Field(default_factory=dict)
+    account_max_qty: dict[str, int] = Field(default_factory=dict)
+
+    # Price-band advisory pre-trade check (Phase 6 / A2). When enabled AND a
+    # market-data base URL is configured, a LIMIT order whose price deviates from
+    # the symbol's last close by more than ``price_band_max_pct`` percent is
+    # rejected (422). MARKET orders bypass; a market-data fetch failure is
+    # advisory (WARN + pass). Default OFF — enabling it is an operator choice.
+    price_band_enabled: bool = False
+    price_band_max_pct: Decimal = Decimal("10.0")
+
+    # Unified duplicate-burst guard (Phase 6 / A3, Design Decision §1). Blocks a
+    # second order carrying the same economic fingerprint
+    # ``(account, symbol, side, quantity, order_type, price)`` under a DIFFERENT
+    # client_order_id within the window (409). Same-cid resends are caught by
+    # id-level dedupe earlier in the router, never here. DEFAULT ON: a hardening
+    # phase must not silently disable an active guard; set it false to disable.
+    duplicate_burst_guard_enabled: bool = True
+    duplicate_burst_window_seconds: int = 5
 
     # Idempotent-submit single-flight lock
     submit_lock_ttl_seconds: int = 10
@@ -101,6 +129,19 @@ class Settings(BaseSettings):
     settrade_circuit_breaker_threshold: int = 3
     settrade_reconcile_interval_seconds: int = 12
     settrade_token_refresh_margin_seconds: int = 100
+
+    # Venue-facing rate-limit token buckets (Phase 6 / D). These are the
+    # engine-side enforcement of each venue's documented request budget, distinct
+    # from the PTRM ``risk_max_orders_per_second`` gate above (that caps the
+    # strategy's submit rate; these throttle outbound venue calls). On exhaustion
+    # a bucket AWAITS (back-pressure) — it never drops a request nor raises to the
+    # caller. ``0`` disables a bucket (unlimited). Settrade enforces two buckets
+    # (POST/PATCH writes vs GET reads) PER OAuth app, so they live per
+    # ``SettradeClient`` (per market, Phase 4.1 — Design Decision §4). Liberator
+    # caps only the placement path.
+    settrade_post_rate_limit: int = 10
+    settrade_get_rate_limit: int = 10
+    liberator_post_rate_limit: int = 5
 
     # Order book service (Phase 5) — a normalized, read-only L2 cache fed by the
     # Settrade realtime + Liberator WebSocket feeds (ADR D17–D24). The whole

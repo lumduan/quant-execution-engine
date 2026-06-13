@@ -31,11 +31,31 @@ from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
-from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
+from src.quant_execution_engine.db.models import OrderEventRow, OrderResultRow, OrderRow
 from src.quant_execution_engine.events.hub import get_event_hub
 from src.quant_execution_engine.events.models import FillEvent
 
 # --------------------------------------------------------------------- asyncpg
+
+
+class FakeCursor:
+    """A scripted asyncpg server-side cursor: ``async for`` over queued rows.
+
+    Records that it was iterated so a test can assert the streaming (cursor) path
+    ran rather than a buffered ``fetch`` (E2 — never buffer the whole result set).
+    """
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.iterated = False
+
+    def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
+        self.iterated = True
+        return self._gen()
+
+    async def _gen(self) -> AsyncIterator[dict[str, Any]]:
+        for row in self._rows:
+            yield row
 
 
 class FakeConn:
@@ -48,14 +68,18 @@ class FakeConn:
         fetchrow_results: list[dict[str, Any] | None] | None = None,
         fetchval_results: list[Any] | None = None,
         fetch_results: list[list[dict[str, Any]]] | None = None,
+        cursor_results: list[list[dict[str, Any]]] | None = None,
         raise_map: dict[str, Exception] | None = None,
     ) -> None:
         self.execute_results = execute_results or []
         self.fetchrow_results = fetchrow_results or []
         self.fetchval_results = fetchval_results or []
         self.fetch_results = fetch_results or []
+        self.cursor_results = cursor_results or []
         self.raise_map = raise_map or {}
         self.calls: list[tuple[str, str, tuple[Any, ...]]] = []
+        self.cursors: list[FakeCursor] = []
+        self.transaction_entered = 0
 
     def _maybe_raise(self, sql: str) -> None:
         for token, exc in self.raise_map.items():
@@ -82,8 +106,18 @@ class FakeConn:
         self._maybe_raise(sql)
         return self.fetch_results.pop(0) if self.fetch_results else []
 
+    def cursor(self, sql: str, *args: Any, prefetch: int | None = None) -> FakeCursor:
+        """Mirror asyncpg's ``Connection.cursor`` (a server-side cursor factory)."""
+        self.calls.append(("cursor", sql, args))
+        self._maybe_raise(sql)
+        rows = self.cursor_results.pop(0) if self.cursor_results else []
+        cur = FakeCursor(rows)
+        self.cursors.append(cur)
+        return cur
+
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
+        self.transaction_entered += 1
         yield
 
 
@@ -246,9 +280,35 @@ class MemStore:
     def __init__(self) -> None:
         self.orders: dict[str, dict[str, Any]] = {}
         self.fills: dict[str, list[dict[str, Any]]] = {}
+        # Append-only audit rows, mirroring the infra-db trigger: one row per
+        # INSERT / legal transition with the {broker_order_id, price, quantity}
+        # JSONB snapshot. Globally event_id-ordered (monotonic, like the column).
+        self.events: list[dict[str, Any]] = []
+        self._event_seq = 0
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
+
+    def _append_event(
+        self, client_order_id: str, from_status: OrderState | None, to_status: OrderState
+    ) -> None:
+        """Mirror ``execution.orders_append_event`` — one audit row per transition."""
+        self._event_seq += 1
+        row = self.orders[client_order_id]
+        self.events.append(
+            {
+                "event_id": self._event_seq,
+                "client_order_id": client_order_id,
+                "from_status": from_status.value if from_status is not None else None,
+                "to_status": to_status.value,
+                "event": {
+                    "broker_order_id": row["broker_order_id"],
+                    "price": format(row["price"], "f") if row["price"] is not None else None,
+                    "quantity": row["quantity"],
+                },
+                "created_at": self._now(),
+            }
+        )
 
     def seed(
         self, order: NormalizedOrder, status: OrderState, *, strategy_id: str | None = None
@@ -277,6 +337,10 @@ class MemStore:
             "updated_at": now,
         }
         self.fills.setdefault(order.client_order_id, [])
+        # Mirror the trigger's birth row. The DB always enters at PENDING_NEW;
+        # a test that seeds directly at a later state still gets one birth row at
+        # that state (the trigger's INSERT row records NEW.status).
+        self._append_event(order.client_order_id, None, status)
 
     async def insert_order(
         self, pool: Any, order: NormalizedOrder, strategy_id: str | None = None
@@ -317,6 +381,7 @@ class MemStore:
         row["status"] = OrderState.NEW
         row["broker_order_id"] = broker_order_id
         row["updated_at"] = self._now()
+        self._append_event(client_order_id, OrderState.PENDING_NEW, OrderState.NEW)
         hub = get_event_hub()
         if hub is not None:
             hub.publish(
@@ -344,6 +409,7 @@ class MemStore:
         if new_qty is not None:
             row["quantity"] = new_qty
         row["updated_at"] = self._now()
+        self._append_event(client_order_id, OrderState.PENDING_REPLACE, OrderState.NEW)
         hub = get_event_hub()
         if hub is not None:
             hub.publish(
@@ -362,8 +428,10 @@ class MemStore:
         if row["status"] is new_status:
             return
         state_machine.assert_legal(row["status"], new_status, client_order_id=client_order_id)
+        from_status = row["status"]
         row["status"] = new_status
         row["updated_at"] = self._now()
+        self._append_event(client_order_id, from_status, new_status)
         hub = get_event_hub()
         if hub is not None:
             hub.publish(
@@ -389,6 +457,16 @@ class MemStore:
     ) -> OrderState:
         fills = self.fills.setdefault(client_order_id, [])
         newly_recorded = not any(f["broker_fill_id"] == broker_fill_id for f in fills)
+        prospective = sum(f["quantity"] for f in fills) + (quantity if newly_recorded else 0)
+        target = OrderState.FILLED if prospective >= total_quantity else OrderState.PARTIALLY_FILLED
+        # db.repositories.apply_fill runs the fill INSERT + the status flip in ONE
+        # transaction: an illegal flip (23514) rolls back the fill insert too. Mirror
+        # that all-or-nothing by asserting legality BEFORE recording the fill — so a
+        # fill that would illegally advance (e.g. PENDING_NEW) leaves NOTHING behind.
+        row = self.orders[client_order_id]
+        flip_needed = row["status"] is not target
+        if flip_needed:
+            state_machine.assert_legal(row["status"], target, client_order_id=client_order_id)
         if newly_recorded:
             fills.append(
                 {
@@ -398,15 +476,13 @@ class MemStore:
                     "exec_ts": exec_ts,
                 }
             )
-        filled = sum(f["quantity"] for f in fills)
-        target = OrderState.FILLED if filled >= total_quantity else OrderState.PARTIALLY_FILLED
         # Flip the status WITHOUT the publishing update_status — apply_fill emits a
         # single fill-bearing event (mirrors db.repositories.apply_fill).
-        row = self.orders[client_order_id]
-        if row["status"] is not target:
-            state_machine.assert_legal(row["status"], target, client_order_id=client_order_id)
+        if flip_needed:
+            from_status = row["status"]
             row["status"] = target
             row["updated_at"] = self._now()
+            self._append_event(client_order_id, from_status, target)
         hub = get_event_hub()
         if hub is not None and newly_recorded:
             hub.publish(
@@ -452,6 +528,41 @@ class MemStore:
     async def fetch_client_order_ids_for_strategy(self, pool: Any, strategy_id: str) -> set[str]:
         return {cid for cid, row in self.orders.items() if row["strategy_id"] == strategy_id}
 
+    async def fetch_order_events(self, pool: Any, client_order_id: str) -> list[OrderEventRow]:
+        return [
+            OrderEventRow.from_record(e)
+            for e in self.events
+            if e["client_order_id"] == client_order_id
+        ]
+
+    async def stream_order_events(
+        self,
+        pool: Any,
+        *,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        strategy_id: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        for e in self.events:
+            if from_ts is not None and e["created_at"] < from_ts:
+                continue
+            if to_ts is not None and e["created_at"] >= to_ts:
+                continue
+            row = self.orders.get(e["client_order_id"])
+            row_strategy = row["strategy_id"] if row is not None else None
+            if strategy_id is not None and row_strategy != strategy_id:
+                continue
+            ts = e["created_at"]
+            yield {
+                "event_id": e["event_id"],
+                "client_order_id": e["client_order_id"],
+                "from_status": e["from_status"],
+                "to_status": e["to_status"],
+                "event": e["event"],
+                "strategy_id": row_strategy,
+                "created_at": ts.isoformat() if ts is not None else None,
+            }
+
 
 _REPO_FUNCTIONS = (
     "insert_order",
@@ -465,6 +576,8 @@ _REPO_FUNCTIONS = (
     "fetch_open_orders",
     "fetch_orders_for_reconcile",
     "fetch_client_order_ids_for_strategy",
+    "fetch_order_events",
+    "stream_order_events",
 )
 
 

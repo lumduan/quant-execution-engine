@@ -11,6 +11,7 @@ import asyncpg
 from fastapi import Depends, HTTPException, Request, status
 
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
+from src.quant_execution_engine.adapters.market_data import get_market_data_client
 from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.cache.redis_client import get_redis
@@ -52,6 +53,20 @@ def get_strategy_id(request: Request) -> str | None:
             detail="invalid X-Strategy-Id",
         )
     return value
+
+
+def get_operator_id(request: Request) -> str:
+    """Read the optional ``X-Operator-Id`` header for admin audit logging.
+
+    Always returns a value: the trimmed header, or ``"anonymous"`` when absent or
+    blank. Deliberately NEVER raises — operator identity is advisory audit
+    context, not an auth gate (auth is ``require_api_key`` + ``require_owner_mode``).
+    """
+    raw = request.headers.get("X-Operator-Id")
+    if raw is None:
+        return "anonymous"
+    value = raw.strip()
+    return value or "anonymous"
 
 
 def get_pool_dep() -> asyncpg.Pool:
@@ -97,4 +112,5 @@ def get_router_dep(
         liberator_adapter=get_liberator_adapter(),
         settrade_adapter=get_settrade_adapter(),
         sim_price_source=get_sim_pricer(),
+        market_data_client=get_market_data_client(),
     )

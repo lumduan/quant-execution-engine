@@ -16,11 +16,13 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–5.1 complete (Phase 5 engine side + Phase 5.1 strategy side: 2026-06-12) —
-ADR accepted; order store live; engine core + SimAdapter + gateway proxy live;
-`LiberatorAdapter` + `SettradeAdapter` (both real venues) live; the normalized order-update
-stream out + the dual-provider order book service live; both strategies run the end-to-end sim
-trade loop behind `*_EXECUTION_MODE` flags; Phases 6–7 Proposed.** The full order path
+**Status: Phases 0–6 complete (Phase 5 engine side + Phase 5.1 strategy side: 2026-06-12;
+Phase 6 safety/ops/reconciliation hardening: 2026-06-13) — ADR accepted; order store live;
+engine core + SimAdapter + gateway proxy live; `LiberatorAdapter` + `SettradeAdapter` (both real
+venues) live; the normalized order-update stream out + the dual-provider order book service live;
+both strategies run the end-to-end sim trade loop behind `*_EXECUTION_MODE` flags; the failure
+paths hardened under fault injection (Phase 6); Phase 7 (documentation) Proposed.** The full order
+path
 runs end-to-end through the gateway: submit/dedupe/fills/cancel/**native-amend** over the
 durable store, PTRM + kill-switch + stage ladder wired from the first path. Two real brokers
 route the **same** `NormalizedOrder` by `broker`/account (Liberator cancel+replace amend;
@@ -33,7 +35,12 @@ real-money default**; `micro_live` is the highest rung the adapters exercise, op
 The strategy-side scope (the `*_EXECUTION_MODE` flags + the end-to-end sim trade loop) split to
 **Phase 5.1** by operator decision and **shipped the same day** (2026-06-12): csm-set PR #16,
 tfex PR #18, gateway PR #24 (`X-Strategy-Id` forwarding), live-verified end-to-end in sim.
-Next: **Phase 6** (safety, ops & reconciliation hardening).
+**Phase 6 (2026-06-13)** hardened the failure paths under fault injection — per-account caps +
+advisory price-band + unified default-on duplicate-burst guard, kill-switch admin-trip hardening +
+a 5-order fault test, an idempotency soak + reconciliation drift suite, per-adapter rate-limit
+token buckets + an `EventHub` §H stress test, and a structured audit read + NDJSON export — all
+additive, `live` still gated, no frozen-contract or infra-db schema change. Next: **Phase 7**
+(documentation, tvkit-ref style).
 
 ---
 
@@ -566,23 +573,55 @@ strategy-side scope: strategies became first-class callers of the Phase 5 engine
   umbrella ROADMAP Phase 5.
 
 ### Phase 6 — Safety, ops & reconciliation hardening 🛡️
-**Status:** `[ ]` Proposed. **Repo:** this repo (own PR).
+**Status:** `[x]` **Complete (2026-06-13).** **Repo:** this repo
+(`feature/phase6-safety-ops-reconciliation-hardening`, own PR). **Shipped:** the failure paths
+made provably safe under fault injection across **five additive workstreams** — **(A) risk-gate
+hardening:** per-account notional/qty caps (`EXECUTION_ENGINE_ACCOUNT_MAX_{NOTIONAL,QTY}` JSON
+maps, absent-account → global cap, enforced in EVERY stage incl. `sim`), an advisory price-band
+check (`core/price_band.py` reusing a factored-out shared `adapters/market_data.py`
+`MarketDataClient`, wired after the PTRM gate, MARKET bypass, WARN+pass on fetch failure, typed
+`PriceBandExceeded` 422, default-off), and the **unified duplicate-burst guard** (one guard,
+richer `account|symbol|side|qty|order_type|price` fingerprint, `exe:burst:` key, typed
+`DuplicateBurstDetected` 409, **default-ON** — superseding the old coarse 2 s/429 guard, the legacy
+window setting now unused); **(B) kill-switch admin-trip hardening:** idempotent engage/disengage
+(`already_engaged`/409 `kill_switch_not_engaged`), structured JSON `kill_switch.engaged|disengaged`
+logs, optional `X-Operator-Id`, `cancelled_count`, + a 5-order (NEW + PARTIALLY_FILLED)
+fault-injection test asserting genuine CANCELLED-transition audit rows; **(C) idempotency soak +
+reconciliation drift:** PENDING_NEW-stuck / ack-lost / fill-before-ack / same-cid-retry scenarios
+(no double-send under a mid-submit kill), DB-behind→FILLED repair, DB-ahead never regresses a
+terminal, stranded `PENDING_REPLACE` `replace_resolve`; **(D) per-adapter rate limits:** a
+pure-asyncio `adapters/rate_limit.py` `TokenBucket` (monotonic lazy-refill, await-on-deficit,
+never drop/raise) — Settrade GET + WRITE buckets per `SettradeClient` (per OAuth app/market) +
+a Liberator POST bucket on `place()` only, plus an `EventHub` §H slow-subscriber stress test
+(1000 ev/s × 10 slow subscribers — **single-process confirmed, no fan-out code change**); **(E)
+structured audit:** owner-mode `GET /admin/orders/{cid}/audit` + streaming NDJSON
+`GET /admin/audit/export` (date/`strategy_id` filters, server-side cursor), the response
+**synthesized** from the existing `order_events` columns — **no `quant-infra-db` schema change**.
+**`live` stays gated; the frozen `NormalizedOrder` / 13-edge state machine / capability cells,
+kill-switch-first ordering, and PTRM semantics are all unchanged.** 952 tests (853 baseline →
++99), 96.01% cov, mypy strict, ruff clean. Phase plan:
+[`phase6-safety-ops-reconciliation-hardening.md`](phase6-safety-ops-reconciliation-hardening.md).
+**Phase 7 unblocked.**
 
 - **Objective:** make the failure paths provably safe under fault injection.
-- **Scope (ships):** pre-trade risk-gate hardening (per-account notional/qty caps, price-band
+- **Scope (shipped):** pre-trade risk-gate hardening (per-account notional/qty caps, price-band
   vs live market data, duplicate-burst guard); the kill-switch runbook + admin trip; idempotency
   soak + reconciliation drift tests (kill the process mid-submit; assert **no double-send** and
   correct repair); per-adapter rate-limit / backpressure (Settrade is rate-limited natively);
   structured audit export from `order_events`.
 - **Non-goals:** no new broker; no new order type.
-- **Acceptance:** the documented failure-injection suite passes; no double-submit under fault;
-  reconciliation provably repairs drift; the kill-switch is verified.
-- **Quality gate:** ruff + mypy strict + pytest ≥90% incl. fault-injection tests.
+- **Acceptance (met):** the documented failure-injection suite passes; no double-submit under
+  fault; reconciliation provably repairs drift; the kill-switch is verified end-to-end (5-order
+  mass-cancel + audit rows + disengage roundtrip).
+- **Quality gate:** ruff + mypy strict + pytest ≥90% incl. fault-injection tests (952 tests,
+  96.01% cov).
 - **Cross-refs:** umbrella ROADMAP Phase 6; tfex risk kill-switch / ladder playbook as a
-  safety-design precedent.
+  safety-design precedent; Phase 6 decisions E29–E35 + the §H revisit in
+  [`.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md).
 
 ### Phase 7 — Documentation (tvkit-ref style, AI-agent-first) 📚
-**Status:** `[ ]` Proposed. **Repo:** this repo (own PR).
+**Status:** `[ ]` Proposed — **unblocked (Phase 6 closed 2026-06-13).** **Repo:** this repo
+(own PR).
 
 - **Objective:** every endpoint + env var + state transition documented with a real example.
 - **Scope (ships):** `docs/` hub + `architecture/` (topology, two-plane boundary, state
@@ -650,7 +689,13 @@ unchanged):
 
 - **§H — Single-process fan-out.** The `EventHub` is in-process; the engine runs one uvicorn
   worker. Multi-worker / multi-instance fan-out (Redis pub/sub, mirroring the kill-switch
-  pattern) is **deferred** until a second worker exists — revisit in Phase 6.
+  pattern) is **deferred** until a second worker exists — revisit in Phase 6. **Phase 6 revisit
+  conclusion (2026-06-13): CONFIRMED single-process, NOT upgraded.** Phase 6 added no multi-worker
+  fan-out; the existing drop-oldest + gap-marker overflow policy (exception-proof `publish`) was
+  **verified under a 1000 ev/s × 10-slow-subscriber stress test** (fast subscribers get all events,
+  slow get `gap` markers, the publisher never blocks, the order path never raises) and shipped as a
+  test only, no code change. Multi-worker / Redis pub-sub stays deferred until a concrete
+  second-worker story exists. See decision-log E29–E35 (§H revisit).
 - **§I — Settrade push as a transition source + `GET /trades`.** Phase 5 ships at most the D23
   reconcile-kick (itself deferred — it would breach D18 SDK containment). Driving frozen edges
   directly from venue push payloads, and per-fill granularity from `GET /trades` (replacing the

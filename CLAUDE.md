@@ -13,8 +13,9 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–5.1 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
-> Phase 5.1 strategy side: 2026-06-12); Phases 6–7 Proposed.** Phase 0:
+> **Current state: Phases 0–6 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
+> Phase 5.1 strategy side: 2026-06-12; Phase 6 safety/ops/reconciliation hardening: 2026-06-13);
+> Phase 7 (documentation) Proposed.** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -98,11 +99,43 @@ submit lock / rate-limit).
 > OPEN→CLOSE→flat). (Plan:
 > [`docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md`](docs/plans/phase5.1-strategy-execution-flags-sim-trade-loop.md);
 > consumer contract: [`.claude/knowledge/order-update-stream.md`](.claude/knowledge/order-update-stream.md).)
+> **Phase 6 (2026-06-13): safety, ops & reconciliation hardening — failure paths made provably
+> safe under fault injection** (no new feature, no new broker; everything additive behind the
+> unchanged frozen contracts). Five workstreams: **(A) risk-gate hardening** — per-account
+> notional/qty caps (`EXECUTION_ENGINE_ACCOUNT_MAX_{NOTIONAL,QTY}` JSON maps; an absent account
+> falls back to the global cap, never a silent skip; enforced in EVERY stage incl. `sim`); an
+> **advisory price-band check** (`core/price_band.py`, reuses a factored-out shared
+> `adapters/market_data.py` `MarketDataClient`, wired AFTER the PTRM gate, MARKET bypass, WARN+pass
+> on fetch failure, typed `PriceBandExceeded` 422, default-off); and the **unified
+> duplicate-burst guard** (one guard, richer fingerprint `account|symbol|side|qty|order_type|price`,
+> `exe:burst:` Redis key, typed `DuplicateBurstDetected` 409, **default-ON** — a hardening phase
+> must not silently disable an active guard, so the prior always-on coarse 2 s/429 guard is
+> superseded). **(B) kill-switch admin-trip hardening** — idempotent engage/disengage (engage
+> twice → `already_engaged=true`, no second sweep; disengage when clear → 409
+> `kill_switch_not_engaged`), structured JSON `kill_switch.engaged|disengaged` audit logs, optional
+> `X-Operator-Id` (`anonymous` default), `cancelled_count`; a 5-order (NEW + PARTIALLY_FILLED)
+> fault-injection test asserting genuine CANCELLED-transition audit rows + the structured log.
+> **(C) idempotency soak + reconciliation drift** — PENDING_NEW-stuck / ack-lost / fill-before-ack /
+> same-cid-retry scenarios (no double-send under a mid-submit kill); DB-behind repairs to FILLED,
+> DB-ahead never regresses a terminal, stranded `PENDING_REPLACE` `replace_resolve`. **(D)
+> per-adapter rate limits** — a pure-asyncio `adapters/rate_limit.py` `TokenBucket` (monotonic
+> lazy-refill, await-on-deficit, one WARN/wait, never drop/raise, `rate<=0` ⇒ no-op): Settrade
+> GET + WRITE buckets per `SettradeClient` (per OAuth app/market, not per-adapter) + a Liberator
+> POST bucket on `place()` only; plus an `EventHub` §H slow-subscriber stress test (1000 ev/s ×
+> 10 slow subscribers — **single-process confirmed, no fan-out code change**). **(E) structured
+> audit** — owner-mode `GET /admin/orders/{cid}/audit` + streaming NDJSON
+> `GET /admin/audit/export` (`from_ts`/`to_ts`/`strategy_id` filters, server-side cursor), the
+> response **synthesized** from the existing `order_events` columns — **NO infra-db schema
+> change** (`seq`/`event_type`/`broker_order_id`/`metadata`/`occurred_at` derived at read time).
+> **`live` stays gated — no real-money default; the frozen `NormalizedOrder` / 13-edge state
+> machine / capability cells, kill-switch-first ordering, and PTRM semantics are all unchanged;
+> no infra-db schema change.** 952 tests, 96.01% cov, mypy strict, ruff clean. (Plan:
+> [`docs/plans/phase6-safety-ops-reconciliation-hardening.md`](docs/plans/phase6-safety-ops-reconciliation-hardening.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
 > operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
 > Liberator + Settrade runbooks). Build sequence:
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 6** —
-> safety, ops & reconciliation hardening.
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 7** —
+> documentation (tvkit-ref style, AI-agent-first).
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -228,6 +261,27 @@ failover, D20), `ORDER_BOOK_CACHE_MAX_AGE_SECONDS=5` + `ORDER_BOOK_CACHE_MAX_SYM
 `STREAM_SUBSCRIBER_QUEUE_SIZE=256` (per-subscriber back-pressure bound). New deps: `websockets`,
 `settrade-v2` (lazy, market-data-only). **`live`/`micro_live` gating is unchanged** — these feeds
 are read-only market data.
+
+Safety / ops env (Phase 6; `EXECUTION_ENGINE_` prefix, see `.env.example`) — all additive,
+default-safe; the frozen contracts and gating are unchanged. **Risk-gate hardening:**
+`ACCOUNT_MAX_NOTIONAL={}` (JSON map account→Decimal-as-string) + `ACCOUNT_MAX_QTY={}` (JSON map
+account→int) — per-account PTRM caps; an account present binds to its own cap, an absent account
+falls back to the global `RISK_MAX_*` cap (never a silent skip), enforced in EVERY stage incl.
+`sim`. `PRICE_BAND_ENABLED=false` + `PRICE_BAND_MAX_PCT=10.0` — the advisory price-band check (when
+on AND `MARKET_DATA_BASE_URL` is set, a LIMIT order more than MAX_PCT off the symbol's last close
+is rejected 422; MARKET bypasses; a market-data fetch failure is advisory WARN+pass).
+`DUPLICATE_BURST_GUARD_ENABLED=true` + `DUPLICATE_BURST_WINDOW_SECONDS=5` — the unified
+duplicate-burst guard (a second order with the same `account|symbol|side|qty|order_type|price`
+fingerprint under a DIFFERENT cid inside the window → 409; same-cid resends stay idempotency
+dedupe). **Default ON** (a hardening phase must not silently disable an active guard); the legacy
+`RISK_DUPLICATE_BURST_WINDOW_SECONDS` is retained so old `.env` files load but is **no longer read**
+by the guard. **Venue rate limits** (`adapters/rate_limit.py` `TokenBucket`; on exhaustion the
+bucket awaits — never drops/raises; `0` = unlimited): `SETTRADE_POST_RATE_LIMIT=10` +
+`SETTRADE_GET_RATE_LIMIT=10` — Settrade WRITE (POST/PATCH) vs GET buckets **per `SettradeClient`**
+(per OAuth app/market, not per-adapter); `LIBERATOR_POST_RATE_LIMIT=5` — a POST bucket on
+`place()` only (cancel/heartbeat/reconciler fetches stay unthrottled). The audit reads
+(`GET /admin/orders/{cid}/audit`, `GET /admin/audit/export`) add **no** env var — owner-mode,
+synthesized from the existing `order_events` store (no schema change).
 
 ## Quality gates
 

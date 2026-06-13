@@ -49,6 +49,14 @@ class KillSwitchPinnedError(OrderRejectedError):
     code: ClassVar[str] = "kill_switch_env_pinned"
 
 
+class KillSwitchNotEngagedError(OrderRejectedError):
+    """Disengage requested while the runtime switch is already clear (idempotent
+    409 — distinct from the env-pinned refusal, which is a different conflict).
+    """
+
+    code: ClassVar[str] = "kill_switch_not_engaged"
+
+
 class StageRejected(OrderRejectedError):
     """The ``EXECUTION_ENGINE_STAGE`` ladder forbids the requested route."""
 
@@ -77,6 +85,24 @@ class RiskRejected(OrderRejectedError):
         merged = {"cap": cap, **(detail or {})}
         super().__init__(message, client_order_id=client_order_id, detail=merged)
         self.cap = cap
+
+
+class PriceBandExceeded(OrderRejectedError):
+    """Advisory price-band breach (Phase 6 / A2): the limit price is too far from
+    last close. ``detail`` carries ``symbol``/``price``/``last_close``/``max_pct``.
+    """
+
+    code: ClassVar[str] = "price_band_exceeded"
+
+
+class DuplicateBurstDetected(OrderRejectedError):
+    """A duplicate economic order under a different ``client_order_id`` landed
+    inside the burst window (Phase 6 / A3). Distinct from id-level dedupe (which
+    returns the prior ack); distinct from the rate cap (429). ``detail`` carries
+    ``window_seconds``.
+    """
+
+    code: ClassVar[str] = "duplicate_burst_detected"
 
 
 class OrderNotFound(OrderRejectedError):

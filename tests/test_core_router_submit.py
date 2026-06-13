@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
+import respx
+from src.quant_execution_engine.adapters.market_data import MarketDataClient
 from src.quant_execution_engine.contracts.enums import OrderState, PublicOrderStatus
 from src.quant_execution_engine.contracts.errors import (
     CapabilityError,
@@ -12,6 +15,7 @@ from src.quant_execution_engine.contracts.errors import (
     IllegalTransition,
     KillSwitchEngagedError,
     OrderNotFound,
+    PriceBandExceeded,
     RiskRejected,
     StageRejected,
 )
@@ -20,6 +24,9 @@ from src.quant_execution_engine.events.hub import EventHub, create_event_hub
 
 from tests._fakes import FakeRedis, MemStore, patch_repositories
 from tests.conftest import make_order, make_settings
+
+_MD_BASE = "http://quant-marketdata-engine:8000"
+_MD_OHLCV = f"{_MD_BASE}/ohlcv"
 
 
 def _hub() -> EventHub:
@@ -252,6 +259,56 @@ async def test_get_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     router, _, _ = _router(monkeypatch)
     with pytest.raises(OrderNotFound):
         await router.get("nope")
+
+
+# ------------------------------------------------------ A2 price-band wiring
+
+
+def _band_router(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    enabled: bool,
+) -> tuple[OrderRouter, MemStore]:
+    """Router with a market-data client wired in for the price-band check."""
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    settings = make_settings(
+        submit_lock_wait_ms=120,
+        price_band_enabled=enabled,
+        risk_max_orders_per_second=100,
+        risk_max_order_value=Decimal("1000000000"),  # headroom: isolate the band check
+    )
+    router = OrderRouter(
+        settings=settings,
+        pool=object(),
+        redis=FakeRedis(),
+        market_data_client=MarketDataClient(_MD_BASE, None),
+    )
+    return router, store
+
+
+@respx.mock
+async def test_price_band_rejects_through_submit(monkeypatch: pytest.MonkeyPatch) -> None:
+    respx.get(_MD_OHLCV).respond(json={"bars": [{"ts": "2026-06-11T00:00:00Z", "close": "100"}]})
+    router, store = _band_router(monkeypatch, enabled=True)
+    with pytest.raises(PriceBandExceeded):
+        await router.submit(make_order(symbol="PTT", price="200"))  # +100% ≫ 10%
+    assert store.orders == {}  # rejected before any insert (after the risk gate)
+
+
+@respx.mock
+async def test_price_band_within_band_submits(monkeypatch: pytest.MonkeyPatch) -> None:
+    respx.get(_MD_OHLCV).respond(json={"bars": [{"ts": "2026-06-11T00:00:00Z", "close": "100"}]})
+    router, _ = _band_router(monkeypatch, enabled=True)
+    outcome = await router.submit(make_order(symbol="PTT", price="105"))  # +5% < 10%
+    assert outcome.result.engine_state is OrderState.FILLED
+
+
+async def test_price_band_disabled_never_fetches(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No respx route: a disabled band must not touch market data even far off-price.
+    router, _ = _band_router(monkeypatch, enabled=False)
+    outcome = await router.submit(make_order(symbol="PTT", price="99999"))
+    assert outcome.result.engine_state is OrderState.FILLED
 
 
 # ------------------------------------------------------- Phase-5 stream events

@@ -193,9 +193,10 @@ async def test_market_data_500_returns_none_and_warns(
     respx.get(_OHLCV).respond(status_code=500)
     pricer = SimFillPricer(None, _BASE, None)
     order = make_order(symbol="PTT", side="BUY", order_type="MARKET", price=None)
-    with caplog.at_level(logging.WARNING, logger="src.quant_execution_engine.adapters.sim_pricing"):
+    # The fetch failure now warns on the factored-out shared market-data client.
+    with caplog.at_level(logging.WARNING, logger="src.quant_execution_engine.adapters.market_data"):
         assert await pricer.fill_price(order) is None
-    assert any("market_data_fallback_failed" in r.message for r in caplog.records)
+    assert any("market_data.last_close_failed" in r.message for r in caplog.records)
     await pricer.aclose()
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from src.quant_execution_engine.config.settings import Settings
+from src.quant_execution_engine.events.hub import create_event_hub
 
 from tests._fakes import FakeRedis, MemStore, patch_repositories
 from tests.conftest import build_client, make_settings, order_payload
@@ -232,6 +234,8 @@ def test_kill_switch_admin_engage_mass_cancel_disengage(
     assert engaged.status_code == 200
     body = engaged.json()
     assert body["engaged"] is True
+    assert body["already_engaged"] is False
+    assert body["cancelled_count"] == 1
     assert body["cancelled"] == [resting["client_order_id"]]
     assert body["failed"] == []
 
@@ -243,6 +247,111 @@ def test_kill_switch_admin_engage_mass_cancel_disengage(
     assert disengaged.status_code == 200
     assert disengaged.json()["engaged"] is False
     assert client.post("/orders", json=order_payload(symbol="OK")).status_code == 201
+
+
+def test_kill_switch_engage_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second engage returns already_engaged=true and runs NO second sweep."""
+    client, store, _ = _owner_client(monkeypatch)
+    resting = order_payload(metadata={"sim_fills": []})
+    assert client.post("/orders", json=resting).status_code == 201
+
+    first = client.post("/admin/kill-switch/engage")
+    assert first.status_code == 200
+    assert first.json()["already_engaged"] is False
+    assert first.json()["cancelled_count"] == 1
+    assert store.orders[resting["client_order_id"]]["status"] == "CANCELLED"
+
+    second = client.post("/admin/kill-switch/engage")
+    assert second.status_code == 200
+    body = second.json()
+    assert body["engaged"] is True
+    assert body["already_engaged"] is True
+    assert body["cancelled_count"] == 0  # no re-sweep
+    assert body["cancelled"] == [] and body["failed"] == []
+
+
+def test_kill_switch_disengage_when_not_engaged_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disengage while clear → 409 kill_switch_not_engaged (distinct from pinned)."""
+    client, _, _ = _owner_client(monkeypatch)
+    response = client.post("/admin/kill-switch/disengage")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "kill_switch_not_engaged"
+
+
+def test_kill_switch_engage_disengage_403_in_public_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    public, _ = build_client(settings=make_settings(), pool=object(), redis=FakeRedis())
+    for path in ("/admin/kill-switch/engage", "/admin/kill-switch/disengage"):
+        response = public.post(path)
+        assert response.status_code == 403, path
+        assert response.json()["error"]["code"] == "public_mode"
+
+
+def test_kill_switch_operator_id_is_optional_and_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """X-Operator-Id is optional (never required) and lands in the structured log."""
+    client, _, _ = _owner_client(monkeypatch)
+    logger_name = "src.quant_execution_engine.api.routes"
+
+    # Absent header → no 4xx, and the audit log records "anonymous".
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        anon = client.post("/admin/kill-switch/engage")
+    assert anon.status_code == 200
+    engaged_logs = [r.message for r in caplog.records if "kill_switch.engaged" in r.message]
+    assert engaged_logs and '"operator": "anonymous"' in engaged_logs[-1]
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        client.post("/admin/kill-switch/disengage", headers={"X-Operator-Id": "ops-jane"})
+    disengaged_logs = [r.message for r in caplog.records if "kill_switch.disengaged" in r.message]
+    assert disengaged_logs and '"operator": "ops-jane"' in disengaged_logs[-1]
+
+
+def test_kill_switch_fault_injection_five_orders_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2: 5 orders (NEW + PARTIALLY_FILLED) → engage flattens all + audit trail;
+    fresh submit rejected; disengage → fresh submit accepted.
+    """
+    hub = create_event_hub(make_settings())  # captures the genuine CANCELLED edges
+    client, store, _ = _owner_client(monkeypatch, risk_max_orders_per_second=100)
+
+    # 3 resting at NEW, 2 resting PARTIALLY_FILLED — a deliberate mix of live states.
+    new_cids = [order_payload(symbol=f"NEW{i}", metadata={"sim_fills": []}) for i in range(3)]
+    partial_cids = [
+        order_payload(symbol=f"PF{i}", quantity=100, metadata={"sim_fills": [40]}) for i in range(2)
+    ]
+    for body in (*new_cids, *partial_cids):
+        assert client.post("/orders", json=body).status_code == 201
+    cids = [b["client_order_id"] for b in (*new_cids, *partial_cids)]
+    assert store.orders[partial_cids[0]["client_order_id"]]["status"] == "PARTIALLY_FILLED"
+
+    engaged = client.post("/admin/kill-switch/engage")
+    assert engaged.status_code == 200
+    assert engaged.json()["cancelled_count"] == 5
+    assert set(engaged.json()["cancelled"]) == set(cids)
+
+    # Every order is CANCELLED in the store, each via a genuine PENDING_CANCEL →
+    # CANCELLED transition (the real append-only audit mechanism; Design §6).
+    for cid in cids:
+        assert store.orders[cid]["status"] == "CANCELLED"
+        states = [e.engine_state for e in hub._ring if e.client_order_id == cid]
+        assert states[-2:] == ["PENDING_CANCEL", "CANCELLED"]
+
+    rejected = client.post("/orders", json=order_payload(symbol="BLOCKED"))
+    assert rejected.status_code == 503
+    assert rejected.json()["error"]["code"] == "kill_switch_engaged"
+
+    assert client.post("/admin/kill-switch/disengage").status_code == 200
+    accepted = client.post("/orders", json=order_payload(symbol="AFTER"))
+    assert accepted.status_code == 201
 
 
 # ------------------------------------------------------------- strategy id (D16)
@@ -296,3 +405,15 @@ def test_kill_switch_engage_without_redis_503(
     client, _ = build_client(settings=make_settings(public_mode=False), pool=object(), redis=None)
     response = client.post("/admin/kill-switch/engage")
     assert response.status_code == 503
+
+
+def test_kill_switch_disengage_without_redis_is_409_not_engaged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no redis, status() reports not-engaged ⇒ disengage is a clean 409."""
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    client, _ = build_client(settings=make_settings(public_mode=False), pool=object(), redis=None)
+    response = client.post("/admin/kill-switch/disengage")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "kill_switch_not_engaged"
