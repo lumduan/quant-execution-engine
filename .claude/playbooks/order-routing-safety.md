@@ -15,8 +15,15 @@
    venue size.
 3. **Owner mode only.** `EXECUTION_ENGINE_PUBLIC_MODE=false` is required for any submit; public
    mode answers only health / capabilities / reads.
-4. **Per-account caps configured.** Notional / qty / price-band / duplicate-burst caps are set
-   for the account before `micro_live` (Phase 6 hardening).
+4. **Risk-gate caps configured (Phase 6 hardening).** Per-account notional / qty caps
+   (`ACCOUNT_MAX_NOTIONAL` / `ACCOUNT_MAX_QTY` — an account absent from the map falls back to the
+   global `RISK_MAX_*`, never a silent skip) and the optional advisory price-band
+   (`PRICE_BAND_ENABLED`) are set before `micro_live`. The **unified duplicate-burst guard is
+   default-ON** (`DUPLICATE_BURST_GUARD_ENABLED=true`): a second order with the same
+   `account|symbol|side|qty|order_type|price` fingerprint under a **different** `client_order_id`
+   inside `DUPLICATE_BURST_WINDOW_SECONDS` is rejected `409 duplicate_burst_detected` (a same-cid
+   resend stays idempotency dedupe, never here). The risk gate runs in **every** stage, including
+   `sim`.
 5. **Idempotency proven.** Re-submitting a `client_order_id` returns the prior ack — confirmed by
    the dedupe soak test. No double-send under a mid-submit process kill.
 6. **Reconciliation green.** The reconciliation loop matches broker truth ↔ local state with no
