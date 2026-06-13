@@ -620,8 +620,14 @@ kill-switch-first ordering, and PTRM semantics are all unchanged.** 952 tests (8
   [`.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md).
 
 ### Phase 7 — Documentation (tvkit-ref style, AI-agent-first) 📚
-**Status:** `[ ]` Proposed — **unblocked (Phase 6 closed 2026-06-13).** **Repo:** this repo
-(own PR).
+**Status:** `[x]` **Complete (2026-06-13).** **Repo:** this repo (PR `docs/phase7-documentation`).
+Shipped: the `docs/` hub — `README.md` + `overview.md`, architecture ×4, api ×9 (each with a real
+curl example), operations ×4, data ×2 — plus the `.claude/knowledge/` `order-flow` + `deployment`
+additions, a new `development-workflow` playbook + the `order-routing-safety` Phase-6 refresh, and the
+umbrella `execution-engine-runbook`. Per the verified-code rule, several brief-vs-code divergences
+were corrected (the 13 state edges; env `PG_DSN` not `DB_DSN`; `RISK_MAX_ORDERS_PER_SECOND`; no
+`API_HOST`/`API_PORT`; `GET /admin/kill-switch`; amend body `new_qty`/`new_client_order_id`; migration
+`13_execution_strategy_id.sql`) — itemized in [`phase7-documentation.md`](phase7-documentation.md).
 
 - **Objective:** every endpoint + env var + state transition documented with a real example.
 - **Scope (ships):** `docs/` hub + `architecture/` (topology, two-plane boundary, state

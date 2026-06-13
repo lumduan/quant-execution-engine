@@ -3,7 +3,8 @@
 **Feature:** quant-execution-engine — Phase 7: Documentation
 **Branch:** `docs/phase7-documentation`
 **Created:** 2026-06-13
-**Status:** In Progress
+**Status:** Complete
+**Completed:** 2026-06-13
 **Depends On:** Phase 6 (Complete, 2026-06-13)
 
 ---
@@ -41,9 +42,9 @@ sub-docs, each terse, table-first, and example-driven.
 ### Parent Plan Reference
 
 - Per-service roadmap (canonical): [`docs/plans/ROADMAP.md`](ROADMAP.md) — Phase 7.
-- Umbrella ADR (D1–D13, frozen contracts): [`../../.claude/knowledge/feature-execution-engine.md`](../../.claude/knowledge/feature-execution-engine.md).
-- Umbrella cross-cutting roadmap: [`../../plans/feature-execution-engine/ROADMAP.md`](../../plans/feature-execution-engine/ROADMAP.md).
-- Format precedent: [`../../quant-marketdata-engine/docs/README.md`](../../quant-marketdata-engine/docs/README.md).
+- Umbrella ADR (D1–D13, frozen contracts): [`../../../.claude/knowledge/feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md).
+- Umbrella cross-cutting roadmap: [`../../../plans/feature-execution-engine/ROADMAP.md`](../../../plans/feature-execution-engine/ROADMAP.md).
+- Format precedent: [`../../../quant-marketdata-engine/docs/README.md`](../../../quant-marketdata-engine/docs/README.md).
 
 ### Key Deliverables
 
@@ -123,21 +124,21 @@ is the source of truth (see "Spec Corrections" below).
 
 | Item | Status |
 |------|--------|
-| `docs/README.md` hub | [ ] |
-| `docs/overview.md` (replace placeholder) | [ ] |
-| `docs/architecture/{overview,state-machine,adapters,security-boundary}.md` | [ ] |
-| `docs/api/{health,orders-submit,orders-get,orders-cancel,orders-amend,orders-stream,capabilities,order-book,admin}.md` | [ ] |
-| `docs/operations/{bring-up,configuration,kill-switch,troubleshooting}.md` | [ ] |
-| `docs/data/{execution-schema,state-machine-transitions}.md` | [ ] |
-| `.claude/knowledge/{deployment,order-flow}.md` (new) | [ ] |
-| Review existing `.claude/knowledge/` (capability-matrix, contract, state-machine, decision-log, stream, order-book) | [ ] |
-| `.claude/playbooks/development-workflow.md` (new) | [ ] |
-| `.claude/playbooks/order-routing-safety.md` (Phase 6 refresh) | [ ] |
-| Umbrella `.claude/playbooks/execution-engine-runbook.md` (new) | [ ] |
-| `CLAUDE.md` Documentation section + Phase 7 state + Where-to-look | [ ] |
-| `docs/plans/ROADMAP.md` Phase 7 → complete | [ ] |
-| Umbrella `CLAUDE.md` Phase 7 confirmation | [ ] |
-| Docs quality gate (links / secrets / localhost / curl / env-var coverage) | [ ] |
+| `docs/README.md` hub | [x] |
+| `docs/overview.md` (replace placeholder) | [x] |
+| `docs/architecture/{overview,state-machine,adapters,security-boundary}.md` | [x] |
+| `docs/api/{health,orders-submit,orders-get,orders-cancel,orders-amend,orders-stream,capabilities,order-book,admin}.md` | [x] |
+| `docs/operations/{bring-up,configuration,kill-switch,troubleshooting}.md` | [x] |
+| `docs/data/{execution-schema,state-machine-transitions}.md` | [x] |
+| `.claude/knowledge/{deployment,order-flow}.md` (new) | [x] |
+| Review existing `.claude/knowledge/` (capability-matrix, contract, state-machine, decision-log, stream, order-book) | [x] |
+| `.claude/playbooks/development-workflow.md` (new) | [x] |
+| `.claude/playbooks/order-routing-safety.md` (Phase 6 refresh) | [x] |
+| Umbrella `.claude/playbooks/execution-engine-runbook.md` (new) | [x] |
+| `CLAUDE.md` Documentation section + Phase 7 state + Where-to-look | [x] |
+| `docs/plans/ROADMAP.md` Phase 7 → complete | [x] |
+| Umbrella `CLAUDE.md` Phase 7 confirmation | [x] |
+| Docs quality gate (links / secrets / localhost / curl / env-var coverage) | [x] |
 
 ### Out of Scope
 
@@ -239,18 +240,47 @@ See [Key Deliverables](#key-deliverables) — all files there, with Action.
 
 Matches ROADMAP Phase 7 acceptance:
 
-- [ ] Every endpoint (`/health`, `POST/GET/DELETE/PATCH /orders`, `/orders/stream`, `/capabilities`,
+- [x] Every endpoint (`/health`, `POST/GET/DELETE/PATCH /orders`, `/orders/stream`, `/capabilities`,
       `/order-book/{symbol}[/stream]`, `/admin/kill-switch[/engage|/disengage]`,
       `/admin/orders/{cid}/audit`, `/admin/audit/export`) has a real curl example.
-- [ ] Every `EXECUTION_ENGINE_*` env var documents type / default / allowed / effect (+ SecretStr flag).
-- [ ] The order state machine + capability matrix are documented (verified 13 edges; 6 capability rows).
-- [ ] No secrets — SecretStr examples use `<your-value-here>`; the public-safe scan is clean.
-- [ ] All internal links resolve.
-- [ ] `live` is documented as gated, with prerequisites; the D1 two-plane boundary is preserved;
+- [x] Every `EXECUTION_ENGINE_*` env var documents type / default / allowed / effect (+ SecretStr flag).
+- [x] The order state machine + capability matrix are documented (verified 13 edges; 6 capability rows).
+- [x] No secrets — SecretStr examples use `<your-value-here>`; the public-safe scan is clean.
+- [x] All internal links resolve.
+- [x] `live` is documented as gated, with prerequisites; the D1 two-plane boundary is preserved;
       kill-switch-first is stated wherever stage-flip appears; `liberator-trading-api` is internal-only.
 
 ---
 
 ## Completion Notes
 
-_(filled in at phase close)_
+### Summary
+
+Phase 7 shipped the execution-engine documentation hub (tvkit-ref style, AI-agent-first) — docs-only,
+no application code / test / schema change. Delivered: `docs/README.md` + `docs/overview.md`;
+`architecture/` ×4; `api/` ×9 (each with a real curl example, engine-direct + gateway); `operations/`
+×4 (incl. every `EXECUTION_ENGINE_*` env var with type / default / effect / SecretStr); `data/` ×2
+(the schema + the verified 13-edge table). Added `.claude/knowledge/{order-flow,deployment}.md`, a new
+`.claude/playbooks/development-workflow.md`, a Phase-6 refresh of `order-routing-safety.md`, and the
+umbrella `.claude/playbooks/execution-engine-runbook.md`. Updated `CLAUDE.md` (Documentation section +
+Phase 7 state + Where-to-look), the umbrella `CLAUDE.md` Phase 7 status, and marked Phase 7 complete
+in the ROADMAP.
+
+### Verified-code corrections (constraint #12)
+
+The brief's hard-coded specifics were corrected to the shipped code: the 13 state edges (no direct
+`*→CANCELLED`; cancel is two-step; the kill-switch reuses the cancel path); `PG_DSN` not `DB_DSN`;
+`RISK_MAX_ORDERS_PER_SECOND` not `RISK_ORDER_RATE_LIMIT_PER_SECOND`; no `API_HOST`/`API_PORT` (only
+`HOST_PORT`); `GET /admin/kill-switch` (no `/status`); amend body `new_qty`/`new_client_order_id` (no
+`new_quantity`/`new_display_qty`); migration `13_execution_strategy_id.sql` (not `15_*`);
+`capability_unsupported` is 422 (not 400); a disabled order book returns 404 (not 503). The submit
+pipeline order was also taken from `router.py` (kill-switch → dedupe → capability → PTRM incl. the
+duplicate-burst guard → price-band → stage → adapter). The existing `.claude/knowledge/`
+contract / matrix / state-machine / decision-log / stream / order-book docs were reviewed and left
+unchanged (accurate + current).
+
+### Quality gate
+
+Docs-only: internal links spot-checked, the public-safe secret scan is clean, no bare `localhost` in
+in-container examples, every endpoint has ≥1 curl example, every env var documents
+type / default / effect. No `ruff` / `mypy` / `pytest` — no source was touched.
