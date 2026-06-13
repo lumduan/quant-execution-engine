@@ -13,9 +13,9 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–6 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
-> Phase 5.1 strategy side: 2026-06-12; Phase 6 safety/ops/reconciliation hardening: 2026-06-13);
-> Phase 7 (documentation) Proposed.** Phase 0:
+> **Current state: Phases 0–7 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
+> Phase 5.1 strategy side: 2026-06-12; Phase 6 safety/ops/reconciliation hardening: 2026-06-13;
+> Phase 7 documentation hub: 2026-06-13).** Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).
@@ -134,8 +134,9 @@ submit lock / rate-limit).
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
 > operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
 > Liberator + Settrade runbooks). Build sequence:
-> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). Next: **Phase 7** —
-> documentation (tvkit-ref style, AI-agent-first).
+> [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). **Phase 7 ✓ (2026-06-13)** —
+> the documentation hub (`docs/` + `.claude/` refresh, tvkit-ref style, AI-agent-first); start at
+> [`docs/README.md`](docs/README.md).
 
 ### Ownership boundaries (the whole point of this service)
 
@@ -350,8 +351,85 @@ Tear down in reverse; only `quant-infra-db` down removes `quant-network`.
 [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`,
 `test:`, `chore:`, `refactor:`. Keep scope tight (`feat(adapters): Liberator place_order map`).
 
+## Documentation
+
+The documentation hub is [`docs/README.md`](docs/README.md) (Phase 7, tvkit-ref style). Every
+endpoint, env var, and state transition is documented with a real example; `live` is documented as
+gated; no secrets (SecretStr examples use `<your-value-here>`).
+
+### `docs/` — hub + architecture
+
+| File | Summary |
+|------|---------|
+| [`docs/README.md`](docs/README.md) | Documentation hub — one-line links to every sub-doc + conventions + cross-repo refs |
+| [`docs/overview.md`](docs/overview.md) | One-paragraph service overview + pointers |
+| [`docs/architecture/overview.md`](docs/architecture/overview.md) | Topology, the two planes (D1), gateway-proxy position, sole-credential owner, safety ladder, kill-switch, public mode |
+| [`docs/architecture/state-machine.md`](docs/architecture/state-machine.md) | The frozen 9-state / 13-edge machine, terminal vs in-flight, append-only audit, idempotency, reconciliation window |
+| [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | `BrokerAdapter` interface, the full capability matrix, the two structural consequences, Sim/Liberator/Settrade notes |
+| [`docs/architecture/security-boundary.md`](docs/architecture/security-boundary.md) | Credential ownership, public vs owner mode, PTRM gate + price-band, kill-switch, logging redaction |
+
+### `docs/api/` — endpoint reference (each with a real curl example)
+
+| File | Endpoint |
+|------|----------|
+| [`docs/api/health.md`](docs/api/health.md) | `GET /health` |
+| [`docs/api/orders-submit.md`](docs/api/orders-submit.md) | `POST /orders` |
+| [`docs/api/orders-get.md`](docs/api/orders-get.md) | `GET /orders/{client_order_id}` |
+| [`docs/api/orders-cancel.md`](docs/api/orders-cancel.md) | `DELETE /orders/{client_order_id}` |
+| [`docs/api/orders-amend.md`](docs/api/orders-amend.md) | `PATCH /orders/{client_order_id}` (native vs cancel+replace) |
+| [`docs/api/orders-stream.md`](docs/api/orders-stream.md) | `GET /orders/stream` (SSE) |
+| [`docs/api/capabilities.md`](docs/api/capabilities.md) | `GET /capabilities` |
+| [`docs/api/order-book.md`](docs/api/order-book.md) | `GET /order-book/{symbol}[/stream]` |
+| [`docs/api/admin.md`](docs/api/admin.md) | `/admin/kill-switch*` + `/admin/orders/{cid}/audit` + `/admin/audit/export` |
+
+### `docs/operations/` + `docs/data/`
+
+| File | Summary |
+|------|---------|
+| [`docs/operations/bring-up.md`](docs/operations/bring-up.md) | Three compose configs, schema prerequisite, health, tear-down, fresh-clone gotcha |
+| [`docs/operations/configuration.md`](docs/operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — type / default / effect / SecretStr |
+| [`docs/operations/kill-switch.md`](docs/operations/kill-switch.md) | Engage/disengage, the stage-flip rule, the breaker relationship |
+| [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md) | Breaker tripped, stuck pendings, burst guard, DB/Redis down, gateway 5xx |
+| [`docs/data/execution-schema.md`](docs/data/execution-schema.md) | `db_execution` — `orders`/`fills`/`order_events`, triggers, indexes, grants |
+| [`docs/data/state-machine-transitions.md`](docs/data/state-machine-transitions.md) | The verified 13-edge legal-transition table |
+
+### `.claude/knowledge/`
+
+| File | Summary |
+|------|---------|
+| [`.claude/knowledge/architecture.md`](.claude/knowledge/architecture.md) | Service architecture notes |
+| [`.claude/knowledge/broker-research-liberator.md`](.claude/knowledge/broker-research-liberator.md) | Liberator API research |
+| [`.claude/knowledge/broker-research-settrade.md`](.claude/knowledge/broker-research-settrade.md) | Settrade API research + per-market apps |
+| [`.claude/knowledge/capability-matrix.md`](.claude/knowledge/capability-matrix.md) | The canonical cell-level capability matrix |
+| [`.claude/knowledge/coding-standards.md`](.claude/knowledge/coding-standards.md) | Python conventions |
+| [`.claude/knowledge/commands.md`](.claude/knowledge/commands.md) | CLI command reference |
+| [`.claude/knowledge/decision-log.md`](.claude/knowledge/decision-log.md) | D-series / E-series decisions |
+| [`.claude/knowledge/deployment.md`](.claude/knowledge/deployment.md) | **(Phase 7)** Compose topology, env-load order, fresh-clone |
+| [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normalized-order-contract.md) | The frozen `NormalizedOrder` contract |
+| [`.claude/knowledge/order-book-service.md`](.claude/knowledge/order-book-service.md) | Phase 5 dual-provider order book |
+| [`.claude/knowledge/order-flow.md`](.claude/knowledge/order-flow.md) | **(Phase 7)** End-to-end order path (verified pipeline) |
+| [`.claude/knowledge/order-state-machine.md`](.claude/knowledge/order-state-machine.md) | The frozen state machine |
+| [`.claude/knowledge/order-update-stream.md`](.claude/knowledge/order-update-stream.md) | Phase 5 SSE order-update stream |
+| [`.claude/knowledge/project-skill.md`](.claude/knowledge/project-skill.md) | Project skill definition |
+| [`.claude/knowledge/stack-decisions.md`](.claude/knowledge/stack-decisions.md) | Technology stack decisions |
+
+### `.claude/playbooks/`
+
+| File | Summary |
+|------|---------|
+| [`.claude/playbooks/development-workflow.md`](.claude/playbooks/development-workflow.md) | **(Phase 7)** Quality gate, branch naming, bring-up, respx-mocked tests, the Python 3.11 CI gotcha |
+| [`.claude/playbooks/order-routing-safety.md`](.claude/playbooks/order-routing-safety.md) | The irreversible-action checklist + venue runbooks (Liberator/Settrade, kill-switch, audit) |
+| [`.claude/playbooks/feature-development.md`](.claude/playbooks/feature-development.md) | Feature dev workflow |
+| [`.claude/playbooks/bugfix-workflow.md`](.claude/playbooks/bugfix-workflow.md) | Bug investigation & fix |
+| [`.claude/playbooks/code-review.md`](.claude/playbooks/code-review.md) | Code-review checklist |
+| [`.claude/playbooks/dependency-upgrade.md`](.claude/playbooks/dependency-upgrade.md) | Dependency upgrade |
+| [`.claude/playbooks/release-checklist.md`](.claude/playbooks/release-checklist.md) | Release checklist |
+
+The umbrella operator runbook is [`../.claude/playbooks/execution-engine-runbook.md`](../.claude/playbooks/execution-engine-runbook.md).
+
 ## Where to look next
 
+- **Documentation hub (every endpoint, env var, state transition):** [`docs/README.md`](docs/README.md)
 - **Roadmap (source of truth for what to build next):** [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md)
 - **Architecture ADR (Phase-0 gate, D1–D13):** [`../.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md)
 - **Broker research (cited):** [`.claude/knowledge/broker-research-liberator.md`](.claude/knowledge/broker-research-liberator.md),
