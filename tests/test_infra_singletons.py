@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from src.quant_execution_engine.adapters import market_data
 from src.quant_execution_engine.adapters.sim import SimAdapter
 from src.quant_execution_engine.cache import redis_client
 from src.quant_execution_engine.cache.counters import incr_with_ttl
@@ -112,6 +113,32 @@ async def test_incr_with_ttl_arms_once() -> None:
     assert redis.ttls["k"] == 1
 
 
+# ------------------------------------------------------- market-data client (A2)
+
+
+async def test_market_data_client_singleton_lifecycle() -> None:
+    settings = make_settings(market_data_base_url="http://md:8000")
+    assert market_data.get_market_data_client() is None
+    client = market_data.create_market_data_client(settings)
+    assert market_data.get_market_data_client() is client
+    assert client.configured is True
+    # Idempotent: a second create returns the same instance.
+    assert market_data.create_market_data_client(settings) is client
+    await market_data.close_market_data_client()
+    assert market_data.get_market_data_client() is None
+    await market_data.close_market_data_client()  # idempotent no-op
+
+
+async def test_market_data_client_unconfigured_without_base_url() -> None:
+    client = market_data.create_market_data_client(make_settings())
+    assert client.configured is False
+    # An unconfigured client never fetches — last_close short-circuits to None.
+    from src.quant_execution_engine.contracts.enums import Market
+
+    assert await client.last_close("PTT", Market.SET) is None
+    await market_data.close_market_data_client()
+
+
 # ------------------------------------------------------------------- settings
 
 
@@ -122,6 +149,17 @@ def test_settings_defaults_are_safe() -> None:
     assert settings.kill_switch_engaged is False
     assert settings.api_key is None
     assert settings.risk_max_order_qty > 0
+
+
+def test_phase6_settings_defaults() -> None:
+    """Phase 6 / A-foundation: account caps empty, price-band off, burst on @5s."""
+    settings = make_settings()
+    assert settings.account_max_notional == {}
+    assert settings.account_max_qty == {}
+    assert settings.price_band_enabled is False
+    assert str(settings.price_band_max_pct) == "10.0"
+    assert settings.duplicate_burst_guard_enabled is True  # default ON (Design §1)
+    assert settings.duplicate_burst_window_seconds == 5
 
 
 def test_settings_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:

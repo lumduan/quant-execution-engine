@@ -17,9 +17,12 @@ _STATUS_BY_CODE: dict[str, int] = {
     "public_mode": status.HTTP_403_FORBIDDEN,
     "kill_switch_engaged": status.HTTP_503_SERVICE_UNAVAILABLE,
     "kill_switch_env_pinned": status.HTTP_409_CONFLICT,
+    "kill_switch_not_engaged": status.HTTP_409_CONFLICT,
     "stage_rejected": status.HTTP_403_FORBIDDEN,
     "capability_unsupported": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "risk_rejected": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "price_band_exceeded": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "duplicate_burst_detected": status.HTTP_409_CONFLICT,
     "order_not_found": status.HTTP_404_NOT_FOUND,
     "order_book_unavailable": status.HTTP_404_NOT_FOUND,
     "order_stream_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -29,7 +32,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     "broker_circuit_open": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
-_THROTTLE_CAPS = frozenset({"rate_limit", "duplicate_burst"})
+# The per-second rate cap is the throttle that maps to 429. The duplicate-burst
+# guard now raises its own typed DuplicateBurstDetected (409, Phase 6 / A3), so
+# it is no longer a RiskRejected cap here.
+_THROTTLE_CAPS = frozenset({"rate_limit"})
 
 
 def _status_for(exc: OrderRejectedError) -> int:

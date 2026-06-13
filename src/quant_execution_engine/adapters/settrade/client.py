@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from pydantic import SecretStr
 
+from src.quant_execution_engine.adapters.rate_limit import TokenBucket
 from src.quant_execution_engine.adapters.settrade.errors import (
     SettradeAuthError,
     SettradeTransportError,
@@ -123,6 +124,8 @@ class SettradeClient:
         broker_id: str,
         refresh_margin_seconds: int = 100,
         timeout_seconds: float = 10.0,
+        get_rate_limit: float = 10.0,
+        post_rate_limit: float = 10.0,
         client: httpx.AsyncClient | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -135,6 +138,14 @@ class SettradeClient:
         self._now = now
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        # Per-app venue-facing rate buckets (Phase 6 / D1, Design Decision §4):
+        # one WRITE bucket (POST+PATCH = place/amend/cancel) + one GET bucket
+        # (query), matching the SDK ``rate_limit_id`` GET/WRITE split. Acquired in
+        # ``request_json`` before the wire call; the OAuth login/refresh path
+        # (``_raw_send``) is deliberately NOT throttled (it is neither a write nor
+        # a query against the order budget). ``rate <= 0`` disables a bucket.
+        self._get_limiter = TokenBucket(get_rate_limit, name="settrade_get")
+        self._write_limiter = TokenBucket(post_rate_limit, name="settrade_write")
 
         self._token_type: str | None = None
         self._access_token: str | None = None
@@ -167,6 +178,10 @@ class SettradeClient:
     def _bucket(method: str) -> str:
         """GET vs WRITE buckets (POST+PATCH share — SDK ``rate_limit_id``)."""
         return "GET" if method.upper() == "GET" else "WRITE"
+
+    def _limiter(self, method: str) -> TokenBucket:
+        """The outbound rate bucket for ``method`` (GET vs WRITE, Phase 6 / D1)."""
+        return self._get_limiter if method.upper() == "GET" else self._write_limiter
 
     @staticmethod
     def _header_int(response: httpx.Response, name: str) -> int | None:
@@ -302,6 +317,10 @@ class SettradeClient:
         -> :class:`SettradeTransportError`.
         """
         await self.ensure_token()
+        # Throttle the venue-facing call to this app's per-method budget (D1).
+        # Acquired AFTER ensure_token (auth is unthrottled) and BEFORE the wire
+        # send; on exhaustion it awaits (back-pressure), never drops/raises.
+        await self._limiter(method).acquire()
         serial = self._token_serial
         response = await self._send_authenticated(method, path, payload)
         if response.status_code == 401:

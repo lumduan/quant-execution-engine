@@ -19,11 +19,12 @@ small Protocol, not on this module or on ``order_book``).
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 import httpx
 from pydantic import SecretStr
 
+from src.quant_execution_engine.adapters.market_data import MarketDataClient
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.enums import Side
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
@@ -31,8 +32,6 @@ from src.quant_execution_engine.order_book.runtime import get_order_book_service
 from src.quant_execution_engine.order_book.service import OrderBookService
 
 logger = logging.getLogger(__name__)
-
-_MARKET_DATA_TIMEOUT_SECONDS = 2.0
 
 
 def _bound_by_limit(price: Decimal, order: NormalizedOrder) -> Decimal:
@@ -59,33 +58,22 @@ class SimFillPricer:
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self._order_book = order_book
-        self._base_url = market_data_base_url.rstrip("/") if market_data_base_url else None
-        self._api_key = market_data_api_key
-        self._http = http
-        self._owns_http = http is None
-
-    def _client(self) -> httpx.AsyncClient:
-        """Lazily build the owned client (only if not injected)."""
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=_MARKET_DATA_TIMEOUT_SECONDS)
-        return self._http
+        self._market_data = MarketDataClient(market_data_base_url, market_data_api_key, http)
 
     async def aclose(self) -> None:
-        """Close the owned client (a no-op when one was injected)."""
-        if self._owns_http and self._http is not None:
-            await self._http.aclose()
-            self._http = None
+        """Close the owned market-data client (a no-op when one was injected)."""
+        await self._market_data.aclose()
 
     async def fill_price(self, order: NormalizedOrder) -> Decimal | None:
         """The chain: order-book cache → market-data engine → ``None``."""
         book_price = self._from_book(order)
         if book_price is not None:
             return book_price
-        if self._base_url is not None:
+        if self._market_data.configured:
             md_price = await self._from_market_data(order)
             if md_price is not None:
                 return md_price
-        if self._order_book is not None or self._base_url is not None:
+        if self._order_book is not None or self._market_data.configured:
             # Only worth a line when there WAS a configured source to miss —
             # a bare-sim deployment (no book, no marketdata) stays quiet.
             logger.info("sim_pricing.reference_fallback symbol=%s", order.symbol)
@@ -112,38 +100,12 @@ class SimFillPricer:
 
     async def _from_market_data(self, order: NormalizedOrder) -> Decimal | None:
         """Hop 2: the market-data engine's last ``1d`` close, limit-bounded."""
-        prefixed = f"{order.market.value}:{order.symbol}"
-        params: dict[str, str | int] = {"symbol": prefixed, "timeframe": "1d", "limit": 1}
-        headers: dict[str, str] = {}
-        if self._api_key is not None:
-            headers["X-API-Key"] = self._api_key.get_secret_value()
-        try:
-            response = await self._client().get(
-                f"{self._base_url}/ohlcv", params=params, headers=headers
-            )
-            response.raise_for_status()
-            close = _latest_close(response.json())
-        except (httpx.HTTPError, ValueError, KeyError, InvalidOperation) as exc:
-            logger.warning(
-                "sim_pricing.market_data_fallback_failed symbol=%s reason=%s",
-                order.symbol,
-                exc.__class__.__name__,
-            )
+        close = await self._market_data.last_close(order.symbol, order.market)
+        if close is None:
             return None
         price = _bound_by_limit(close, order)
         logger.info("sim_pricing.market_data_fallback symbol=%s price=%s", order.symbol, price)
         return price
-
-
-def _latest_close(payload: object) -> Decimal:
-    """Parse the max-``ts`` bar's ``close`` as ``Decimal``; raise on empty/bad."""
-    if not isinstance(payload, dict):
-        raise ValueError("market-data response is not an object")
-    bars = payload.get("bars")
-    if not isinstance(bars, list) or not bars:
-        raise ValueError("market-data response carried no bars")
-    latest = max(bars, key=lambda bar: str(bar["ts"]))
-    return Decimal(str(latest["close"]))
 
 
 _pricer: SimFillPricer | None = None

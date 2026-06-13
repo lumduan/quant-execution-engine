@@ -13,7 +13,9 @@ Hard constraints (Phase 1 design — DB triggers own the audit trail):
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime
 from decimal import Decimal
 
@@ -24,7 +26,7 @@ from src.quant_execution_engine.contracts.errors import IllegalTransition
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal, RepositoryError
-from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
+from src.quant_execution_engine.db.models import OrderEventRow, OrderResultRow, OrderRow
 from src.quant_execution_engine.events.hub import get_event_hub
 from src.quant_execution_engine.events.models import FillEvent
 
@@ -86,6 +88,27 @@ _SELECT_RECONCILE_ORDERS = (
 )
 
 _SELECT_CIDS_FOR_STRATEGY = "SELECT client_order_id FROM execution.orders WHERE strategy_id = $1"
+
+# Audit read (Phase 6 / E1): all events for one order, in total order. event_id
+# is monotonic even when created_at ties inside a single transaction.
+_SELECT_ORDER_EVENTS = (
+    "SELECT event_id, from_status, to_status, event, created_at "
+    "FROM execution.order_events WHERE client_order_id = $1 ORDER BY event_id"
+)
+
+# Audit export (Phase 6 / E2): every order_events row joined to its order for the
+# strategy attribution, streamed via a server-side cursor (never buffered). The
+# optional bounds/filter are appended positionally so the cursor sees only $-args.
+_EXPORT_ORDER_EVENTS = (
+    "SELECT e.event_id, e.client_order_id, e.from_status, e.to_status, "
+    "e.event, e.created_at, o.strategy_id "
+    "FROM execution.order_events e "
+    "JOIN execution.orders o USING (client_order_id)"
+)
+
+# How many rows the server-side cursor materialises per round trip (E2). Bounded
+# so a large date-range export never buffers the whole result set in memory.
+_EXPORT_CURSOR_BATCH = 500
 
 
 def _rowcount(command_tag: str) -> int:
@@ -319,3 +342,78 @@ async def fetch_client_order_ids_for_strategy(pool: asyncpg.Pool, strategy_id: s
     """
     records = await pool.fetch(_SELECT_CIDS_FOR_STRATEGY, strategy_id)
     return {r["client_order_id"] for r in records}
+
+
+async def fetch_order_events(pool: asyncpg.Pool, client_order_id: str) -> list[OrderEventRow]:
+    """All audit rows for one order, in total (``event_id``) order (E1 read).
+
+    Read-only — ``execution.order_events`` is trigger-written and append-only.
+    The synthesized audit response (``api/audit.py``) derives ``seq``/``event_type``
+    from these rows; the ``event`` JSONB rides through verbatim as ``metadata``.
+    """
+    records = await pool.fetch(_SELECT_ORDER_EVENTS, client_order_id)
+    return [OrderEventRow.from_record(r) for r in records]
+
+
+def _export_query(
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+    strategy_id: str | None,
+) -> tuple[str, list[object]]:
+    """Build the export SELECT + positional args for the optional filters (E2).
+
+    ``from_ts`` is inclusive (``created_at >= $``), ``to_ts`` exclusive
+    (``created_at < $``), ``strategy_id`` joins on ``orders.strategy_id``. Args are
+    bound positionally so the server-side cursor only ever sees ``$n`` parameters
+    (no string interpolation of values — injection-safe).
+    """
+    clauses: list[str] = []
+    args: list[object] = []
+    if from_ts is not None:
+        args.append(from_ts)
+        clauses.append(f"e.created_at >= ${len(args)}")
+    if to_ts is not None:
+        args.append(to_ts)
+        clauses.append(f"e.created_at < ${len(args)}")
+    if strategy_id is not None:
+        args.append(strategy_id)
+        clauses.append(f"o.strategy_id = ${len(args)}")
+    sql = _EXPORT_ORDER_EVENTS
+    if clauses:
+        sql = f"{sql} WHERE {' AND '.join(clauses)}"
+    sql = f"{sql} ORDER BY e.event_id"
+    return sql, args
+
+
+async def stream_order_events(
+    pool: asyncpg.Pool,
+    *,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    strategy_id: str | None = None,
+) -> AsyncIterator[dict[str, object]]:
+    """Yield export rows one at a time via an asyncpg server-side cursor (E2).
+
+    A cursor inside a transaction streams in ``_EXPORT_CURSOR_BATCH`` round-trips
+    so a large date range never buffers the whole result set in memory. Each yield
+    is a plain JSON-ready dict (the NDJSON line shape): the ``event`` JSONB is
+    decoded once here so the route serialises a real object, not a quoted string.
+    """
+    sql, args = _export_query(from_ts, to_ts, strategy_id)
+    async with pool.acquire() as conn, conn.transaction():
+        # ``prefetch`` bounds the per-round-trip batch (the "FETCH 500" intent):
+        # asyncpg streams the result set in chunks, never the whole thing at once.
+        cursor = conn.cursor(sql, *args, prefetch=_EXPORT_CURSOR_BATCH)
+        async for record in cursor:
+            raw_event = record["event"]
+            event = json.loads(raw_event) if isinstance(raw_event, str) else raw_event
+            ts = record["created_at"]
+            yield {
+                "event_id": record["event_id"],
+                "client_order_id": record["client_order_id"],
+                "from_status": record["from_status"],
+                "to_status": record["to_status"],
+                "event": event,
+                "strategy_id": record["strategy_id"],
+                "created_at": ts.isoformat() if ts is not None else None,
+            }

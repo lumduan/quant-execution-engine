@@ -171,20 +171,28 @@ async def test_required_case_7_amend_cancel_strictly_before_replacement_place(
 async def test_amend_replacement_gets_no_ptrm_exemption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A price-only amend re-uses the burst signature: replacement is
-    risk-rejected inside the window, the old order is already cancelled
-    (flat, never doubled) — the documented cancel_replace consequence."""
+    """The cancel_replace replacement re-enters the FULL risk gate with NO
+    exemption: with the per-second budget already spent by the original submit,
+    the replacement is rate-rejected, the old order is already cancelled (flat,
+    never doubled) — the documented cancel_replace consequence.
+
+    (Phase 6 / A3 note: the duplicate-burst fingerprint now includes price, so a
+    legitimate re-price no longer self-collides on the burst guard; the
+    "no exemption" property is shown here via the rate cap, which still binds.)
+    """
     from src.quant_execution_engine.contracts.errors import RiskRejected
 
     respx.post(f"{_BASE}/order/place/set").respond(json=_ok_place("3064"))
     respx.post(f"{_BASE}/order/cancelled/set").respond(
         json={"success": True, "data": {"errorCode": 0, "errMsg": "", "result": {}}}
     )
-    router, store = _router(monkeypatch, adapter=make_adapter(), stage="micro_live")
+    router, store = _router(
+        monkeypatch, adapter=make_adapter(), stage="micro_live", risk_max_orders_per_second=1
+    )
     original = _order()
-    await router.submit(original)
+    await router.submit(original)  # consumes the 1/s budget for this second
     new_cid = str(uuid4())
-    with pytest.raises(RiskRejected, match="duplicate economic order"):
+    with pytest.raises(RiskRejected, match="order rate"):
         await router.amend(
             original.client_order_id, new_client_order_id=new_cid, new_price=Decimal("120.50")
         )

@@ -19,12 +19,17 @@ from src.quant_execution_engine.adapters.liberator.runtime import (
     create_liberator_runtime,
     start_liberator_workers,
 )
+from src.quant_execution_engine.adapters.market_data import (
+    close_market_data_client,
+    create_market_data_client,
+)
 from src.quant_execution_engine.adapters.settrade.runtime import (
     close_settrade_runtime,
     create_settrade_runtime,
     start_settrade_workers,
 )
 from src.quant_execution_engine.adapters.sim_pricing import close_sim_pricer, create_sim_pricer
+from src.quant_execution_engine.api.audit import router as audit_router
 from src.quant_execution_engine.api.error_handlers import register_error_handlers
 from src.quant_execution_engine.api.routes import router
 from src.quant_execution_engine.api.streams import router as streams_router
@@ -79,9 +84,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Sim fill-price chain (D21): reads the order-book service above + the
     # market-data engine; built after the order book, closed before it.
     create_sim_pricer(settings)
+    # Shared market-data client for the Phase-6 price-band check (A2): a process
+    # singleton (the per-request router borrows it, never owns it).
+    create_market_data_client(settings)
     try:
         yield
     finally:
+        await close_market_data_client()
         await close_sim_pricer()
         await close_order_book_runtime()
         await close_settrade_runtime()
@@ -102,6 +111,11 @@ def create_app() -> FastAPI:
     # streams BEFORE the core router: /orders/stream must out-rank the
     # /orders/{client_order_id} path parameter (match order = registration order).
     app.include_router(streams_router)
+    # audit (Phase 6 / E1-E2) BEFORE the core router too: its literal
+    # /admin/audit/export must out-rank the /admin/orders/{cid}/audit path param,
+    # and both stay clear of the core /orders/{cid} surface (the /admin prefix is
+    # disjoint). Owner-mode is enforced at the audit router level.
+    app.include_router(audit_router)
     app.include_router(router)
     register_error_handlers(app)
     return app

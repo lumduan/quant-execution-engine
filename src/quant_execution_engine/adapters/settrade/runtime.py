@@ -205,6 +205,11 @@ def create_settrade_runtime(settings: Settings) -> SettradeAdapter | None:
                 app_code=creds.app_code,
                 broker_id=settings.settrade_broker_id,
                 refresh_margin_seconds=settings.settrade_token_refresh_margin_seconds,
+                # Per-app venue-facing rate buckets (D1) — each per-market client
+                # gets its own GET + WRITE buckets so SET and TFEX never share a
+                # budget (Design Decision §4).
+                get_rate_limit=settings.settrade_get_rate_limit,
+                post_rate_limit=settings.settrade_post_rate_limit,
             )
             by_creds[creds] = client
         clients[market] = client

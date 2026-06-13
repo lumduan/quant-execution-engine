@@ -19,6 +19,7 @@ import asyncpg
 
 from src.quant_execution_engine.adapters.base import AmendAck, BrokerAdapter
 from src.quant_execution_engine.adapters.errors import AdapterError
+from src.quant_execution_engine.adapters.market_data import MarketDataClient
 from src.quant_execution_engine.adapters.sim import FillPriceSource, SimAdapter
 from src.quant_execution_engine.cache.single_flight import single_flight
 from src.quant_execution_engine.config.settings import Settings
@@ -33,6 +34,7 @@ from src.quant_execution_engine.contracts.errors import (
 from src.quant_execution_engine.contracts.orders import NormalizedOrder, NormalizedOrderResult
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.core.kill_switch import KillSwitch
+from src.quant_execution_engine.core.price_band import PriceBandCheck
 from src.quant_execution_engine.core.risk import RiskGate
 from src.quant_execution_engine.core.stage import AdapterIntent, resolve_adapter
 from src.quant_execution_engine.db import repositories
@@ -93,6 +95,7 @@ class OrderRouter:
         liberator_adapter: BrokerAdapter | None = None,
         settrade_adapter: BrokerAdapter | None = None,
         sim_price_source: FillPriceSource | None = None,
+        market_data_client: MarketDataClient | None = None,
     ) -> None:
         self._settings = settings
         self._pool = pool
@@ -105,6 +108,12 @@ class OrderRouter:
         self._liberator = liberator_adapter
         self._settrade = settrade_adapter
         self._risk = RiskGate(settings, redis)
+        # The price-band check (A2) is advisory + default-off: with no market-data
+        # client injected it runs against an unconfigured client, so .enabled is
+        # False and check() is a no-op. The shared singleton is borrowed, not owned.
+        self._price_band = PriceBandCheck(
+            settings, market_data_client or MarketDataClient(None, None)
+        )
         self.kill_switch = KillSwitch(settings, redis)
 
     def _resolve_adapter(
@@ -142,6 +151,10 @@ class OrderRouter:
         caps.assert_supports(order.order_type, order.tif, order.position_effect)
 
         await self._risk.check(order)
+        # Advisory price-band check (A2), AFTER the PTRM gate and BEFORE any
+        # adapter routing — a capped/malformed order is rejected before any
+        # market-data hop, and the kill-switch-first invariant is preserved.
+        await self._price_band.check(order)
 
         adapter = self._resolve_adapter(order.broker)
         adapter.breaker.guard()

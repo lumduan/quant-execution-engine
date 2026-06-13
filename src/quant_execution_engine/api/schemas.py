@@ -52,7 +52,17 @@ class KillSwitchStateResponse(BaseModel):
 
 
 class KillSwitchEngageResponse(BaseModel):
+    """``POST /admin/kill-switch/engage`` result.
+
+    ``already_engaged`` makes the trip idempotent: a second engage returns 200
+    with ``already_engaged=true`` and ``cancelled_count=0`` (no second sweep).
+    ``cancelled_count`` mirrors ``len(cancelled)`` for callers that only want the
+    number; the ``cancelled``/``failed`` cid lists stay (additive).
+    """
+
     engaged: bool
+    already_engaged: bool = False
+    cancelled_count: int = 0
     cancelled: list[str]
     failed: list[str]
 

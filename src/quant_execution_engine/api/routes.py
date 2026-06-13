@@ -11,6 +11,8 @@ read surface (order-book snapshots/SSE + ``GET /orders/stream``) lives in
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +22,7 @@ from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.api.deps import (
+    get_operator_id,
     get_router_dep,
     get_settings_dep,
     get_strategy_id,
@@ -38,12 +41,15 @@ from src.quant_execution_engine.api.schemas import (
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
+from src.quant_execution_engine.contracts.errors import KillSwitchNotEngagedError
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
 from src.quant_execution_engine.order_book.runtime import (
     get_order_book_router,
     get_order_book_service,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -204,7 +210,20 @@ async def kill_switch_state(order_router: RouterDep) -> KillSwitchStateResponse:
     dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
     summary="Trip the kill-switch: reject all new submits + mass-cancel open orders",
 )
-async def kill_switch_engage(order_router: RouterDep) -> KillSwitchEngageResponse:
+async def kill_switch_engage(
+    order_router: RouterDep,
+    operator: Annotated[str, Depends(get_operator_id)],
+) -> KillSwitchEngageResponse:
+    """Idempotent trip: a second engage returns ``already_engaged=true`` and runs
+    NO second mass-cancel. The first engage trips the switch, sweeps all open
+    orders, and emits a structured ``kill_switch.engaged`` audit log (operator +
+    counts; never any secret).
+    """
+    engaged, _ = await order_router.kill_switch.status()
+    if engaged:
+        return KillSwitchEngageResponse(
+            engaged=True, already_engaged=True, cancelled_count=0, cancelled=[], failed=[]
+        )
     try:
         await order_router.kill_switch.engage()
     except CacheError as exc:
@@ -212,7 +231,24 @@ async def kill_switch_engage(order_router: RouterDep) -> KillSwitchEngageRespons
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
     cancelled, failed = await order_router.mass_cancel()
-    return KillSwitchEngageResponse(engaged=True, cancelled=cancelled, failed=failed)
+    logger.info(
+        "%s",
+        json.dumps(
+            {
+                "event": "kill_switch.engaged",
+                "operator": operator,
+                "cancelled_count": len(cancelled),
+                "failed_count": len(failed),
+            }
+        ),
+    )
+    return KillSwitchEngageResponse(
+        engaged=True,
+        already_engaged=False,
+        cancelled_count=len(cancelled),
+        cancelled=cancelled,
+        failed=failed,
+    )
 
 
 @router.post(
@@ -221,12 +257,24 @@ async def kill_switch_engage(order_router: RouterDep) -> KillSwitchEngageRespons
     dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
     summary="Clear the runtime kill-switch trip (the env flag always wins)",
 )
-async def kill_switch_disengage(order_router: RouterDep) -> KillSwitchStateResponse:
-    try:
-        await order_router.kill_switch.disengage()
-    except CacheError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
+async def kill_switch_disengage(
+    order_router: RouterDep,
+    operator: Annotated[str, Depends(get_operator_id)],
+) -> KillSwitchStateResponse:
+    """Disengage the runtime trip. 409 ``kill_switch_not_engaged`` when the switch
+    is already clear (distinct from the env-pinned 409); env-pinned disengage
+    still raises ``kill_switch_env_pinned``. Emits a structured
+    ``kill_switch.disengaged`` audit log with the operator identity.
+    """
+    engaged, _ = await order_router.kill_switch.status()
+    if not engaged:
+        # Status-first: a clear switch is a 409 here. This also means the
+        # redis-unavailable case is already a 409 (status() with no redis reports
+        # not-engaged), so disengage() — which only raises CacheError when redis
+        # is absent — has no reachable CacheError path from this route.
+        raise KillSwitchNotEngagedError("kill switch is not currently engaged")
+    # Env-pinned disengage still raises KillSwitchPinnedError (409 env_pinned).
+    await order_router.kill_switch.disengage()
+    logger.info("%s", json.dumps({"event": "kill_switch.disengaged", "operator": operator}))
     engaged, source = await order_router.kill_switch.status()
     return KillSwitchStateResponse(engaged=engaged, source=source)
