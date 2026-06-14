@@ -31,7 +31,17 @@ services:
       dockerfile: ../../docker/liberator/Dockerfile
     container_name: liberator-trading-api
     restart: always
-    # NO ports: — internal only; preserves the sole-credential-owner boundary.
+    # Published on host :8210 so the external OTP-SMS webhook (iPhone automation,
+    # via Cloudflare -> 192.168.1.13:8210) can reach /api/v1/otp/*. Host :8200 is
+    # already owned by quant-tfex-s50-multi-tf-swing, so we use :8210. This is a
+    # DELIBERATE relaxation of the former "internal only" boundary: the whole
+    # liberator API (login/orders/credential-update) becomes reachable, not just
+    # the OTP route, so the OTP/login routes' api-key gate is now load-bearing and
+    # the public hostname SHOULD sit behind Cloudflare Access. Container port stays
+    # 8200 (its config api.port). Tighten to "192.168.1.13:8210:8200" to bind only
+    # the LAN interface if desired.
+    ports:
+      - "8210:8200"
     env_file: .env            # LIBERATOR_USERNAME/PASSWORD/PIN, TEL_NO, API_KEY, REDIS_PASSWORD
     volumes:
       # Deterministic container config (Redis host = sidecar). YAML outranks env
