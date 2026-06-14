@@ -3,7 +3,8 @@
 **Feature:** Liberator session self-heal — Phase 2: Config consolidation
 **Branch:** `feat/liberator-session-self-heal-phase2-config-consolidation`
 **Created:** 2026-06-14
-**Status:** In Progress
+**Status:** Complete
+**Completed:** 2026-06-14
 **Depends On:** [`phase1-liveness-probe-correctness.md`](phase1-liveness-probe-correctness.md) (Complete); [`ROADMAP.md`](ROADMAP.md) Phase 2; decisions **D5**, **D6**
 
 ---
@@ -262,10 +263,41 @@ liberator-session-self-heal feature inside the quant-execution-engine submodule 
 
 ## Completion Notes
 
-_(Filled on completion — see the engine chore commit.)_
+### Summary
+
+Implemented as the corrected config-level consolidation. `SessionMonitorConfig` was already the
+single monitor model; the duplication lived only in YAML. All three shipped configs now speak the
+one consumed schema (`session_monitor` + `session_status.config`/`.health`), the dead
+`session_status.monitoring` / `health_check` blocks are gone, and the dead `SessionStatusTestPayload`
+model + `test_payload_used` field (always `None` since Phase 1) were removed. The monitor remains
+disabled. The submodule landed first (liberator-trading-api **PR #39, merged → `e82c694`**) and the
+engine pins that merged SHA (D6).
+
+### Issues encountered / findings
+
+1. **The prompt's "merge two Pydantic schemas" premise was inaccurate.** There is no
+   `session_status.monitoring` Pydantic model; `SessionMonitorConfig` already had one `enabled` + one
+   cadence. The real fix was dropping the dead YAML + aligning every config — surfaced to the operator,
+   who chose "do it in best practice."
+2. **Latent footgun in the setup.py provisioning sample.** `config/session_status.sample.yaml.example`
+   (mapped by `setup.py:41` to the generated `session_status.yaml`) was **missing `session_monitor`
+   entirely** — a generated config would have left the monitor at `SessionMonitorConfig`'s default
+   `enabled=True`. The bundled engine deployment is safe (its mounted overlay sets `enabled: false`),
+   but the sample now carries the disabled block.
+3. **The three configs had three different shapes.** The mounted overlay used `monitoring` /
+   `health_check` (dead), the doc example used `config` / `health` + `session_monitor`, and the setup
+   sample used `test_payload` / `monitoring` / `health_check` (with no `session_monitor`). All now match.
+4. **Pre-existing-red submodule — scoped gate.** Per plan: ruff introduced zero new findings (model
+   29 → 28; the other four touched files unchanged vs `main`; the new test file is clean), mypy clean
+   on the touched modules, 46 touched tests pass. The repo-wide debt is out of scope.
+5. **The pin advances past the Phase-1 merge.** Engine `main` recorded the submodule at the Phase-1
+   *branch* tip (`59eb76a`); it now advances to the merged Phase-2 `main` tip (`e82c694`) — a clean
+   fast-forward (the content delta is exactly the Phase-2 changes, since Phase-1's content was already
+   pinned).
 
 ---
 
 **Document Version:** 1.0
 **Author:** AI Agent (Claude Opus 4.8)
-**Status:** In Progress
+**Status:** Complete
+**Completed:** 2026-06-14

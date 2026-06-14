@@ -12,8 +12,9 @@ plus targeted hardening — **not** a greenfield build.
 > `docker/liberator/*.yaml` config + docs — it does **not** change the frozen `NormalizedOrder`
 > contract, the order state machine, the capability matrix, gating, or any infra-db schema.
 
-**Status: Proposed (planning) — no code yet (2026-06-13).** Phases 1–6 are all `[ ]` not started.
-The user asked for the plan first; implementation follows on approval.
+**Status: Phases 1–2 complete; Phases 3–6 not started.** Phase 1 (read-only liveness probe)
+shipped 2026-06-13; Phase 2 (config consolidation) shipped 2026-06-14. The monitor stays
+**DISABLED** until Phase 5.
 
 ---
 
@@ -92,23 +93,23 @@ and robustness gaps that must be fixed before it can be trusted to drive real re
 
 ## Phases
 
-### Phase 1 — Liveness probe correctness `[ ]` (prerequisite)
+### Phase 1 — Liveness probe correctness `[x]` (prerequisite)
 Goal: detection must be trustworthy before auto-login is enabled.
 
 | Deliverable | Status | Notes |
 |---|---|---|
-| Read-only liveness probe (D2) | `[ ]` | `app/services/session_status_service.py::check_session_status` calls a read-only authed endpoint (e.g. `GET /api/v1/profile`) instead of `POST /api/v1/order/pre-place/set`; alive ⇔ 2xx with a valid auth token |
-| Drop placeholder-cred dependency | `[ ]` | Remove the `accountNo`/`pin` `test_payload` requirement from the probe path |
-| Unit tests | `[ ]` | alive / 401-or-403 / no-token / network-error → correct `is_alive` |
+| Read-only liveness probe (D2) | `[x]` | `app/services/session_status_service.py::check_session_status` calls a read-only authed endpoint (`GET /api/v1/profile`) instead of `POST /api/v1/order/pre-place/set`; alive ⇔ 2xx with a valid auth token |
+| Drop placeholder-cred dependency | `[x]` | Removed the `accountNo`/`pin` `test_payload` from the probe path (Phase 1); the dead `SessionStatusTestPayload` model itself removed in Phase 2 |
+| Unit tests | `[x]` | alive / 401-or-403 / no-token / network-error → correct `is_alive` |
 
-### Phase 2 — Config consolidation `[ ]`
+### Phase 2 — Config consolidation `[x]`
 Goal: one monitoring schema, clearly documented.
 
 | Deliverable | Status | Notes |
 |---|---|---|
-| Single `SessionMonitorConfig` schema | `[ ]` | Collapse `session_status.monitoring` + `session_monitor` into one block in `app/models/session_status.py`; one `enabled`, one cadence |
-| Update example/sample configs | `[ ]` | `config/session_status.yaml.example` + samples reflect the consolidated schema |
-| Update mounted config | `[ ]` | `docker/liberator/session_status.yaml` migrated to the new schema (still disabled until Phase 5) |
+| Single `SessionMonitorConfig` schema | `[x]` | Already one model — removed the dead `session_status.monitoring` / `health_check` YAML (read by no service) + the dead `SessionStatusTestPayload`. One `enabled`, one cadence |
+| Update example/sample configs | `[x]` | Both `config/session_status*.yaml.example` reflect the consolidated schema; the sample (the setup.py source) gained the missing disabled `session_monitor` |
+| Update mounted config | `[x]` | `docker/liberator/session_status.yaml` migrated to the consumed schema (monitor still disabled until Phase 5) |
 
 ### Phase 3 — Re-login hardening `[ ]`
 Goal: safe, non-racing, backed-off re-login. Reuse the existing loop/methods — do **not** rewrite.
@@ -156,8 +157,8 @@ Goal: turn it on and prove the full loop.
 - [ ] Only one re-login / one OTP fires per dead-session event, even under concurrent triggers.
 - [ ] A missing OTP (phone off) produces a structured alert and the session stays dead — never a
       false "alive".
-- [ ] The liveness probe needs no account number or PIN and reads correctly on a healthy session.
-- [ ] One monitoring config schema; no duplicate `enabled` flags.
+- [x] The liveness probe needs no account number or PIN and reads correctly on a healthy session.
+- [x] One monitoring config schema; no duplicate `enabled` flags.
 - [ ] No change to the frozen `NormalizedOrder` / state machine / capability cells / gating /
       infra-db schema; engine code unchanged (D1, D5).
 - [ ] Submodule quality gate green (`ruff` / `mypy` / `pytest` ≥90%); dual-commit + pin bump (D6).
