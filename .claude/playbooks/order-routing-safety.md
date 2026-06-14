@@ -95,6 +95,28 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-com
 4. If the venue is healthy but you must halt anyway, use the kill-switch
    (`POST /admin/kill-switch/engage`) — it rejects new submits AND mass-cancels.
 
+### Session self-heal (auto-relogin) — **enabled** since 2026-06-14
+
+The bundled `liberator-trading-api` upstream **auto-relogs-in its own dead broker session** (the
+`SessionMonitorService`, enabled in `docker/liberator/session_status.yaml`), so step 2 of the breaker
+runbook above ("re-login (OTP via SMS webhook)") now usually happens **without a human**. The loop: a
+read-only `GET /api/v1/profile` probe every `checking_time_interval` (300 s) → on dead, a single-flight
+(Redis SETNX) `POST /api/v1/login/` firing **one** OTP SMS → the operator's iPhone forwards it to
+`POST /api/v1/otp/sms` → auto-confirm → `Immediate login confirmed (OTP)` → alive; the engine breaker
+then recovers on its next good heartbeat.
+
+- **Hard dependency:** there is **no refresh token**, so unattended self-heal **requires the operator's
+  iPhone OTP-forward automation running 24/7**. If it's off, the monitor **fails loud**: a structured
+  ERROR `session.relogin_otp_timeout` fires and the **session stays dead** (never a false "alive") —
+  one OTP + one alert, no storm. **Operator response: check the phone automation.**
+- **§C trading-hours gate:** the monitor pauses outside trading hours, so a session that dies over a
+  weekend stays dead until market open, then auto-heals.
+- **Enable/disable:** `session_monitor.enabled` / `auto_connect` in `docker/liberator/session_status.yaml`
+  (fail-loud knobs are the liberator container's own env — `RELOGIN_OTP_WAIT_SECONDS`,
+  `OTP_AUTO_CONFIRM_ENABLED`, …). **Rebuild the liberator image after any change** — a pin bump or config
+  edit does NOT redeploy it.
+- **Full reference:** [`../../docs/operations/liberator-session-self-heal.md`](../../docs/operations/liberator-session-self-heal.md).
+
 ### Stage-flip rule (cancel routing is stage-at-call-time)
 
 Cancels resolve their adapter from the CURRENT stage, so flipping

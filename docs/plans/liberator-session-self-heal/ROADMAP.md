@@ -12,10 +12,12 @@ plus targeted hardening — **not** a greenfield build.
 > `docker/liberator/*.yaml` config + docs — it does **not** change the frozen `NormalizedOrder`
 > contract, the order state machine, the capability matrix, gating, or any infra-db schema.
 
-**Status: Phases 1–5 complete; Phase 6 (docs/runbook) not started.** Phase 1 shipped 2026-06-13;
-Phases 2–5 shipped 2026-06-14. **Phase 5 ENABLED the monitor** (`enabled: true` / `auto_connect: true`)
-and verified the self-heal + fail-loud loops **live** (single-flight unit-proven). The monitor is now
-**ON** (auto-relogin on a dead session, gated by trading hours + single-flight + fail-loud).
+**Status: Phases 1–6 complete — the feature is COMPLETE.** Phase 1 shipped 2026-06-13; Phases 2–6
+shipped 2026-06-14. **Phase 5 ENABLED the monitor** (`enabled: true` / `auto_connect: true`) and
+verified the self-heal + fail-loud loops **live** (single-flight unit-proven); **Phase 6** documented it
+for operators (the [`liberator-session-self-heal.md`](../../operations/liberator-session-self-heal.md)
+reference + runbook pointers). The monitor is now **ON** (auto-relogin on a dead session, gated by
+trading hours + single-flight + fail-loud).
 
 ---
 
@@ -143,12 +145,16 @@ Goal: turn it on and prove the full loop.
 | Fail-loud E2E | `[x]` | **verified live**: OTP unconfirmed → after the wait → `session.relogin_otp_timeout` alert (ERROR) + session stays dead + exactly one OTP |
 | Single-flight E2E | `[~]` | unit-proven (SETNX lock); a precise live race wasn't forced — the lock infra (`redis.asyncio`) is live-healthy |
 
-### Phase 6 — Docs / runbook `[ ]`
+### Phase 6 — Docs / runbook `[x]`
+Goal: document the now-enabled monitor for operators (the final phase). Docs-only.
+
 | Deliverable | Status | Notes |
 |---|---|---|
-| Operator runbook | `[ ]` | `../../../.claude/playbooks/order-routing-safety.md` + umbrella `../../../../.claude/playbooks/execution-engine-runbook.md`: self-heal behavior, the **always-on iPhone automation dependency**, the fail-loud alert response |
-| Ops docs | `[ ]` | `../../operations/*` — new monitor config keys + enable/disable |
-| Note in engine `CLAUDE.md` | `[ ]` | `../../../CLAUDE.md` once shipped |
+| Reference doc (NEW) | `[x]` | [`../../operations/liberator-session-self-heal.md`](../../operations/liberator-session-self-heal.md) — the single source: self-heal + fail-loud behavior, the iPhone-automation dependency, the full config surface (`session_monitor.*` + `RELOGIN_*` + `OTP_AUTO_CONFIRM_ENABLED`), enable/disable, the two live gotchas, Phase-5 log evidence |
+| Operator runbook | `[x]` | `../../../.claude/playbooks/order-routing-safety.md` ("Session self-heal" under Liberator specifics) + umbrella `../../../../.claude/playbooks/execution-engine-runbook.md`: the loop, the **always-on iPhone automation dependency**, the fail-loud response — pointing to the reference doc |
+| Ops docs | `[x]` | hub [`../../README.md`](../../README.md) + [`../../operations/troubleshooting.md`](../../operations/troubleshooting.md) (`session.relogin_otp_timeout` entry) link the reference; config keys + enable/disable live in the reference |
+| Note in engine `CLAUDE.md` | `[x]` | [`../../../CLAUDE.md`](../../../CLAUDE.md) — monitor-enabled note in the Liberator env section + the ops-docs table row |
+| Phase plan doc (NEW) | `[x]` | [`phase6-docs-runbook.md`](phase6-docs-runbook.md) |
 
 ---
 
@@ -161,9 +167,10 @@ Goal: turn it on and prove the full loop.
       false "alive".
 - [x] The liveness probe needs no account number or PIN and reads correctly on a healthy session.
 - [x] One monitoring config schema; no duplicate `enabled` flags.
-- [ ] No change to the frozen `NormalizedOrder` / state machine / capability cells / gating /
-      infra-db schema; engine code unchanged (D1, D5).
-- [ ] Submodule quality gate green (`ruff` / `mypy` / `pytest` ≥90%); dual-commit + pin bump (D6).
+- [x] No change to the frozen `NormalizedOrder` / state machine / capability cells / gating /
+      infra-db schema; engine code unchanged (D1, D5) — held across all phases.
+- [x] Submodule quality gate green (`ruff` / `mypy` / `pytest` ≥90% on touched files, no-regression on
+      the pre-existing-red baseline); dual-commit + pin bump (D6) — done in the Phase 1–4 code phases.
 
 ## Verification (Phase 5, end-to-end)
 1. Bring up infra-db → execution-engine (owner mode) → liberator overlay with the monitor enabled.

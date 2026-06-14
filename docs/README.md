@@ -49,6 +49,7 @@ streams are public-readable (api-key-gated).
 | [`operations/configuration.md`](operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — name / type / default / effect / SecretStr |
 | [`operations/kill-switch.md`](operations/kill-switch.md) | Engage / disengage procedures, the stage-flip rule, the breaker relationship |
 | [`operations/troubleshooting.md`](operations/troubleshooting.md) | Common failure modes: breaker tripped, stuck pendings, duplicate-burst, DB/Redis down, gateway 5xx |
+| [`operations/liberator-session-self-heal.md`](operations/liberator-session-self-heal.md) | The bundled Liberator auto-relogin monitor (enabled): the self-heal loop, the iPhone-OTP dependency, the fail-loud alert + response, config surface, enable/disable, the two live gotchas |
 
 ## Data model
 

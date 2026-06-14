@@ -82,6 +82,26 @@ inactive"`. **Cause:** realtime market data is **not enabled at the InnovestX po
 `EXECUTION_ENGINE_ORDER_BOOK_PRIMARY_PROVIDER=liberator` (the verified-live default). The order book is
 default-off regardless (`ORDER_BOOK_ENABLED=false`).
 
+## Liberator session dead / `session.relogin_otp_timeout` alert
+
+**Symptom:** Liberator routing has halted (`brokers.liberator.breaker_state: "open"`), and the bundled
+liberator container logged a structured **ERROR** `session.relogin_otp_timeout`
+(`trigger=immediate_login|reconnection wait_seconds=N`). **Cause:** the auto-relogin monitor detected a
+dead broker session (the JWT expires ~24 h with no refresh token), fired a re-login + OTP SMS, but the
+OTP was **not confirmed** within `RELOGIN_OTP_WAIT_SECONDS` — almost always because the operator's
+**iPhone OTP-forward automation** isn't running, so the SMS reached the phone but wasn't forwarded to
+`POST /api/v1/otp/sms`. The session **stays dead by design** (never a false "alive"). **Resolve:** check
+the iPhone automation is online; once healthy, the next monitor poll (or a manual `POST /api/v1/login/`
+on the internal upstream) re-triggers — confirm with `GET /api/v1/session/status` = alive. Full
+behaviour + config: [`liberator-session-self-heal.md`](liberator-session-self-heal.md). **Note:** a
+session that dies over a weekend / holiday stays dead until market open (the §C trading-hours gate
+pauses the monitor), then auto-heals.
+
+> **Deploy gotcha — rebuild after a pin bump.** The liberator container is built from the submodule
+> source; advancing the `third_party/liberator-trading-api` pin (or editing
+> `docker/liberator/session_status.yaml`) does **not** redeploy the running image. Rebuild:
+> `docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-compose.liberator.yml build liberator-trading-api && … up -d`.
+
 ## `live` stage rejected — `stage_rejected` (403)
 
 **Symptom:** a submit with `EXECUTION_ENGINE_STAGE=live` is rejected. **Cause:** `live` is **gated** —
