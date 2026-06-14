@@ -231,7 +231,13 @@ Liberator engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`):
 `LIBERATOR_BASE_URL` (default `http://liberator-trading-api:8200/api/v1`),
 `LIBERATOR_API_KEY` + `LIBERATOR_PIN` (SecretStr — required for the runtime to start),
 `LIBERATOR_HEARTBEAT_INTERVAL_SECONDS=30`, `LIBERATOR_CIRCUIT_BREAKER_THRESHOLD=3`,
-`LIBERATOR_RECONCILE_INTERVAL_SECONDS=12`.
+`LIBERATOR_RECONCILE_INTERVAL_SECONDS=12`. The bundled `liberator-trading-api` upstream
+**auto-relogs-in its dead broker session** (the `SessionMonitorService`, **enabled** 2026-06-14 —
+read-only `GET /api/v1/profile` probe → single-flight OTP login → the operator's iPhone forwards the SMS
+→ auto-confirm; **fail-loud** `session.relogin_otp_timeout` + stays-dead if the OTP isn't confirmed); the
+engine recovers passively via the heartbeat/breaker. Reference:
+[`docs/operations/liberator-session-self-heal.md`](docs/operations/liberator-session-self-heal.md) —
+**rebuild the liberator image after a pin/config change** (a pin bump alone doesn't redeploy it).
 
 Settrade engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`): Settrade is a
 **cloud API — no compose overlay**; creds ride `docker-compose.private.yml`'s `env_file`.
@@ -390,6 +396,7 @@ gated; no secrets (SecretStr examples use `<your-value-here>`).
 | [`docs/operations/configuration.md`](docs/operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — type / default / effect / SecretStr |
 | [`docs/operations/kill-switch.md`](docs/operations/kill-switch.md) | Engage/disengage, the stage-flip rule, the breaker relationship |
 | [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md) | Breaker tripped, stuck pendings, burst guard, DB/Redis down, gateway 5xx |
+| [`docs/operations/liberator-session-self-heal.md`](docs/operations/liberator-session-self-heal.md) | The bundled Liberator auto-relogin monitor (**enabled**) — self-heal loop, iPhone-OTP dependency, fail-loud response, config surface, the two live gotchas |
 | [`docs/data/execution-schema.md`](docs/data/execution-schema.md) | `db_execution` — `orders`/`fills`/`order_events`, triggers, indexes, grants |
 | [`docs/data/state-machine-transitions.md`](docs/data/state-machine-transitions.md) | The verified 13-edge legal-transition table |
 
