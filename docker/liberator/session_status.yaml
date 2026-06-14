@@ -1,9 +1,9 @@
 # Container config for the bundled liberator-trading-api overlay (mounted read-only
 # at /app/config/session_status.yaml). Two services read this file:
 #   - SessionStatusService   -> session_status.config + session_status.health
-#   - SessionMonitorService  -> session_monitor   (auto-relogin; ships DISABLED)
+#   - SessionMonitorService  -> session_monitor   (auto-relogin; ENABLED — Phase 5)
 #
-# Session monitor ships DISABLED (enabled: false / auto_connect: false) until Phase 5.
+# Session monitor is ENABLED (enabled: true / auto_connect: true) — Phase 5 (verified live 2026-06-14).
 # Liveness probe is the read-only GET /api/v1/profile (auth-token-only — Phase 1); it
 # needs no account number, PIN, or order-shaped test payload.
 #
@@ -24,10 +24,10 @@ session_status:
     check_redis_connection: true
     check_auth_token: true
     include_session_runtime: true
-# Automated session monitor + auto-reconnect (SessionMonitorConfig) — DISABLED until Phase 5.
+# Automated session monitor + auto-reconnect (SessionMonitorConfig) — ENABLED (Phase 5).
 session_monitor:
-  enabled: false
-  auto_connect: false
+  enabled: true
+  auto_connect: true
   checking_time_interval: 300
   max_retries: 3
   retry_backoff_seconds: 60

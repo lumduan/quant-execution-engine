@@ -12,9 +12,10 @@ plus targeted hardening — **not** a greenfield build.
 > `docker/liberator/*.yaml` config + docs — it does **not** change the frozen `NormalizedOrder`
 > contract, the order state machine, the capability matrix, gating, or any infra-db schema.
 
-**Status: Phases 1–4 complete; Phases 5–6 not started.** Phase 1 (read-only liveness probe)
-shipped 2026-06-13; Phases 2 (config consolidation) + 3 (re-login hardening) + 4 (fail-loud OTP)
-shipped 2026-06-14. The monitor stays **DISABLED** until Phase 5.
+**Status: Phases 1–5 complete; Phase 6 (docs/runbook) not started.** Phase 1 shipped 2026-06-13;
+Phases 2–5 shipped 2026-06-14. **Phase 5 ENABLED the monitor** (`enabled: true` / `auto_connect: true`)
+and verified the self-heal + fail-loud loops **live** (single-flight unit-proven). The monitor is now
+**ON** (auto-relogin on a dead session, gated by trading hours + single-flight + fail-loud).
 
 ---
 
@@ -132,15 +133,15 @@ Goal: a dead phone is loud, not silent. Implements D4.
 | Settings | `[x]` | `app/config.py`: `relogin_otp_wait_seconds` + `relogin_otp_poll_seconds` + `relogin_notify_webhook_url` (env-backed) |
 | Unit tests | `[x]` | OTP-confirmed-in-time → alive; OTP-timeout → alert fired + stays dead (exactly one OTP); NotifyService log/webhook/swallow |
 
-### Phase 5 — Enable in the bundled deployment + end-to-end verification `[ ]`
+### Phase 5 — Enable in the bundled deployment + end-to-end verification `[x]`
 Goal: turn it on and prove the full loop.
 
 | Deliverable | Status | Notes |
 |---|---|---|
-| Enable monitor | `[ ]` | `docker/liberator/session_status.yaml`: `enabled: true` + `auto_connect: true` with the real read-only probe |
-| Self-heal E2E | `[ ]` | force session dead → detect → `/login` → OTP SMS → iPhone forward → auto-confirm → alive → engine breaker recovers |
-| Fail-loud E2E | `[ ]` | phone unreachable → OTP timeout → alert + session stays dead + breaker stays open |
-| Single-flight E2E | `[ ]` | concurrent dead-detections → exactly one `/login` / one OTP |
+| Enable monitor | `[x]` | `docker/liberator/session_status.yaml`: `enabled: true` + `auto_connect: true`; verified live 2026-06-14 (monitor auto-starts + loops; the stale image was rebuilt from `911255a`) |
+| Self-heal E2E | `[x]` | **verified live 3×**: force dead → detect → `/login` → OTP SMS → iPhone forward → auto-confirm → "Immediate login confirmed (OTP)" → alive (engine-breaker recovery N/A — engine in sim mode) |
+| Fail-loud E2E | `[x]` | **verified live**: OTP unconfirmed → after the wait → `session.relogin_otp_timeout` alert (ERROR) + session stays dead + exactly one OTP |
+| Single-flight E2E | `[~]` | unit-proven (SETNX lock); a precise live race wasn't forced — the lock infra (`redis.asyncio`) is live-healthy |
 
 ### Phase 6 — Docs / runbook `[ ]`
 | Deliverable | Status | Notes |
@@ -152,8 +153,9 @@ Goal: turn it on and prove the full loop.
 ---
 
 ## Success criteria
-- [ ] A dead Liberator session is detected and re-logged-in automatically (markets open), with the
-      engine breaker recovering on the next heartbeat — no manual `/login`.
+- [x] A dead Liberator session is detected and re-logged-in automatically (markets open) — no manual
+      `/login` (verified live 2026-06-14; engine-breaker recovery applies when the engine runs the
+      liberator adapter, sim mode here).
 - [x] Only one re-login / one OTP fires per dead-session event, even under concurrent triggers.
 - [x] A missing OTP (phone off) produces a structured alert and the session stays dead — never a
       false "alive".
