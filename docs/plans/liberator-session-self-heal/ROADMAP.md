@@ -12,9 +12,9 @@ plus targeted hardening — **not** a greenfield build.
 > `docker/liberator/*.yaml` config + docs — it does **not** change the frozen `NormalizedOrder`
 > contract, the order state machine, the capability matrix, gating, or any infra-db schema.
 
-**Status: Phases 1–3 complete; Phases 4–6 not started.** Phase 1 (read-only liveness probe)
-shipped 2026-06-13; Phases 2 (config consolidation) + 3 (re-login hardening) shipped 2026-06-14.
-The monitor stays **DISABLED** until Phase 5.
+**Status: Phases 1–4 complete; Phases 5–6 not started.** Phase 1 (read-only liveness probe)
+shipped 2026-06-13; Phases 2 (config consolidation) + 3 (re-login hardening) + 4 (fail-loud OTP)
+shipped 2026-06-14. The monitor stays **DISABLED** until Phase 5.
 
 ---
 
@@ -121,16 +121,16 @@ Goal: safe, non-racing, backed-off re-login. Reuse the existing loop/methods —
 | Trading-hours respect (§C) | `[x]` | `_relogin_allowed_now` honors `_check_trading_hours_automation` before each attempt (incl. mid-loop) so OTPs aren't fired when markets are closed |
 | Unit tests | `[x]` | concurrent triggers → one login; backoff schedule; trading-hours pause; immediate-login signal mapping |
 
-### Phase 4 — Fail-loud OTP fallback + alerting `[ ]`
+### Phase 4 — Fail-loud OTP fallback + alerting `[x]`
 Goal: a dead phone is loud, not silent. Implements D4.
 
 | Deliverable | Status | Notes |
 |---|---|---|
-| "Awaiting OTP" tracking | `[ ]` | After a triggered login, watch for a confirmed OTP (via `OTPIntegrationService` result / `current_attempt_counts` / token refresh) within a timeout |
-| Pluggable notifier | `[ ]` | NEW `app/services/notify_service.py` — structured `session.relogin_otp_timeout` log + optional webhook hook (no secrets) |
-| Stay-dead on timeout | `[ ]` | On OTP timeout, keep the session marked dead so the engine breaker stays open (no false "alive") |
-| Settings | `[ ]` | `app/config.py`: OTP-wait timeout + notifier target |
-| Unit tests | `[ ]` | OTP-confirmed-in-time → alive; OTP-timeout → alert fired + stays dead |
+| "Awaiting OTP" tracking | `[x]` | `_await_otp_confirmation` polls `get_current_auth_tokens()` for a token newer than the pre-login baseline within `relogin_otp_wait_seconds` (token-refresh ⇒ OTP confirmed) |
+| Pluggable notifier | `[x]` | NEW `app/services/notify_service.py` — structured `session.relogin_otp_timeout` log + optional best-effort webhook (never raises, no secrets) |
+| Stay-dead on timeout | `[x]` | On OTP timeout: alert, `_consecutive_failures += 1`, no `_total_reconnects`, **no re-trigger**; the session stays dead so the engine breaker stays open (no false "alive") |
+| Settings | `[x]` | `app/config.py`: `relogin_otp_wait_seconds` + `relogin_otp_poll_seconds` + `relogin_notify_webhook_url` (env-backed) |
+| Unit tests | `[x]` | OTP-confirmed-in-time → alive; OTP-timeout → alert fired + stays dead (exactly one OTP); NotifyService log/webhook/swallow |
 
 ### Phase 5 — Enable in the bundled deployment + end-to-end verification `[ ]`
 Goal: turn it on and prove the full loop.
@@ -155,7 +155,7 @@ Goal: turn it on and prove the full loop.
 - [ ] A dead Liberator session is detected and re-logged-in automatically (markets open), with the
       engine breaker recovering on the next heartbeat — no manual `/login`.
 - [x] Only one re-login / one OTP fires per dead-session event, even under concurrent triggers.
-- [ ] A missing OTP (phone off) produces a structured alert and the session stays dead — never a
+- [x] A missing OTP (phone off) produces a structured alert and the session stays dead — never a
       false "alive".
 - [x] The liveness probe needs no account number or PIN and reads correctly on a healthy session.
 - [x] One monitoring config schema; no duplicate `enabled` flags.
