@@ -200,6 +200,11 @@ def test_typed_error_envelopes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_rate_limit_returns_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The per-second cap keys on ``exe:rate:{int(time.time())}`` (core.risk). Freeze
+    # that clock so the two posts can't straddle an integer-second boundary into two
+    # separate windows — the source of the CI flakiness (the second post then lands in
+    # a fresh window with count 1 and isn't throttled).
+    monkeypatch.setattr("src.quant_execution_engine.core.risk.time.time", lambda: 1_700_000_000.0)
     client, _, _ = _owner_client(monkeypatch, risk_max_orders_per_second=1)
     assert client.post("/orders", json=order_payload(symbol="A")).status_code == 201
     throttled = client.post("/orders", json=order_payload(symbol="B"))
