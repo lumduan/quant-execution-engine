@@ -12,9 +12,9 @@ plus targeted hardening — **not** a greenfield build.
 > `docker/liberator/*.yaml` config + docs — it does **not** change the frozen `NormalizedOrder`
 > contract, the order state machine, the capability matrix, gating, or any infra-db schema.
 
-**Status: Phases 1–2 complete; Phases 3–6 not started.** Phase 1 (read-only liveness probe)
-shipped 2026-06-13; Phase 2 (config consolidation) shipped 2026-06-14. The monitor stays
-**DISABLED** until Phase 5.
+**Status: Phases 1–3 complete; Phases 4–6 not started.** Phase 1 (read-only liveness probe)
+shipped 2026-06-13; Phases 2 (config consolidation) + 3 (re-login hardening) shipped 2026-06-14.
+The monitor stays **DISABLED** until Phase 5.
 
 ---
 
@@ -111,15 +111,15 @@ Goal: one monitoring schema, clearly documented.
 | Update example/sample configs | `[x]` | Both `config/session_status*.yaml.example` reflect the consolidated schema; the sample (the setup.py source) gained the missing disabled `session_monitor` |
 | Update mounted config | `[x]` | `docker/liberator/session_status.yaml` migrated to the consumed schema (monitor still disabled until Phase 5) |
 
-### Phase 3 — Re-login hardening `[ ]`
+### Phase 3 — Re-login hardening `[x]`
 Goal: safe, non-racing, backed-off re-login. Reuse the existing loop/methods — do **not** rewrite.
 
 | Deliverable | Status | Notes |
 |---|---|---|
-| Single-flight lock (D3) | `[ ]` | Redis SETNX (liberator-redis) around the re-login critical section in `_attempt_immediate_login` / `_attempt_reconnection`; lock has a TTL so a crashed login self-clears |
-| Exponential backoff + jitter | `[ ]` | Replace fixed `retry_backoff_seconds` with capped exponential + jitter |
-| Trading-hours respect (§C) | `[ ]` | Re-login attempts honor `_check_trading_hours_automation` so OTPs aren't fired when markets are closed |
-| Unit tests | `[ ]` | concurrent triggers → one login; backoff schedule; trading-hours pause |
+| Single-flight lock (D3) | `[x]` | Redis SETNX (liberator-redis) around the re-login critical section in `_attempt_immediate_login` / `_attempt_reconnection`; token-guarded release + TTL so a crashed login self-clears; fail-open on Redis outage |
+| Exponential backoff + jitter | `[x]` | `_compute_backoff` replaces the fixed `retry_backoff_seconds` with capped exponential + equal jitter (new `retry_backoff_max_seconds`) |
+| Trading-hours respect (§C) | `[x]` | `_relogin_allowed_now` honors `_check_trading_hours_automation` before each attempt (incl. mid-loop) so OTPs aren't fired when markets are closed |
+| Unit tests | `[x]` | concurrent triggers → one login; backoff schedule; trading-hours pause; immediate-login signal mapping |
 
 ### Phase 4 — Fail-loud OTP fallback + alerting `[ ]`
 Goal: a dead phone is loud, not silent. Implements D4.
@@ -154,7 +154,7 @@ Goal: turn it on and prove the full loop.
 ## Success criteria
 - [ ] A dead Liberator session is detected and re-logged-in automatically (markets open), with the
       engine breaker recovering on the next heartbeat — no manual `/login`.
-- [ ] Only one re-login / one OTP fires per dead-session event, even under concurrent triggers.
+- [x] Only one re-login / one OTP fires per dead-session event, even under concurrent triggers.
 - [ ] A missing OTP (phone off) produces a structured alert and the session stays dead — never a
       false "alive".
 - [x] The liveness probe needs no account number or PIN and reads correctly on a healthy session.
