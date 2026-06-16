@@ -113,6 +113,38 @@ def test_paper_read_settrade_reaches_runtime_trade_intercepts() -> None:
     assert trade is sim  # placements never reach the venue at paper
 
 
+def test_micro_live_streaming_pro_requires_a_configured_runtime() -> None:
+    sim = _sim()
+    stub = StubBrokerAdapter(broker=Broker.STREAMING_PRO)
+    resolved = resolve_adapter(
+        Stage.MICRO_LIVE, Broker.STREAMING_PRO, sim_adapter=sim, streaming_pro_adapter=stub
+    )
+    assert resolved is stub
+    with pytest.raises(StageRejected, match="streaming_pro runtime"):
+        resolve_adapter(Stage.MICRO_LIVE, Broker.STREAMING_PRO, sim_adapter=sim)
+
+
+def test_paper_streaming_pro_read_reaches_runtime_trade_intercepts() -> None:
+    sim = _sim()
+    stub = StubBrokerAdapter(broker=Broker.STREAMING_PRO)
+    read = resolve_adapter(
+        Stage.PAPER,
+        Broker.STREAMING_PRO,
+        sim_adapter=sim,
+        streaming_pro_adapter=stub,
+        intent=AdapterIntent.READ,
+    )
+    assert read is stub
+    trade = resolve_adapter(
+        Stage.PAPER,
+        Broker.STREAMING_PRO,
+        sim_adapter=sim,
+        streaming_pro_adapter=stub,
+        intent=AdapterIntent.TRADE,
+    )
+    assert trade is sim  # placements never reach the venue at paper
+
+
 def test_live_stays_gated_in_phase_4() -> None:
     sim, liberator = _sim(), make_adapter()
     for broker in Broker:

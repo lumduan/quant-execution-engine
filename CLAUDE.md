@@ -13,9 +13,18 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
-> **Current state: Phases 0–7 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
+> **Current state: Phases 0–8 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
 > Phase 5.1 strategy side: 2026-06-12; Phase 6 safety/ops/reconciliation hardening: 2026-06-13;
-> Phase 7 documentation hub: 2026-06-13).** Phase 0:
+> Phase 7 documentation hub: 2026-06-13; Phase 8 `StreamingProAdapter` — the THIRD real broker:
+> 2026-06-16).** **Phase 8** adds `streaming_pro` — composes the standalone `settrade-streaming-api`
+> retail bridge (`third_party/settrade-streaming-api`, host :8700) over **plain httpx** (mirrors
+> `LiberatorAdapter`): the 7 frozen methods + `/session/status` heartbeat + reconciler v1, uppercase-
+> enum pass-through with Decimal-as-string price and **no PIN** (the bridge owns it), conservative
+> `(MARKET,LIMIT)×DAY` SET+TFEX capability cells, `cancel_replace` amend (bridge native amend
+> capture-pending), `EXECUTION_ENGINE_STREAMING_PRO_*` settings (api-key only), and
+> `docker-compose.streaming.yml` (bundles the bridge + its `streaming-pro-redis`). 1034 tests, 95.26%
+> cov; `live` gated, the `micro_live` soak operator-driven. Plan:
+> [`docs/plans/phase8-streaming-pro-adapter.md`](docs/plans/phase8-streaming-pro-adapter.md). Phase 0:
 > ADR ACCEPTED — the contracts (D1–D13, `NormalizedOrder`, `BrokerAdapter`, state machine,
 > capability-matrix shape) are **frozen** in the umbrella ADR
 > [`.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md).

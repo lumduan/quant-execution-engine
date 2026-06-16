@@ -29,6 +29,11 @@ from src.quant_execution_engine.adapters.settrade.runtime import (
     start_settrade_workers,
 )
 from src.quant_execution_engine.adapters.sim_pricing import close_sim_pricer, create_sim_pricer
+from src.quant_execution_engine.adapters.streaming_pro.runtime import (
+    close_streaming_pro_runtime,
+    create_streaming_pro_runtime,
+    start_streaming_pro_workers,
+)
 from src.quant_execution_engine.api.audit import router as audit_router
 from src.quant_execution_engine.api.error_handlers import register_error_handlers
 from src.quant_execution_engine.api.routes import router
@@ -77,6 +82,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await start_liberator_workers(settings)
     create_settrade_runtime(settings)
     await start_settrade_workers(settings)
+    create_streaming_pro_runtime(settings)
+    await start_streaming_pro_workers(settings)
     # Order book service (Phase 5): default-off; a no-op unless an operator opts
     # in with a configured provider. Closed first so feeds stop before brokers.
     create_order_book_runtime(settings)
@@ -93,6 +100,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await close_market_data_client()
         await close_sim_pricer()
         await close_order_book_runtime()
+        await close_streaming_pro_runtime()
         await close_settrade_runtime()
         await close_liberator_runtime()
         await close_redis()

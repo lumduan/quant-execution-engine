@@ -16,8 +16,11 @@ broker's native order API and **never** hold a broker credential.
 > resubscribe, a duplicated buy order is a real loss. Safety is Phase-2 wiring, never a
 > Phase-6 afterthought.
 
-**Status: Phases 0–6 complete (Phase 5 engine side + Phase 5.1 strategy side: 2026-06-12;
-Phase 6 safety/ops/reconciliation hardening: 2026-06-13) — ADR accepted; order store live;
+**Status: Phases 0–8 complete — Phase 8 (`StreamingProAdapter`, the THIRD real broker) shipped
+2026-06-16: composes the `settrade-streaming-api` retail bridge over plain httpx (mirrors Liberator),
+conservative `(MARKET,LIMIT)×DAY` SET+TFEX cells, `cancel_replace` amend, no PIN (bridge-owned); 1034
+tests, 95.26% cov; `live` gated, micro_live soak operator-driven. (Phase 5/5.1: 2026-06-12; Phase 6
+hardening + Phase 7 docs: 2026-06-13.) ADR accepted; order store live;
 engine core + SimAdapter + gateway proxy live; `LiberatorAdapter` + `SettradeAdapter` (both real
 venues) live; the normalized order-update stream out + the dual-provider order book service live;
 both strategies run the end-to-end sim trade loop behind `*_EXECUTION_MODE` flags; the failure
@@ -640,6 +643,26 @@ were corrected (the 13 state edges; env `PG_DSN` not `DB_DSN`; `RISK_MAX_ORDERS_
 - **Quality gate:** docs-only; links resolve; public-safe scan clean.
 - **Cross-refs:** umbrella ROADMAP Phase 7; marketdata-engine `docs/` hub as the format
   precedent.
+
+---
+
+### Phase 8 — `StreamingProAdapter` (the third real broker) 🧩
+**Status:** ✅ **Complete (2026-06-16).** Plan:
+[`phase8-streaming-pro-adapter.md`](phase8-streaming-pro-adapter.md). Realises
+`feature-streaming-pro-adapter` Phase 4 — the engine side of the standalone `settrade-streaming-api`
+retail bridge (which shipped its own Phases 0–3).
+- **Objective:** add the third real broker (`streaming_pro`) by writing ONE adapter, zero
+  frozen-contract change.
+- **Scope:** an `adapters/streaming_pro/` subpackage that composes the bridge over **plain httpx**
+  (mirrors `LiberatorAdapter` — the HTTP-bridge precedent): transport (`X-API-Key`, redacting),
+  mapping (uppercase-enum pass-through, Decimal-as-string, **no PIN** — bridge-owned), the 7 frozen
+  methods + `/session/status` heartbeat + reconciler v1; `Broker.STREAMING_PRO`; 2 conservative
+  `CapabilitySet` rows (`(MARKET,LIMIT)×DAY`, SET+TFEX, amend `cancel_replace`); 6
+  `EXECUTION_ENGINE_STREAMING_PRO_*` settings; stage/router/deps/lifespan wiring;
+  `docker-compose.streaming.yml` (bundles the bridge + its `streaming-pro-redis`).
+- **Non-goals:** native amend (bridge capture-pending → `cancel_replace`); conditional/multi-leg
+  (bridge SP-E); the live `micro_live` soak (operator-driven). **`live` stays gated.**
+- **Quality gate:** ruff + mypy strict + pytest ≥90% on `src/` (respx-mocked). ✅ 1034 tests, 95.26%.
 
 ---
 
