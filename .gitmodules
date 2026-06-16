@@ -1,3 +1,6 @@
 [submodule "third_party/liberator-trading-api"]
 	path = third_party/liberator-trading-api
 	url = https://github.com/lumduan/liberator-trading-api
+[submodule "third_party/settrade-streaming-api"]
+	path = third_party/settrade-streaming-api
+	url = https://github.com/lumduan/settrade-streaming-api.git
