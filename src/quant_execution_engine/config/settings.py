@@ -130,6 +130,20 @@ class Settings(BaseSettings):
     settrade_reconcile_interval_seconds: int = 12
     settrade_token_refresh_margin_seconds: int = 100
 
+    # Broker: Streaming Pro (Phase 8 / feature-streaming-pro-adapter Phase 4) — the
+    # retail bridge `settrade-streaming-api` composed over plain HTTP (mirrors
+    # Liberator). The engine holds ONLY the bridge's api-key + base_url: the bridge
+    # owns USERNAME/PASSWORD/PIN and stamps the PIN itself, so the adapter sends NO
+    # PIN. api_key is SecretStr, optional (settings must load in sim), presence-
+    # checked only at runtime creation; NEVER logged. The bridge runs as a bundled
+    # internal upstream (docker-compose.streaming.yml), reached on quant-network.
+    streaming_pro_base_url: str = "http://streaming-pro-api:8000/api/v1"
+    streaming_pro_api_key: SecretStr | None = None
+    streaming_pro_heartbeat_interval_seconds: int = 30
+    streaming_pro_circuit_breaker_threshold: int = 3
+    streaming_pro_reconcile_interval_seconds: int = 12
+    streaming_pro_post_rate_limit: int = 5
+
     # Venue-facing rate-limit token buckets (Phase 6 / D). These are the
     # engine-side enforcement of each venue's documented request budget, distinct
     # from the PTRM ``risk_max_orders_per_second`` gate above (that caps the

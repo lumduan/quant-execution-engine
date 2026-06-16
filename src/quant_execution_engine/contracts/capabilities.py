@@ -150,6 +150,29 @@ CAPABILITY_MATRIX: tuple[CapabilitySet, ...] = (
         amend="native",
         adapter_installed=True,
     ),
+    # Streaming Pro (installed Phase 8 / feature-streaming-pro-adapter Phase 4): the retail bridge's
+    # JSON REST order API (SET `fis` + TFEX `seosd`), live-captured at the bridge's Gate #4. Cells
+    # are deliberately CONSERVATIVE — only LIMIT/DAY are end-to-end live-verified; MARKET maps to
+    # the bridge's `Market`. They expand (MTL/ATO/ICEBERG, IOC/FOK) as live-verified. Native
+    # amend is capture-pending on the bridge (`/order/change` 501) -> cancel+replace (declared).
+    CapabilitySet(
+        broker=Broker.STREAMING_PRO,
+        market=Market.SET,
+        order_types=(OrderType.MARKET, OrderType.LIMIT),
+        tifs=(Tif.DAY,),
+        position_effects=(),
+        amend="cancel_replace",
+        adapter_installed=True,
+    ),
+    CapabilitySet(
+        broker=Broker.STREAMING_PRO,
+        market=Market.TFEX,
+        order_types=(OrderType.MARKET, OrderType.LIMIT),
+        tifs=(Tif.DAY,),
+        position_effects=(PositionEffect.OPEN, PositionEffect.CLOSE),
+        amend="cancel_replace",
+        adapter_installed=True,
+    ),
 )
 
 

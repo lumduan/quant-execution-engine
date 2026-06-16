@@ -94,6 +94,7 @@ class OrderRouter:
         redis: Any | None,
         liberator_adapter: BrokerAdapter | None = None,
         settrade_adapter: BrokerAdapter | None = None,
+        streaming_pro_adapter: BrokerAdapter | None = None,
         sim_price_source: FillPriceSource | None = None,
         market_data_client: MarketDataClient | None = None,
     ) -> None:
@@ -107,6 +108,7 @@ class OrderRouter:
         # Injected process singletons (api/deps.py / runtime); None = not configured.
         self._liberator = liberator_adapter
         self._settrade = settrade_adapter
+        self._streaming_pro = streaming_pro_adapter
         self._risk = RiskGate(settings, redis)
         # The price-band check (A2) is advisory + default-off: with no market-data
         # client injected it runs against an unconfigured client, so .enabled is
@@ -129,6 +131,7 @@ class OrderRouter:
             sim_adapter=self._sim,
             liberator_adapter=self._liberator,
             settrade_adapter=self._settrade,
+            streaming_pro_adapter=self._streaming_pro,
             intent=intent,
         )
 

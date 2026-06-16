@@ -1,0 +1,83 @@
+# Streaming Pro upstream overlay — bundles the `settrade-streaming-api` bridge the
+# StreamingProAdapter composes over HTTP (Decision D9). It is an INTERNAL piece of
+# the execution plane, NOT a platform peer:
+#   - reachable on host :8700 only for the bridge's OTP-SMS webhook + login (the
+#     order endpoints are owner-mode + api-key gated — keep it behind Cloudflare
+#     Access, exactly like the liberator overlay's :8210)
+#   - not registered in the umbrella network-contract table
+#   - no independent bring-up; its lifecycle is bundled with owner mode here
+#
+# Layer it AFTER the owner overlay so it only comes up when you are actually
+# routing to a real broker (public/sim default stays broker-free):
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.private.yml \
+#                  -f docker-compose.streaming.yml up -d
+#
+# The submodule lives at third_party/settrade-streaming-api (git submodule update
+# --init). The bridge holds the retail creds (engine holds only the api-key): set
+# STREAMING_PRO_API_KEY (== EXECUTION_ENGINE_STREAMING_PRO_API_KEY) + USERNAME /
+# PASSWORD / PIN / {TFEX,SET}_ACCOUNT_NO in the engine's gitignored .env. The bridge
+# still needs a live retail session (operator OTP login / self-heal) before orders
+# route — until then the engine's heartbeat reports the session not-alive (gated).
+services:
+  execution-engine:
+    environment:
+      # Adapter target — internal service hostname on quant-network, never localhost.
+      # The bridge's FastAPI listens on container :8000.
+      EXECUTION_ENGINE_STREAMING_PRO_BASE_URL: "http://streaming-pro-api:8000/api/v1"
+    depends_on:
+      streaming-pro-api:
+        condition: service_healthy
+
+  streaming-pro-api:
+    build:
+      context: ./third_party/settrade-streaming-api
+      dockerfile: Dockerfile
+    container_name: streaming-pro-api
+    restart: always
+    # Host :8700 (the bridge's HOST_PORT default) so the OTP-SMS webhook + login are
+    # reachable. Container port stays :8000 (its uvicorn port).
+    ports:
+      - "${STREAMING_PRO_HOST_PORT:-8700}:8000"
+    env_file: .env            # STREAMING_PRO_API_KEY + USERNAME/PASSWORD/PIN/{TFEX,SET}_ACCOUNT_NO
+    environment:
+      # Redis sidecar host (bridge env prefix STREAMING_PRO_) + owner mode so the
+      # order endpoints answer (they stay api-key gated). The bridge stamps the PIN.
+      STREAMING_PRO_REDIS_HOST: streaming-pro-redis
+      STREAMING_PRO_PUBLIC_MODE: "false"
+    depends_on:
+      streaming-pro-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else sys.exit(1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Streaming Pro's OWN Redis (cookie-jar / OTP / PIN / session state) — distinct
+  # from the engine's execution-redis AND the liberator/gateway Redis.
+  streaming-pro-redis:
+    image: redis:7-alpine
+    container_name: streaming-pro-redis
+    restart: always
+    volumes:
+      - streaming_pro_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  streaming_pro_redis_data:
+
+networks:
+  default:
+    name: quant-network
+    external: true

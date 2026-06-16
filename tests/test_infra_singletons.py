@@ -209,9 +209,14 @@ def test_capability_assert_supports_each_axis() -> None:
 
 
 def test_matrix_shape() -> None:
-    assert len(capabilities.CAPABILITY_MATRIX) == 6  # +SETTRADE×SET since Phase 4
+    assert len(capabilities.CAPABILITY_MATRIX) == 8  # +STREAMING_PRO×{SET,TFEX} since Phase 8
     installed = {c.broker for c in capabilities.CAPABILITY_MATRIX if c.adapter_installed}
-    assert installed == {Broker.SIM, Broker.LIBERATOR, Broker.SETTRADE}  # Settrade Phase 4
+    assert installed == {
+        Broker.SIM,
+        Broker.LIBERATOR,
+        Broker.SETTRADE,
+        Broker.STREAMING_PRO,  # Phase 8
+    }
 
 
 # ----------------------------------------------------------------------- stage

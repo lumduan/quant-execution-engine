@@ -32,6 +32,9 @@ class AdapterIntent(StrEnum):
     READ = "read"  # positions / account / venue open orders
 
 
+_REAL_BROKERS = (Broker.LIBERATOR, Broker.SETTRADE, Broker.STREAMING_PRO)
+
+
 def resolve_adapter(
     stage: Stage,
     broker: Broker,
@@ -39,10 +42,11 @@ def resolve_adapter(
     sim_adapter: BrokerAdapter,
     liberator_adapter: BrokerAdapter | None = None,
     settrade_adapter: BrokerAdapter | None = None,
+    streaming_pro_adapter: BrokerAdapter | None = None,
     intent: AdapterIntent = AdapterIntent.TRADE,
 ) -> BrokerAdapter:
     """Return the adapter the ladder permits, or raise :class:`StageRejected`."""
-    real = _real_adapter_for(broker, liberator_adapter, settrade_adapter)
+    real = _real_adapter_for(broker, liberator_adapter, settrade_adapter, streaming_pro_adapter)
     if stage is Stage.SIM:
         return sim_adapter
     if stage is Stage.PAPER:
@@ -50,7 +54,7 @@ def resolve_adapter(
             return real
         return sim_adapter  # paper intercept: placements never reach a venue
     if stage is Stage.MICRO_LIVE:
-        if broker in (Broker.LIBERATOR, Broker.SETTRADE):
+        if broker in _REAL_BROKERS:
             if real is None:
                 raise StageRejected(_micro_live_unconfigured_message(broker))
             return real
@@ -62,12 +66,15 @@ def _real_adapter_for(
     broker: Broker,
     liberator_adapter: BrokerAdapter | None,
     settrade_adapter: BrokerAdapter | None,
+    streaming_pro_adapter: BrokerAdapter | None,
 ) -> BrokerAdapter | None:
     """The configured real adapter for this broker, or None (sim ignores broker)."""
     if broker is Broker.LIBERATOR:
         return liberator_adapter
     if broker is Broker.SETTRADE:
         return settrade_adapter
+    if broker is Broker.STREAMING_PRO:
+        return streaming_pro_adapter
     return None
 
 
@@ -76,6 +83,11 @@ def _micro_live_unconfigured_message(broker: Broker) -> str:
         return (
             "stage 'micro_live' requires a configured settrade runtime "
             "(owner mode + EXECUTION_ENGINE_SETTRADE_APP_ID/APP_SECRET/APP_CODE)"
+        )
+    if broker is Broker.STREAMING_PRO:
+        return (
+            "stage 'micro_live' requires a configured streaming_pro runtime "
+            "(owner mode + EXECUTION_ENGINE_STREAMING_PRO_API_KEY)"
         )
     return (
         "stage 'micro_live' requires a configured liberator runtime "
