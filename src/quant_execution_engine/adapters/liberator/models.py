@@ -1,6 +1,6 @@
 """Liberator wire models — the upstream envelope and the OrderItem subset we consume.
 
-Shapes verified against ``third_party/liberator-trading-api`` (pinned submodule):
+Shapes verified against ``broker-api/liberator-trading-api`` (umbrella submodule):
 every endpoint answers ``{success, message, data: {errorCode, errMsg, result}}``;
 ``errorCode == 0`` with no ``errMsg`` is success; a successful place carries the
 venue order number at ``data.result.orderNo``; the orders query nests its items
