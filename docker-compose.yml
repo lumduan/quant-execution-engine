@@ -1,6 +1,10 @@
 services:
   execution-engine:
     build: .
+    # PID-1 reaper (tini, best practice): uvicorn runs as PID 1 and does not
+    # wait() on children; `init: true` injects tini as PID 1 to reap any
+    # orphaned healthcheck/subprocess child and forward signals cleanly.
+    init: true
     container_name: quant-execution-engine
     restart: always
     ports:
