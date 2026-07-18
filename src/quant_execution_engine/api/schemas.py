@@ -16,8 +16,9 @@ class BrokerRuntimeHealth(BaseModel):
 
     breaker_state: str  # "closed" | "open" | "half_open"
     session_healthy: bool | None = None  # last heartbeat result; None before the first
-    # Phase 4.1 (additive, Settrade only): per-market last heartbeat — which app
-    # is alive/dead under a multi-app broker ({"SET": bool|None, "TFEX": ...}).
+    # Additive: per-market last heartbeat for a multi-app broker — which app is
+    # alive/dead ({"SET": bool|None, "TFEX": ...}). No current broker populates
+    # it (defaults None); retained for a future multi-session broker.
     sessions: dict[str, bool | None] | None = None
 
 
@@ -71,9 +72,9 @@ class AmendOrderRequest(BaseModel):
     """``PATCH /orders/{cid}`` body — amend price and/or quantity.
 
     ``new_client_order_id`` is supplied ONLY for cancel_replace brokers
-    (Liberator); native brokers (Settrade) keep the same id and must omit it —
-    that asymmetry is enforced in the router, by amend semantics. At least one
-    of ``new_price``/``new_qty`` is required (422 at the boundary).
+    (Liberator, Streaming Pro); native brokers (sim) keep the same id and must
+    omit it — that asymmetry is enforced in the router, by amend semantics. At
+    least one of ``new_price``/``new_qty`` is required (422 at the boundary).
     """
 
     model_config = ConfigDict(extra="forbid")

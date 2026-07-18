@@ -32,7 +32,7 @@ async def test_capabilities_answers() -> None:
         response = await client.get("/capabilities")
     assert response.status_code == 200
     brokers = {row["broker"] for row in response.json()["capabilities"]}
-    assert {"sim", "liberator", "settrade"} <= brokers
+    assert {"sim", "liberator", "streaming_pro"} <= brokers
 
 
 async def test_public_mode_blocks_submits_by_default() -> None:

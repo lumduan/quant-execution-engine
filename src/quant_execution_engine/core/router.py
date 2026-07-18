@@ -93,7 +93,6 @@ class OrderRouter:
         pool: asyncpg.Pool,
         redis: Any | None,
         liberator_adapter: BrokerAdapter | None = None,
-        settrade_adapter: BrokerAdapter | None = None,
         streaming_pro_adapter: BrokerAdapter | None = None,
         sim_price_source: FillPriceSource | None = None,
         market_data_client: MarketDataClient | None = None,
@@ -107,7 +106,6 @@ class OrderRouter:
         )
         # Injected process singletons (api/deps.py / runtime); None = not configured.
         self._liberator = liberator_adapter
-        self._settrade = settrade_adapter
         self._streaming_pro = streaming_pro_adapter
         self._risk = RiskGate(settings, redis)
         # The price-band check (A2) is advisory + default-off: with no market-data
@@ -130,7 +128,6 @@ class OrderRouter:
             broker,
             sim_adapter=self._sim,
             liberator_adapter=self._liberator,
-            settrade_adapter=self._settrade,
             streaming_pro_adapter=self._streaming_pro,
             intent=intent,
         )
@@ -278,8 +275,10 @@ class OrderRouter:
         """Amend price/qty; branches on the order's declared amend semantics.
 
         The branch key is the ORDER's ``capabilities.lookup(broker, market).amend``:
-        ``native`` (Settrade) amends in place via PENDING_REPLACE; ``cancel_replace``
-        (Liberator, which has no amend route, R2) cancels then resubmits.
+        ``native`` (sim) amends in place via PENDING_REPLACE; ``cancel_replace``
+        (Liberator + Streaming Pro, which have no amend route, R2) cancels then
+        resubmits. After the broker-023 removal no REAL broker declares ``native``
+        — the in-place path is exercised only by the ``sim`` broker.
 
         Kill-switch FIRST (asymmetric with the un-gated cancel path): amends can
         *increase* exposure, so the switch precedes everything in the amend path
@@ -342,7 +341,7 @@ class OrderRouter:
         new_price: Decimal | None,
         new_qty: int | None,
     ) -> SubmitOutcome:
-        """Native amend over the frozen PENDING_REPLACE -> NEW edge (Settrade).
+        """Native amend over the frozen PENDING_REPLACE -> NEW edge (sim only).
 
         The amend rides one atomic ``replace_order`` UPDATE (status + price +
         quantity in one statement, so the audit trigger snapshots the amended
@@ -387,7 +386,7 @@ class OrderRouter:
         # Venue amend-reject: restore non-terminally; the order is still live.
         await repositories.update_status(self._pool, cid, OrderState.NEW)
         await self._restore_partial(cid, filled_qty)
-        logger.warning("settrade native amend rejected for %s: %s", cid, ack.reason)
+        logger.warning("native amend rejected for %s: %s", cid, ack.reason)
         raise AmendRejected(ack.reason or "amend rejected by venue", client_order_id=cid)
 
     @staticmethod

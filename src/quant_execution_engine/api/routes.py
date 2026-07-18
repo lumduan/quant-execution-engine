@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
-from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.api.deps import (
     get_operator_id,
     get_router_dep,
@@ -60,8 +59,8 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
     """Breaker/session state per configured broker (None when broker-free).
 
-    The dict is non-None when EITHER broker runtime exists; each configured
-    broker contributes its own ``{breaker_state, session_healthy}`` entry.
+    The dict is non-None when a broker runtime exists; each configured broker
+    contributes its own ``{breaker_state, session_healthy}`` entry.
     """
     brokers: dict[str, BrokerRuntimeHealth] = {}
     liberator = get_liberator_adapter()
@@ -69,13 +68,6 @@ def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
         brokers["liberator"] = BrokerRuntimeHealth(
             breaker_state=liberator.breaker.state.value,
             session_healthy=liberator.last_heartbeat_ok,
-        )
-    settrade = get_settrade_adapter()
-    if settrade is not None:
-        brokers["settrade"] = BrokerRuntimeHealth(
-            breaker_state=settrade.breaker.state.value,
-            session_healthy=settrade.last_heartbeat_ok,
-            sessions={m.value: ok for m, ok in settrade.last_heartbeat_by_market.items()},
         )
     return brokers or None
 
@@ -176,9 +168,10 @@ async def amend_order(
     """Amend in place (native, same cid) or cancel+replace (returns the new cid).
 
     The router branches on the order's declared amend semantics: a native broker
-    (Settrade) returns the SAME ``client_order_id`` with the updated price/qty;
-    a cancel_replace broker (Liberator) returns the REPLACEMENT cid — the honest
-    answer, since a new order object was created. The kill-switch is enforced
+    (sim) returns the SAME ``client_order_id`` with the updated price/qty; a
+    cancel_replace broker (Liberator, Streaming Pro) returns the REPLACEMENT cid
+    — the honest answer, since a new order object was created. The kill-switch is
+    enforced
     INSIDE ``router.amend`` (amends can increase exposure), not duplicated here.
     Typed errors flow through the envelope handlers: 404 order_not_found, 409
     amend_rejected / illegal_transition, 403 public-mode / kill-switch, 422

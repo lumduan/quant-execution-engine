@@ -12,7 +12,6 @@ from fastapi import Depends, HTTPException, Request, status
 
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
 from src.quant_execution_engine.adapters.market_data import get_market_data_client
-from src.quant_execution_engine.adapters.settrade.runtime import get_settrade_adapter
 from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.adapters.streaming_pro.runtime import get_streaming_pro_adapter
 from src.quant_execution_engine.cache.redis_client import get_redis
@@ -111,7 +110,6 @@ def get_router_dep(
         pool=pool,
         redis=redis,
         liberator_adapter=get_liberator_adapter(),
-        settrade_adapter=get_settrade_adapter(),
         streaming_pro_adapter=get_streaming_pro_adapter(),
         sim_price_source=get_sim_pricer(),
         market_data_client=get_market_data_client(),

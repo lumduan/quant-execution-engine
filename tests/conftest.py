@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from src.quant_execution_engine.adapters import market_data as market_data_module
 from src.quant_execution_engine.adapters import sim_pricing
 from src.quant_execution_engine.adapters.liberator import runtime as liberator_runtime
-from src.quant_execution_engine.adapters.settrade import runtime as settrade_runtime
 from src.quant_execution_engine.adapters.streaming_pro import runtime as streaming_pro_runtime
 from src.quant_execution_engine.api import deps
 from src.quant_execution_engine.api.main import create_app
@@ -41,10 +40,6 @@ def _reset_singletons() -> Iterator[None]:
         task.cancel()
     liberator_runtime._tasks.clear()
     liberator_runtime._adapter = None
-    for task in settrade_runtime._tasks:
-        task.cancel()
-    settrade_runtime._tasks.clear()
-    settrade_runtime._adapter = None
     for task in streaming_pro_runtime._tasks:
         task.cancel()
     streaming_pro_runtime._tasks.clear()

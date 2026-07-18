@@ -10,7 +10,7 @@
 # This service is the SOLE holder of broker credentials — the gateway holds none.
 services:
   execution-engine:
-    # .env supplies broker secrets (Liberator PIN, Settrade app_id/app_secret/app_code)
+    # .env supplies broker secrets (Liberator PIN, the Streaming Pro bridge api-key)
     # + EXECUTION_ENGINE_API_KEY. See .env.example. NEVER commit .env.
     env_file: .env
     environment:

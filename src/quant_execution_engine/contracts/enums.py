@@ -19,7 +19,6 @@ from pydantic import PlainSerializer
 class Broker(StrEnum):
     SIM = "sim"
     LIBERATOR = "liberator"
-    SETTRADE = "settrade"
     STREAMING_PRO = "streaming_pro"
 
 

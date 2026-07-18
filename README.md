@@ -8,7 +8,7 @@
 `quant-execution-engine` is the [quant-trading-system](https://github.com/lumduan/quant-trading-system)
 platform's **Execution engine**: a standalone `EXTERNAL` FastAPI service that is the **only**
 thing that sends orders to brokers. Every strategy submits one canonical `NormalizedOrder`; the
-engine routes it to a broker adapter (Liberator, Settrade) or the `SimAdapter`. Strategies
+engine routes it to a broker adapter (Liberator, Streaming Pro) or the `SimAdapter`. Strategies
 **never** speak a broker's native order API and **never** hold a broker credential.
 
 > **Status: scaffolded — all phases Proposed (2026-06-09).** This repo is a FastAPI skeleton
@@ -24,8 +24,8 @@ strategies ──NormalizedOrder──► quant-api-gateway (proxy, no credentia
                                       ▼
                             quant-execution-engine  (host :8400, container :8000)
                                BrokerAdapter ┌─ SimAdapter
-                               + state machine ├─ LiberatorAdapter ─HTTP─► liberator-trading-api
-                               + idempotency   └─ SettradeAdapter ─SDK──► Settrade Open API
+                               + state machine ├─ LiberatorAdapter ──HTTP─► liberator-trading-api
+                               + idempotency   └─ StreamingProAdapter ─HTTP─► settrade-streaming-api bridge
                                       │ durable order store
                                       ▼
                             quant-infra-db (execution.orders / fills / order_events)

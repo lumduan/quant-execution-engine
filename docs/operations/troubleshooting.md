@@ -12,9 +12,8 @@ curl http://localhost:8400/health        # stage, public_mode, brokers, order_bo
 **Symptom:** placements to a broker reject with `broker_circuit_open`; `/health` shows
 `brokers.<b>.breaker_state: "open"`. **Cause:** consecutive heartbeat failures tripped the breaker,
 which also mass-cancelled that broker's open orders. **Resolve:** investigate the broker session
-(Liberator OTP session expiry / upstream down; Settrade OAuth token / app health), confirm
-credentials, and let the heartbeat recover the breaker (or restart the adapter runtime). For the
-Settrade per-market split, `brokers.settrade.sessions` shows which app (`SET`/`TFEX`) is dead.
+(Liberator OTP session expiry / upstream down; the Streaming Pro bridge session — `/session/status`),
+confirm credentials, and let the heartbeat recover the breaker (or restart the adapter runtime).
 
 ## `PENDING_NEW` stuck / ack lost (§B)
 
@@ -29,12 +28,12 @@ per-order audit:
 curl http://localhost:8400/admin/orders/<cid>/audit -H "X-API-Key: <your-api-key>"
 ```
 
-## `PENDING_REPLACE` stranded (Settrade amend)
+## `PENDING_REPLACE` stranded — no longer applicable (2026-07-18)
 
-**Symptom:** a native amend left the order in `engine_state: "PENDING_REPLACE"`. **Cause:** the amend
-request was sent but the ack was lost. **Resolve:** the Settrade reconciler's `replace_resolve` action
-restores the order to `NEW` with the venue's current resting values. Confirm via the per-order audit
-(a `replace_request` then a `replace`/`ack` row).
+Native in-place amend was Settrade-only and was removed with broker-023 / `settrade_v2` (along with
+the reconciler's `replace_resolve` action). Among current brokers only `sim` declares native amend,
+and sim amends are synchronous in-request, so no `PENDING_REPLACE` stranding window exists. The real
+brokers (Liberator, Streaming Pro) use `cancel_replace`, which never enters `PENDING_REPLACE`.
 
 ## `duplicate_burst_detected` (409)
 
@@ -73,14 +72,6 @@ retry could race; bring Redis back before resuming load.
 logs; (3) the network — both services must be on `quant-network`. `504` = upstream timeout, `503` =
 engine unreachable, `502` = bad upstream response. The gateway holds no credential, so a gateway error
 is never a credential problem — it is reachability.
-
-## Settrade order book — `DISPATCH-UM-04 "User is inactive"`
-
-**Symptom:** enabling the order book with the Settrade provider yields `DISPATCH-UM-04 "User is
-inactive"`. **Cause:** realtime market data is **not enabled at the InnovestX portal** for the account
-— an operator prerequisite, not a code issue. **Resolve:** enable realtime at the portal, or set
-`EXECUTION_ENGINE_ORDER_BOOK_PRIMARY_PROVIDER=liberator` (the verified-live default). The order book is
-default-off regardless (`ORDER_BOOK_ENABLED=false`).
 
 ## Liberator session dead / `session.relogin_otp_timeout` alert
 

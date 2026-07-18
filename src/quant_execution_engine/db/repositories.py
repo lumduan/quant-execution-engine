@@ -320,10 +320,11 @@ async def fetch_orders_for_reconcile(
     """Non-terminal rows for one broker — the reconciliation working set (§B).
 
     Includes ``PENDING_NEW`` (lost-ack candidates) and ``PENDING_CANCEL``
-    (stuck-cancel candidates) on top of the venue-resting states. Native-amend
-    brokers (Settrade) pass ``include_pending_replace=True`` so a stranded
-    ``PENDING_REPLACE`` (crash/lost-ack mid-amend) is repaired by the reconciler;
-    the default keeps the Liberator (cancel_replace) working set unchanged.
+    (stuck-cancel candidates) on top of the venue-resting states. A native-amend
+    broker passes ``include_pending_replace=True`` so a stranded
+    ``PENDING_REPLACE`` (crash/lost-ack mid-amend) is repaired by its reconciler;
+    the default keeps the cancel_replace working set (Liberator, Streaming Pro)
+    unchanged.
     """
     states = _RECONCILE_STATES
     if include_pending_replace:

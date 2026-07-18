@@ -1,7 +1,7 @@
 """``StreamingProAdapter`` — the third real venue, composed over HTTP (D9).
 
 Implements the frozen 7-method ``BrokerAdapter`` interface plus a ``heartbeat()`` probe and the
-reconciler-facing ``fetch_venue_orders`` read (precedent: Liberator/Settrade). Boundaries:
+reconciler-facing ``fetch_venue_orders`` read (precedent: Liberator). Boundaries:
 
 * It never persists — the router/reconciler own the durable lifecycle.
 * It never re-implements the bridge (login/OTP/session/PIN stay in the bridge; D10) — a dead retail

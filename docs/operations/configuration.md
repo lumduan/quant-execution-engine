@@ -89,8 +89,8 @@ Enforced in **every** stage (including `sim`), after the capability check and be
 
 | Env var | Type | Default | Effect |
 |---------|------|---------|--------|
-| `EXECUTION_ENGINE_ORDER_BOOK_ENABLED` | bool | `false` | Master switch; off ⇒ no provider connects, no SDK import, endpoints 404 |
-| `EXECUTION_ENGINE_ORDER_BOOK_PRIMARY_PROVIDER` | enum | `liberator` | `settrade` \| `liberator` — the default primary feed |
+| `EXECUTION_ENGINE_ORDER_BOOK_ENABLED` | bool | `false` | Master switch; off ⇒ no provider connects, endpoints 404 |
+| `EXECUTION_ENGINE_ORDER_BOOK_PRIMARY_PROVIDER` | enum | `liberator` | `liberator` — the sole provider since the 2026-07-18 Settrade removal |
 | `EXECUTION_ENGINE_ORDER_BOOK_SYMBOL_OVERRIDES` | JSON map | `{}` | Pin symbols to a provider, e.g. `{"AOT": "liberator"}` (an override never fails over) |
 | `EXECUTION_ENGINE_ORDER_BOOK_FAILOVER_ERROR_THRESHOLD` | int | `3` | Consecutive active-provider errors before failover |
 | `EXECUTION_ENGINE_ORDER_BOOK_FAILOVER_WINDOW_SECONDS` | int | `30` | Sliding window the error count is measured over |
@@ -117,38 +117,21 @@ Enforced in **every** stage (including `sim`), after the capability check and be
 | `EXECUTION_ENGINE_LIBERATOR_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
 | `EXECUTION_ENGINE_LIBERATOR_POST_RATE_LIMIT` | int | `5` | — | Token bucket on `place()` only (req/s); `0` = unlimited |
 
-## Settrade adapter (shared)
+## Streaming Pro adapter
+
+The `StreamingProAdapter` composes the bundled `settrade-streaming-api` retail bridge over plain
+HTTP; the engine holds **only** the bridge api-key — the bridge owns USERNAME/PASSWORD/PIN and
+stamps the PIN itself, so **no engine-side PIN**. (The Settrade Open-API `EXECUTION_ENGINE_SETTRADE_*`
+settings — broker-023 / `settrade_v2` — were **removed on 2026-07-18**.)
 
 | Env var | Type | Default | SecretStr | Effect |
 |---------|------|---------|:---:|--------|
-| `EXECUTION_ENGINE_SETTRADE_BASE_URL` | str | `https://open-api.settrade.com` | — | Cloud API base (UAT: `https://open-api-test.settrade.com`) |
-| `EXECUTION_ENGINE_SETTRADE_APP_ID` | SecretStr \| None | `None` | ✅ | OAuth app id |
-| `EXECUTION_ENGINE_SETTRADE_APP_SECRET` | SecretStr \| None | `None` | ✅ | base64 EC P-256 private key (login signing) |
-| `EXECUTION_ENGINE_SETTRADE_APP_CODE` | str \| None | `None` | — | OAuth app code (login path segment) |
-| `EXECUTION_ENGINE_SETTRADE_BROKER_ID` | str \| None | `None` | — | Broker id (login path segment; UAT sandbox `098`) |
-| `EXECUTION_ENGINE_SETTRADE_ACCOUNT_NO` | str \| None | `None` | — | Integration-test convenience only; per-order account comes from `NormalizedOrder.account` |
-| `EXECUTION_ENGINE_SETTRADE_PIN` | SecretStr \| None | `None` | ✅ | Per-order trading PIN |
-| `EXECUTION_ENGINE_SETTRADE_HEARTBEAT_INTERVAL_SECONDS` | int | `30` | — | Token-liveness heartbeat cadence |
-| `EXECUTION_ENGINE_SETTRADE_CIRCUIT_BREAKER_THRESHOLD` | int | `3` | — | Consecutive failures before the breaker trips |
-| `EXECUTION_ENGINE_SETTRADE_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
-| `EXECUTION_ENGINE_SETTRADE_TOKEN_REFRESH_MARGIN_SECONDS` | int | `100` | — | Proactive OAuth refresh margin before expiry |
-| `EXECUTION_ENGINE_SETTRADE_POST_RATE_LIMIT` | int | `10` | — | WRITE (POST/PATCH) token bucket per OAuth app (req/s); `0` = unlimited |
-| `EXECUTION_ENGINE_SETTRADE_GET_RATE_LIMIT` | int | `10` | — | GET token bucket per OAuth app (req/s); `0` = unlimited |
-
-## Settrade per-market broker apps (Phase 4.1)
-
-Optional overrides so a broker can split its books across two OAuth apps (InnovestX `023`:
-`ALGO_EQ` = SET, `ALGO` = TFEX). A **complete** per-market trio overrides the shared trio for that
-market; a **partial** trio disables that market with a boot WARNING (no silent fallback).
-
-| Env var | Type | Default | SecretStr | Effect |
-|---------|------|---------|:---:|--------|
-| `EXECUTION_ENGINE_SETTRADE_EQUITY_APP_ID` | SecretStr \| None | `None` | ✅ | SET-app id |
-| `EXECUTION_ENGINE_SETTRADE_EQUITY_APP_SECRET` | SecretStr \| None | `None` | ✅ | SET-app secret |
-| `EXECUTION_ENGINE_SETTRADE_EQUITY_APP_CODE` | str \| None | `None` | — | SET app code (InnovestX: `ALGO_EQ`) |
-| `EXECUTION_ENGINE_SETTRADE_DERIVATIVES_APP_ID` | SecretStr \| None | `None` | ✅ | TFEX-app id |
-| `EXECUTION_ENGINE_SETTRADE_DERIVATIVES_APP_SECRET` | SecretStr \| None | `None` | ✅ | TFEX-app secret |
-| `EXECUTION_ENGINE_SETTRADE_DERIVATIVES_APP_CODE` | str \| None | `None` | — | TFEX app code (InnovestX: `ALGO`) |
+| `EXECUTION_ENGINE_STREAMING_PRO_BASE_URL` | str | `http://streaming-pro-api:8000/api/v1` | — | Internal bridge URL (never `localhost`) |
+| `EXECUTION_ENGINE_STREAMING_PRO_API_KEY` | SecretStr \| None | `None` | ✅ | api-key to the bridge (must equal the bridge's `STREAMING_PRO_API_KEY`); required for the runtime to start |
+| `EXECUTION_ENGINE_STREAMING_PRO_HEARTBEAT_INTERVAL_SECONDS` | int | `30` | — | `/session/status` heartbeat cadence |
+| `EXECUTION_ENGINE_STREAMING_PRO_CIRCUIT_BREAKER_THRESHOLD` | int | `3` | — | Consecutive failures before the breaker trips |
+| `EXECUTION_ENGINE_STREAMING_PRO_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
+| `EXECUTION_ENGINE_STREAMING_PRO_POST_RATE_LIMIT` | int | `5` | — | Token bucket on placement (req/s); `0` = unlimited |
 
 ## Bundled Liberator upstream (overlay only)
 

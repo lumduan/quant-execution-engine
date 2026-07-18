@@ -97,7 +97,7 @@ def _book(symbol: str = "AOT", *, received_at: datetime | None = None, seq: int 
         bid_levels=[OrderBookLevel(price=Decimal("837.8"), volume=26)],
         ask_levels=[OrderBookLevel(price=Decimal("838"), volume=24)],
         sequence=seq,
-        source=OrderBookSource.SETTRADE,
+        source=OrderBookSource.LIBERATOR,
         received_at=received_at or datetime.now(UTC),
     )
 

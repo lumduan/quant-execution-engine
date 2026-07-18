@@ -1,3 +1,3 @@
-"""Order-book providers (Phase 5): Settrade realtime + Liberator WebSocket."""
+"""Order-book providers (Phase 5): Liberator WebSocket."""
 
 from __future__ import annotations

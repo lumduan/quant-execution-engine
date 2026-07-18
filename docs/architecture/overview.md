@@ -26,11 +26,11 @@ for the broker abstraction see [`adapters.md`](adapters.md), for the trust bound
    └───┬──────────────────┬────────────────────┬──────────┘
        │                  │                     │
        ▼                  ▼                     ▼
-   SimAdapter      LiberatorAdapter        SettradeAdapter
-  (in-process)        │ HTTP                   │ HTTPS OAuth (ECDSA P-256)
+   SimAdapter      LiberatorAdapter        StreamingProAdapter
+  (in-process)        │ HTTP                   │ HTTP
                       ▼                        ▼
-            liberator-trading-api        Settrade Open-API v2
-            (internal :8200, bundled)    (cloud — SET equity + TFEX)
+            liberator-trading-api        settrade-streaming-api bridge
+            (internal :8200, bundled)    (host :8700, bundled — SET + TFEX)
                                │
             writes (durable)   ▼
    quant-infra-db (Postgres · db_execution)
@@ -40,9 +40,11 @@ for the broker abstraction see [`adapters.md`](adapters.md), for the trust bound
 ```
 
 `liberator-trading-api` is **internal-only** — no host port, bundled into owner mode via a compose
-overlay, never a peer service on `quant-network`. `SimAdapter` is in-process; Settrade is a cloud
-API with no overlay. Use **service hostnames inside containers** (`quant-execution-engine`,
-`quant-postgres`); the host port `:8400` is for developer access only.
+overlay, never a peer service on `quant-network`. `SimAdapter` is in-process; the Streaming Pro
+`settrade-streaming-api` bridge is bundled via `docker-compose.streaming.yml`. (The Settrade Open API
+— broker-023 / `settrade_v2` — was removed on 2026-07-18.) Use **service hostnames inside
+containers** (`quant-execution-engine`, `quant-postgres`); the host port `:8400` is for developer
+access only.
 
 ## The two planes (D1)
 
@@ -76,8 +78,9 @@ verbatim.
 Only this service holds broker order-routing credentials:
 
 - **Liberator** — `LIBERATOR_API_KEY` + per-order `LIBERATOR_PIN` (OTP/2FA-derived session).
-- **Settrade** — OAuth `SETTRADE_APP_ID` / `SETTRADE_APP_SECRET` / `SETTRADE_APP_CODE` (+ per-market
-  app trios) and the per-order `SETTRADE_PIN`.
+- **Streaming Pro** — only the bridge api-key (`STREAMING_PRO_API_KEY`); the bundled
+  `settrade-streaming-api` bridge owns USERNAME/PASSWORD/PIN and stamps the PIN itself, so the engine
+  holds **no PIN**.
 
 They live **only** in this service's gitignored `.env` — never committed, never logged, never held
 by a strategy, the gateway, or a host. See [`security-boundary.md`](security-boundary.md).
@@ -90,7 +93,7 @@ The single most important operational control. Default `sim`; `live` is gated.
 |-------|:---:|---|---|
 | `sim` | ✅ | `SimAdapter` (in-process, deterministic) | No broker session needed; bit-for-bit reproducible |
 | `paper` | | `SimAdapter` | Each configured broker session is kept **live for reads**, but every placement is **intercepted to sim** |
-| `micro_live` | | the **real** venue (`broker=liberator`/`settrade`) at **PTRM-capped** size | Requires owner mode + kill-switch disengaged + the broker runtime configured |
+| `micro_live` | | the **real** venue (`broker=liberator`/`streaming_pro`) at **PTRM-capped** size | Requires owner mode + kill-switch disengaged + the broker runtime configured |
 | `live` | | — | **Gated**: rejected with a typed `stage_rejected` (403). No real-money default |
 
 **No order reaches a real broker below `micro_live`, and never without owner mode on, the

@@ -29,17 +29,14 @@ class _FakeRouter:
     def __init__(self) -> None:
         self.subscribed: list[tuple[str, Market]] = []
         self.unsubscribed: list[tuple[str, Market]] = []
-        self.active = OrderBookSource.SETTRADE
+        self.active = OrderBookSource.LIBERATOR
 
     @property
     def providers(self) -> tuple[Any, ...]:
         class _P:
-            name = OrderBookSource.SETTRADE
-
-        class _Q:
             name = OrderBookSource.LIBERATOR
 
-        return (_P(), _Q())
+        return (_P(),)
 
     async def subscribe(self, symbol: str, market: Market) -> None:
         self.subscribed.append((symbol, market))
@@ -57,7 +54,7 @@ def _book(
         bid_levels=[OrderBookLevel(price=Decimal("99.5"), volume=10)],
         ask_levels=[OrderBookLevel(price=Decimal("100.5"), volume=8)],
         sequence=1,
-        source=OrderBookSource.SETTRADE,
+        source=OrderBookSource.LIBERATOR,
         received_at=received_at or datetime.now(UTC),
     )
 
@@ -113,7 +110,7 @@ def test_snapshot_200_with_wire_shape_when_warm() -> None:
     assert body["market"] == "SET"
     assert body["bid_levels"][0]["price"] == "99.5"  # Decimal-as-string
     assert isinstance(body["ask_levels"][0]["price"], str)
-    assert body["source"] == "settrade"
+    assert body["source"] == "liberator"
 
 
 def test_snapshot_market_none_probes_set_then_tfex() -> None:
@@ -210,8 +207,8 @@ def test_health_order_book_block_when_enabled() -> None:
     client = _client()
     body = client.get("/health").json()
     ob = body["order_book"]
-    assert ob["active_provider"] == "settrade"
-    assert ob["providers"] == ["settrade", "liberator"]
+    assert ob["active_provider"] == "liberator"
+    assert ob["providers"] == ["liberator"]
     assert ob["cached_symbols"] == 1
     assert ob["subscribers"] == 0
 

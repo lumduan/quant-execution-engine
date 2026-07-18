@@ -22,7 +22,7 @@ def _book(**overrides: object) -> OrderBook:
         "bid_levels": [OrderBookLevel(price=Decimal("837.8"), volume=26)],
         "ask_levels": [OrderBookLevel(price=Decimal("838"), volume=24)],
         "sequence": 7,
-        "source": OrderBookSource.SETTRADE,
+        "source": OrderBookSource.LIBERATOR,
         "received_at": datetime(2026, 6, 12, tzinfo=UTC),
     }
     payload.update(overrides)

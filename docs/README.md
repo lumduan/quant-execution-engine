@@ -8,9 +8,12 @@ own Redis sidecar (dedupe / single-flight lock / rate-limit). Strategies submit 
 and **never speak a broker API**.
 
 > **State (2026-06-13):** Phases 0–6 complete (durable store, engine core + `SimAdapter`,
-> `LiberatorAdapter` + `SettradeAdapter` real venues, per-market apps, order-update stream + order
-> book, safety/ops hardening); **Phase 7 (this documentation) in progress**. `live` is **gated** — no
+> `LiberatorAdapter` + `StreamingProAdapter` real venues, order-update stream + order book,
+> safety/ops hardening); **Phase 7 (this documentation) in progress**. `live` is **gated** — no
 > real-money default. See [`plans/ROADMAP.md`](plans/ROADMAP.md).
+>
+> **Updated 2026-07-18:** broker-023 / `settrade_v2` (the Settrade Open API) was removed — real
+> brokers are now Sim + Liberator + Streaming Pro (the self-built `settrade-streaming-api` bridge).
 
 This page is the **documentation hub** — start here and follow the links.
 
@@ -20,7 +23,7 @@ This page is the **documentation hub** — start here and follow the links.
 |-----|----------------|
 | [`architecture/overview.md`](architecture/overview.md) | Service topology, the two planes (D1), gateway-proxy position, sole-credential-owner invariant, the safety ladder, kill-switch, public mode |
 | [`architecture/state-machine.md`](architecture/state-machine.md) | The frozen 9-state / 13-edge order machine, terminal vs in-flight states, append-only audit, idempotency, the reconciliation window |
-| [`architecture/adapters.md`](architecture/adapters.md) | The `BrokerAdapter` interface, the full capability matrix, the two structural consequences, Sim / Liberator / Settrade adapter notes |
+| [`architecture/adapters.md`](architecture/adapters.md) | The `BrokerAdapter` interface, the full capability matrix, the two structural consequences, Sim / Liberator / Streaming Pro adapter notes |
 | [`architecture/security-boundary.md`](architecture/security-boundary.md) | Credential ownership, public vs owner mode, the PTRM gate + price-band, the kill-switch, logging redaction |
 
 ## API reference
@@ -45,7 +48,7 @@ streams are public-readable (api-key-gated).
 
 | Doc | What it covers |
 |-----|----------------|
-| [`operations/bring-up.md`](operations/bring-up.md) | Bring-up order, the three compose configs (public / +Settrade / +Liberator overlay), the schema prerequisite, health checks, tear-down |
+| [`operations/bring-up.md`](operations/bring-up.md) | Bring-up order, the compose configs (public / +Liberator / +Streaming Pro overlay), the schema prerequisite, health checks, tear-down |
 | [`operations/configuration.md`](operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — name / type / default / effect / SecretStr |
 | [`operations/kill-switch.md`](operations/kill-switch.md) | Engage / disengage procedures, the stage-flip rule, the breaker relationship |
 | [`operations/troubleshooting.md`](operations/troubleshooting.md) | Common failure modes: breaker tripped, stuck pendings, duplicate-burst, DB/Redis down, gateway 5xx |
@@ -83,7 +86,7 @@ canonical. Phase 7 (this docs work) is [`plans/phase7-documentation.md`](plans/p
 | Umbrella system map + engine catalog | [`../../CLAUDE.md`](../../CLAUDE.md) |
 | Umbrella feature roadmap | [`../../plans/feature-execution-engine/ROADMAP.md`](../../plans/feature-execution-engine/ROADMAP.md) |
 | ADR (D1–D13, frozen contracts) | [`../../.claude/knowledge/feature-execution-engine.md`](../../.claude/knowledge/feature-execution-engine.md) |
-| Broker research (cited) | [`../.claude/knowledge/broker-research-liberator.md`](../.claude/knowledge/broker-research-liberator.md), [`../.claude/knowledge/broker-research-settrade.md`](../.claude/knowledge/broker-research-settrade.md) |
+| Broker research (cited) | [`../.claude/knowledge/broker-research-liberator.md`](../.claude/knowledge/broker-research-liberator.md) (the Settrade research note was removed with broker-023 on 2026-07-18) |
 | Capability matrix / contract / state machine | [`../.claude/knowledge/capability-matrix.md`](../.claude/knowledge/capability-matrix.md), [`../.claude/knowledge/normalized-order-contract.md`](../.claude/knowledge/normalized-order-contract.md), [`../.claude/knowledge/order-state-machine.md`](../.claude/knowledge/order-state-machine.md) |
 | Decision log | [`../.claude/knowledge/decision-log.md`](../.claude/knowledge/decision-log.md) |
 | Order-update stream / order book | [`../.claude/knowledge/order-update-stream.md`](../.claude/knowledge/order-update-stream.md), [`../.claude/knowledge/order-book-service.md`](../.claude/knowledge/order-book-service.md) |

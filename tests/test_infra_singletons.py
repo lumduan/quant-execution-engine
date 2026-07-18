@@ -185,9 +185,9 @@ def test_get_settings_is_cached() -> None:
 def test_capability_lookup_and_unsupported_market() -> None:
     row = capabilities.lookup(Broker.SIM, Market.SET)
     assert row.adapter_installed
-    settrade_set = capabilities.lookup(Broker.SETTRADE, Market.SET)  # SET since Phase 4
-    assert settrade_set.adapter_installed
-    assert settrade_set.position_effects == ()
+    liberator_set = capabilities.lookup(Broker.LIBERATOR, Market.SET)
+    assert liberator_set.adapter_installed
+    assert liberator_set.position_effects == ()
 
 
 def test_capability_assert_supports_each_axis() -> None:
@@ -200,21 +200,22 @@ def test_capability_assert_supports_each_axis() -> None:
     liberator_set = capabilities.lookup(Broker.LIBERATOR, Market.SET)
     with pytest.raises(CapabilityError, match="order_type"):
         liberator_set.assert_supports(OrderType.STOP, Tif.DAY, None)
-    settrade = capabilities.lookup(Broker.SETTRADE, Market.TFEX)
+    liberator_tfex = capabilities.lookup(Broker.LIBERATOR, Market.TFEX)
     with pytest.raises(CapabilityError, match="order_type"):
-        settrade.assert_supports(OrderType.ATC, Tif.DAY, PositionEffect.OPEN)  # no deriv ATC
+        liberator_tfex.assert_supports(OrderType.ATC, Tif.DAY, PositionEffect.OPEN)  # no deriv ATC
     with pytest.raises(CapabilityError, match="position_effect"):
         liberator_set.assert_supports(OrderType.LIMIT, Tif.DAY, PositionEffect.OPEN)
-    settrade.assert_supports(OrderType.LIMIT, Tif.GTC, PositionEffect.OPEN)  # GTC pinned P4
+    liberator_tfex.assert_supports(OrderType.LIMIT, Tif.GTC, PositionEffect.OPEN)  # GTC supported
 
 
 def test_matrix_shape() -> None:
-    assert len(capabilities.CAPABILITY_MATRIX) == 8  # +STREAMING_PRO×{SET,TFEX} since Phase 8
+    # SIM×{SET,TFEX} + LIBERATOR×{SET,TFEX} + STREAMING_PRO×{SET,TFEX};
+    # broker-023/settrade removed (Streaming-Pro-only real routing).
+    assert len(capabilities.CAPABILITY_MATRIX) == 6
     installed = {c.broker for c in capabilities.CAPABILITY_MATRIX if c.adapter_installed}
     assert installed == {
         Broker.SIM,
         Broker.LIBERATOR,
-        Broker.SETTRADE,
         Broker.STREAMING_PRO,  # Phase 8
     }
 

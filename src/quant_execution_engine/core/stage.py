@@ -1,19 +1,19 @@
 """The ``EXECUTION_ENGINE_STAGE`` safety ladder (E2) — the route gate.
 
-Phase 3/4 matrix (decision log):
+Stage matrix (decision log):
 
 * ``sim``        — every broker routes to the deterministic ``SimAdapter``
   (sim is a STAGE, not a broker: the broker field is deliberately ignored).
 * ``paper``      — TRADE intent is intercepted to sim (no real orders); READ
-  intent for ``broker=liberator``/``broker=settrade`` reaches the live broker
-  session when one is configured (account/position realism).
-* ``micro_live`` — ``broker=liberator``/``broker=settrade`` route to the real
+  intent for a real broker (``liberator``/``streaming_pro``) reaches the live
+  broker session when one is configured (account/position realism).
+* ``micro_live`` — a real broker (``liberator``/``streaming_pro``) routes to its
   adapter (PTRM caps enforce smallest size); every other broker is rejected.
-* ``live``       — stays gated in Phase 4; always rejected.
+* ``live``       — stays gated; always rejected.
 
-Liberator and Settrade are wired symmetrically: a real broker is reachable only
-when its runtime is configured (owner mode + creds), else paper READ degrades to
-sim and micro_live raises :class:`StageRejected`.
+Each real broker is wired symmetrically: it is reachable only when its runtime
+is configured (owner mode + creds), else paper READ degrades to sim and
+micro_live raises :class:`StageRejected`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class AdapterIntent(StrEnum):
     READ = "read"  # positions / account / venue open orders
 
 
-_REAL_BROKERS = (Broker.LIBERATOR, Broker.SETTRADE, Broker.STREAMING_PRO)
+_REAL_BROKERS = (Broker.LIBERATOR, Broker.STREAMING_PRO)
 
 
 def resolve_adapter(
@@ -41,12 +41,11 @@ def resolve_adapter(
     *,
     sim_adapter: BrokerAdapter,
     liberator_adapter: BrokerAdapter | None = None,
-    settrade_adapter: BrokerAdapter | None = None,
     streaming_pro_adapter: BrokerAdapter | None = None,
     intent: AdapterIntent = AdapterIntent.TRADE,
 ) -> BrokerAdapter:
     """Return the adapter the ladder permits, or raise :class:`StageRejected`."""
-    real = _real_adapter_for(broker, liberator_adapter, settrade_adapter, streaming_pro_adapter)
+    real = _real_adapter_for(broker, liberator_adapter, streaming_pro_adapter)
     if stage is Stage.SIM:
         return sim_adapter
     if stage is Stage.PAPER:
@@ -65,25 +64,17 @@ def resolve_adapter(
 def _real_adapter_for(
     broker: Broker,
     liberator_adapter: BrokerAdapter | None,
-    settrade_adapter: BrokerAdapter | None,
     streaming_pro_adapter: BrokerAdapter | None,
 ) -> BrokerAdapter | None:
     """The configured real adapter for this broker, or None (sim ignores broker)."""
     if broker is Broker.LIBERATOR:
         return liberator_adapter
-    if broker is Broker.SETTRADE:
-        return settrade_adapter
     if broker is Broker.STREAMING_PRO:
         return streaming_pro_adapter
     return None
 
 
 def _micro_live_unconfigured_message(broker: Broker) -> str:
-    if broker is Broker.SETTRADE:
-        return (
-            "stage 'micro_live' requires a configured settrade runtime "
-            "(owner mode + EXECUTION_ENGINE_SETTRADE_APP_ID/APP_SECRET/APP_CODE)"
-        )
     if broker is Broker.STREAMING_PRO:
         return (
             "stage 'micro_live' requires a configured streaming_pro runtime "

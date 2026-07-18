@@ -1,16 +1,18 @@
-"""Process-level order-book runtime: service + router + providers (Phase 5).
+"""Process-level order-book runtime: service + router + provider (Phase 5).
 
 Mirrors the broker-adapter runtimes (``adapters/liberator/runtime.py``): the
-service, the failover router, the providers, and their background tasks live here
-as module-level singletons because ``api/deps.py`` builds per-request objects. The
-app lifespan calls ``create_order_book_runtime`` + ``start_order_book_workers`` on
-startup and ``close_order_book_runtime`` first on shutdown.
+service, the failover router, the Liberator provider, and their background tasks
+live here as module-level singletons because ``api/deps.py`` builds per-request
+objects. The app lifespan calls ``create_order_book_runtime`` +
+``start_order_book_workers`` on startup and ``close_order_book_runtime`` first on
+shutdown.
 
 Start predicate (D24): the runtime exists only when ``order_book_enabled`` is true
-AND at least one provider is configurable — Liberator needs ``liberator_api_key``;
-Settrade needs any resolvable per-market app trio (reusing the Phase-4.1
-resolution). When disabled (the default) every function is a no-op and
-``get_order_book_service()`` is ``None`` — the engine behaves exactly as before.
+AND the Liberator provider is configurable (``liberator_api_key`` present). When
+disabled (the default) every function is a no-op and ``get_order_book_service()``
+is ``None`` — the engine behaves exactly as before. Liberator is the sole
+order-book provider; the failover ``ProviderRouter`` stays provider-generic for a
+future second feed.
 """
 
 from __future__ import annotations
@@ -18,16 +20,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from src.quant_execution_engine.adapters.settrade.runtime import (
-    SettradeAppCredentials,
-    _configured_markets,
-)
 from src.quant_execution_engine.config.settings import Settings
-from src.quant_execution_engine.contracts.enums import Market
 from src.quant_execution_engine.order_book.models import OrderBook, OrderBookSource
 from src.quant_execution_engine.order_book.providers.base import OrderBookProvider
 from src.quant_execution_engine.order_book.providers.liberator import LiberatorOrderBookProvider
-from src.quant_execution_engine.order_book.providers.settrade import SettradeOrderBookProvider
 from src.quant_execution_engine.order_book.router import ProviderRouter
 from src.quant_execution_engine.order_book.service import OrderBookService
 
@@ -38,26 +34,15 @@ _router: ProviderRouter | None = None
 _tasks: list[asyncio.Task[None]] = []
 
 
-def _settrade_markets(settings: Settings) -> dict[Market, SettradeAppCredentials]:
-    """Per-market Settrade app trios (Phase-4.1 resolution), if any."""
-    if settings.settrade_broker_id is None:
-        return {}
-    return _configured_markets(settings)
-
-
 def _liberator_configured(settings: Settings) -> bool:
     return settings.liberator_api_key is not None
-
-
-def _settrade_configured(settings: Settings) -> bool:
-    return bool(_settrade_markets(settings))
 
 
 def order_book_enabled(settings: Settings) -> bool:
     """The start predicate (see module docstring)."""
     if not settings.order_book_enabled:
         return False
-    return _liberator_configured(settings) or _settrade_configured(settings)
+    return _liberator_configured(settings)
 
 
 def _on_book(book: OrderBook) -> None:
@@ -76,16 +61,8 @@ def _on_error(source: OrderBookSource, reason: str) -> None:
 
 
 def _build_providers(settings: Settings) -> dict[OrderBookSource, OrderBookProvider]:
-    """Build the configured providers (Settrade and/or Liberator)."""
+    """Build the configured provider(s) — Liberator today."""
     providers: dict[OrderBookSource, OrderBookProvider] = {}
-    settrade_markets = _settrade_markets(settings)
-    if settrade_markets and settings.settrade_broker_id is not None:
-        providers[OrderBookSource.SETTRADE] = SettradeOrderBookProvider(
-            on_book=_on_book,
-            on_error=_on_error,
-            market_credentials=settrade_markets,
-            broker_id=settings.settrade_broker_id,
-        )
     if settings.liberator_api_key is not None:
         providers[OrderBookSource.LIBERATOR] = LiberatorOrderBookProvider(
             on_book=_on_book,
@@ -97,26 +74,13 @@ def _build_providers(settings: Settings) -> dict[OrderBookSource, OrderBookProvi
     return providers
 
 
-def _resolve_primary(
-    settings: Settings, providers: dict[OrderBookSource, OrderBookProvider]
-) -> OrderBookSource:
-    """The configured primary if present, else the only configured provider."""
-    primary = OrderBookSource(settings.order_book_primary_provider)
-    if primary in providers:
-        return primary
-    fallback = next(iter(providers))
-    logger.warning(
-        "order_book: primary provider %s is not configured; using %s",
-        primary.value,
-        fallback.value,
-    )
-    return fallback
+def _parse_overrides(settings: Settings) -> dict[str, OrderBookSource]:
+    """Map symbol→provider overrides to known sources (skip unknown names).
 
-
-def _parse_overrides(
-    settings: Settings, providers: dict[OrderBookSource, OrderBookProvider]
-) -> dict[str, OrderBookSource]:
-    """Map symbol→provider overrides to known sources (skip the unknown)."""
+    An override naming a valid-but-unconfigured provider is tolerated here and
+    guarded downstream by ``ProviderRouter._route_for`` (it falls back to the
+    active provider), so no configured-provider check is needed at this layer.
+    """
     overrides: dict[str, OrderBookSource] = {}
     for symbol, name in settings.order_book_symbol_overrides.items():
         try:
@@ -124,13 +88,6 @@ def _parse_overrides(
         except ValueError:
             logger.warning(
                 "order_book: ignoring override for %s — unknown provider %r", symbol, name
-            )
-            continue
-        if source not in providers:
-            logger.warning(
-                "order_book: ignoring override for %s — provider %s not configured",
-                symbol,
-                source.value,
             )
             continue
         overrides[symbol] = source
@@ -149,8 +106,8 @@ def create_order_book_runtime(settings: Settings) -> OrderBookService | None:
     providers = _build_providers(settings)
     _router = ProviderRouter(
         providers=providers,
-        primary=_resolve_primary(settings, providers),
-        symbol_overrides=_parse_overrides(settings, providers),
+        primary=OrderBookSource.LIBERATOR,
+        symbol_overrides=_parse_overrides(settings),
         error_threshold=settings.order_book_failover_error_threshold,
         window_seconds=settings.order_book_failover_window_seconds,
     )

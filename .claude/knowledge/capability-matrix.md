@@ -1,42 +1,49 @@
-# Capability matrix — Liberator vs Settrade vs Sim
+# Capability matrix — Liberator vs Streaming Pro vs Sim
 
 > **Shape FROZEN in Phase 0 (2026-06-10)** by the ADR
 > ([`feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md),
 > Pinned §F — per-`(broker, market)` capability sets; this file stays the canonical cell-level
-> matrix the ADR links). Reconciles the two broker research notes
-> ([Liberator](broker-research-liberator.md), [Settrade](broker-research-settrade.md)) onto one
-> `NormalizedOrder`. The router enforces these per-adapter capabilities **up front** (D7) —
+> matrix the ADR links). The router enforces these per-adapter capabilities **up front** (D7) —
 > an unsupported `(broker, market, order_type, tif)` is rejected with a typed error before any
-> venue I/O. **The former `(confirm P4)` Settrade cells were pinned in Phase 4 (2026-06-11)**
-> from the official venue docs (R4 resolved) — no placeholder remains. Canonical copy lives in
-> [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#broker-capability-matrix-liberator-vs-settrade-vs-sim).
+> venue I/O. Canonical copy lives in
+> [`docs/plans/ROADMAP.md`](../../docs/plans/ROADMAP.md#broker-capability-matrix).
+>
+> **Updated 2026-07-18 — broker-023 / `settrade_v2` (Settrade Open API) removed.** The real
+> brokers are now **Liberator** + **Streaming Pro** (the self-built retail bridge). The former
+> Settrade Open-API column is gone; the Phase-4 / Phase-4.1 "Settrade validation status" sections
+> further down are left as **SUPERSEDED** period records (see
+> [`decision-log.md`](decision-log.md) → the 2026-07-18 removal entry). Terminology: "Streaming
+> Pro" / `streaming_pro` = the KEPT self-built bridge; "Settrade" / `settrade_v2` = the REMOVED
+> Open API — never conflate them.
 
-| Capability | Liberator (SET / TFEX) | Settrade (SET + TFEX) | Sim |
+| Capability | Liberator (SET / TFEX) | Streaming Pro (SET + TFEX) | Sim |
 |---|---|---|---|
-| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | OAuth app creds → token (ECDSA P-256 login sig, single-flight refresh, rate-limited); per-order PIN. **May be split per market across two apps** (Phase 4.1 — see below) | none |
-| Markets | SET + TFEX | SET (`/api/seos/v3`) + TFEX (`/api/seosd/v3`) | any |
+| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | bridge-owned login/OTP/session; engine holds only the bridge api-key — **no PIN** (the bridge stamps it) | none |
+| Markets | SET + TFEX | SET (`fis`) + TFEX (`seosd`) via the retail bridge | any |
 | `side` | SET Buy/Sell; TFEX Long/Short | SET Buy/Sell; TFEX Long/Short | both |
-| `position_effect` | TFEX Open/Close/Auto; SET n/a | TFEX Open/Close (`Auto` ✗); SET n/a | both |
-| MARKET / LIMIT | ✅ | ✅ (`MP-MKT` / `Limit`) | ✅ |
-| STOP / STOP_LIMIT | TFEX ✅; SET ✗ | TFEX ✅ (`MP-MKT`/`Limit` + stop trio); SET ✗ | ✅ |
-| ICEBERG | ✅ icebergVol | ✅ SET `qtyOpen` / TFEX `icebergVol` | ✅ |
-| ATO / ATC | SET ✅; TFEX ✗ | SET ✅ (`ATO`/`ATC`); TFEX `ATO` ✅, `ATC` ✗ | ✅ |
-| MTL / MP | SET ✅ (MP); TFEX ✗ | SET + TFEX ✅ (`MP-MTL`) | ✅ |
-| TIF | Day/GTC/IOC/FOK | Day/IOC/FOK/GTC(`Cancel`); `Date`(GTD) ✗ | all |
-| **Amend** | ✗ no route → **cancel+replace** (non-atomic) | ✅ **native** `PATCH .../change` (`PENDING_REPLACE → NEW`) | ✅ |
-| Cancel | orderNo list (≤50) + PIN | `PATCH .../cancel` + bulk `PATCH /cancel` + PIN | ✅ |
-| Reconcile query | `GET /orders*` | `GET /orders` (cumulative matched, rejectCode/Reason, canCancel/canChange); `GET /trades` → Phase 5 | in-proc |
-| Order-update stream | indirect (ws-ticket; engine normalizes by reconcile) | **native** `subscribe_{derivatives,equity}_order` (MQTT) — **Phase 5: engine-side normalized stream shipped** (`GET /orders/stream`, SSE), **reconciler-fed for both brokers**; Settrade native MQTT push as a direct transition source deferred (§I/D23) | synthetic |
+| `position_effect` | TFEX Open/Close/Auto; SET n/a | TFEX Open/Close; SET n/a | both |
+| MARKET / LIMIT | ✅ | ✅ (only these live-verified — cells expand as verified) | ✅ |
+| STOP / STOP_LIMIT | TFEX ✅; SET ✗ | ✗ (conservative v1) | ✅ |
+| ICEBERG | ✅ icebergVol | ✗ (conservative v1) | ✅ |
+| ATO / ATC | SET ✅; TFEX ✗ | ✗ (conservative v1) | ✅ |
+| MTL / MP | SET ✅ (MP); TFEX ✗ | ✗ (conservative v1) | ✅ |
+| TIF | Day/GTC/IOC/FOK | Day only (conservative v1) | all |
+| **Amend** | ✗ no route → **cancel+replace** (non-atomic) | ✗ bridge `/order/change` 501 → **cancel+replace** (non-atomic) | ✅ native |
+| Cancel | orderNo list (≤50) + PIN | bridge cancel (bridge-stamped PIN) | ✅ |
+| Reconcile query | `GET /orders*` | bridge `fetch_venue_orders` read | in-proc |
+| Order-update stream | indirect (ws-ticket; engine normalizes by reconcile) | reconciler-fed engine-normalized stream (`GET /orders/stream`, SSE) | synthetic |
 | Client idempotency key | ✗ | ✗ | n/a |
 
 ## The two structural consequences
 
-1. **Engine-owned idempotency.** Neither broker accepts a client key, so the engine persists
+1. **Engine-owned idempotency.** Neither real broker accepts a client key, so the engine persists
    `client_order_id ↔ broker_order_id` and dedupes before routing. Exactly-once-ish =
    dedupe + durable state + reconcile + safe re-submit (not true exactly-once).
-2. **Asymmetric amend.** `BrokerAdapter.amend()` is uniform, but `LiberatorAdapter.amend`
-   degrades to cancel-then-replace (declared non-atomic); `SettradeAdapter.amend` is native.
-   Callers query `GET /capabilities` to learn the semantics, never assume them.
+2. **Amend is cancel+replace for every real broker.** `BrokerAdapter.amend()` is uniform;
+   `LiberatorAdapter.amend` and `StreamingProAdapter.amend` both degrade to cancel-then-replace
+   (declared non-atomic). **Native amend was Settrade-only and left with broker-023** — among the
+   current brokers only the `sim` simulator retains native amend. Callers query `GET /capabilities`
+   to learn the semantics, never assume them.
 
 ## Phase 3 validation status (2026-06-11)
 
@@ -62,7 +69,11 @@ wire details discovered during the build (research notes stay accurate; these ar
   (decision E17): queue-priority loss + a brief no-resting-order window + a possible
   duplicate-burst risk-reject inside the window are the declared consequences.
 
-## Phase 4 validation status (2026-06-11)
+## Phase 4 validation status (2026-06-11) — SUPERSEDED 2026-07-18
+
+> **SUPERSEDED (2026-07-18):** the Settrade Open-API broker (broker-023 / `settrade_v2`) was
+> removed. This section is retained verbatim as a period record of what Phase 4 validated; it no
+> longer describes a live broker. See [`decision-log.md`](decision-log.md) → the 2026-07-18 entry.
 
 The **Settrade column is now validated against the live adapter code + the official venue docs**
 (`developer.settrade.com/.../investor-{derivatives,equity}/*.md`, the raw markdown backend,
@@ -105,7 +116,11 @@ trigger stops (no contract condition/`triggerSession` field).
   kill-switch-gated up front, PTRM-rechecked with **no exemption**; a venue amend-reject is a
   NON-terminal restore + typed `AmendRejected` (409) — the order stays live (decisions E21–E27).
 
-## Phase 4.1 — per-market broker apps (auth-model note, 2026-06-11)
+## Phase 4.1 — per-market broker apps (auth-model note, 2026-06-11) — SUPERSEDED 2026-07-18
+
+> **SUPERSEDED (2026-07-18):** removed with broker-023 / `settrade_v2`. Period record only; the
+> deleted `broker-research-settrade.md` reference below no longer resolves. See
+> [`decision-log.md`](decision-log.md) → the 2026-07-18 entry.
 
 The **capability cells above are unchanged** — Phase 4.1 is an auth/routing refactor only. A
 broker may **split its two markets across two OAuth apps**: the real broker **InnovestX (023)**
