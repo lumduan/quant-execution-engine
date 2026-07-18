@@ -57,13 +57,13 @@ async def test_second_rapid_acquire_waits_one_over_rate(
 
 async def test_warn_line_carries_bucket_name(caplog: pytest.LogCaptureFixture) -> None:
     clock = _Clock()
-    bucket = _bucket(1.0, clock, name="settrade_write")
+    bucket = _bucket(1.0, clock, name="liberator_place")
     await bucket.acquire()  # drains the single token
     with caplog.at_level(logging.WARNING):
         await bucket.acquire()
     waits = [r for r in caplog.records if "rate_limit_wait" in r.message]
     assert len(waits) == 1
-    assert waits[0].getMessage().startswith("settrade_write_rate_limit_wait")
+    assert waits[0].getMessage().startswith("liberator_place_rate_limit_wait")
 
 
 async def test_rate_one_serialises_each_acquire() -> None:
@@ -87,8 +87,8 @@ async def test_slow_caller_never_waits() -> None:
 
 async def test_independent_buckets_do_not_interfere() -> None:
     clock = _Clock()
-    get_bucket = _bucket(1.0, clock, name="settrade_get")
-    write_bucket = _bucket(1.0, clock, name="settrade_write")
+    get_bucket = _bucket(1.0, clock, name="streaming_pro_post")
+    write_bucket = _bucket(1.0, clock, name="liberator_place")
     await get_bucket.acquire()  # drains GET only
     await write_bucket.acquire()  # WRITE is still full → immediate
     assert clock.sleeps == []  # neither waited; separate token pools

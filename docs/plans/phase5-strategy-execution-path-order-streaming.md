@@ -1,5 +1,13 @@
 # Phase 5: Strategy Execution Path + Order-Update Streaming + Dual-Provider Order Book
 
+> **SUPERSEDED IN PART (2026-07-18) — period record.** broker-023 / `settrade_v2` (the Settrade
+> Open API) was removed. The **Settrade order-book provider** described here is gone; the order
+> book is now **single-provider (Liberator)**, though the `ProviderRouter` stays generic. This
+> plan is retained as the historical Phase-5 record and is **not** rewritten. See
+> [`../../.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md) → the
+> 2026-07-18 removal entry, and [`../../.claude/knowledge/order-book-service.md`](../../.claude/knowledge/order-book-service.md)
+> for the current (Liberator-only) architecture.
+
 **Feature:** `feature-execution-engine` — Phase 5 (engine side)
 **Branch:** `feature/phase5-strategy-execution-path-order-streaming`
 **Created:** 2026-06-12

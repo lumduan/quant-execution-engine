@@ -1,5 +1,10 @@
 # Phase 5.1: Strategy Execution Flags + Sim Trade Loop
 
+> **Period record.** Any Settrade references below predate the 2026-07-18 removal of broker-023 /
+> `settrade_v2`; real routing is now Sim + Liberator + Streaming Pro. This plan is not rewritten —
+> see [`../../.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md) → the
+> 2026-07-18 removal entry.
+
 **Feature:** feature-execution-engine — Phase 5.1: Strategy execution flags + sim trade loop
 **Branch:** `docs/phase5.1-strategy-execution-flags-sim-trade-loop` (this repo, docs-only) — code lands in the strategy repos
 **Created:** 2026-06-12

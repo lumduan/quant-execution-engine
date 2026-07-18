@@ -1,6 +1,6 @@
 """The frozen 7-method ``BrokerAdapter`` interface (Phase 0 ADR §D).
 
-Every adapter (``SimAdapter``, ``LiberatorAdapter``, ``SettradeAdapter``)
+Every adapter (``SimAdapter``, ``LiberatorAdapter``, ``StreamingProAdapter``)
 implements exactly: place / cancel / amend / get_open_orders / get_positions /
 get_account / capabilities. Amend semantics are DECLARED per adapter, never
 assumed — callers query ``capabilities()``.

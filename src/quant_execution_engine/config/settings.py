@@ -97,39 +97,6 @@ class Settings(BaseSettings):
     liberator_circuit_breaker_threshold: int = 3
     liberator_reconcile_interval_seconds: int = 12
 
-    # Broker: Settrade Open API v2 (Phase 4) — cloud venue + secrets. Same
-    # discipline as Liberator: creds/PIN are SecretStr, all optional (settings
-    # must load in sim, where Settrade is not configured), presence-checked only
-    # at runtime creation; NEVER logged. No compose overlay — Settrade is a cloud
-    # API; creds ride docker-compose.private.yml's env_file.
-    settrade_base_url: str = "https://open-api.settrade.com"
-    settrade_app_id: SecretStr | None = None
-    settrade_app_secret: SecretStr | None = None
-    settrade_app_code: str | None = None
-    settrade_broker_id: str | None = None
-    settrade_account_no: str | None = None
-    settrade_pin: SecretStr | None = None
-    # Per-market OAuth app overrides (Phase 4.1). The real broker InnovestX (023)
-    # splits the two markets across two OAuth apps (ALGO_EQ = SET equity, ALGO =
-    # TFEX derivatives, each with its own app_id/app_secret/app_code). A market's
-    # trio (app_id + app_secret + app_code) is read INDEPENDENTLY: complete →
-    # used; PARTIAL (1–2 fields) → that market is left UNCONFIGURED with a boot
-    # WARNING naming the missing fields (fails loud — NEVER falls back to the
-    # shared trio, so a forgotten secret can never route a market through the
-    # wrong app); absent → falls back to the shared ``settrade_app_*`` trio
-    # (the sandbox single-app path). ``broker_id``/``base_url``/``pin``/intervals
-    # stay shared across both markets.
-    settrade_equity_app_id: SecretStr | None = None
-    settrade_equity_app_secret: SecretStr | None = None
-    settrade_equity_app_code: str | None = None
-    settrade_derivatives_app_id: SecretStr | None = None
-    settrade_derivatives_app_secret: SecretStr | None = None
-    settrade_derivatives_app_code: str | None = None
-    settrade_heartbeat_interval_seconds: int = 30
-    settrade_circuit_breaker_threshold: int = 3
-    settrade_reconcile_interval_seconds: int = 12
-    settrade_token_refresh_margin_seconds: int = 100
-
     # Broker: Streaming Pro (Phase 8 / feature-streaming-pro-adapter Phase 4) — the
     # retail bridge `settrade-streaming-api` composed over plain HTTP (mirrors
     # Liberator). The engine holds ONLY the bridge's api-key + base_url: the bridge
@@ -149,24 +116,19 @@ class Settings(BaseSettings):
     # from the PTRM ``risk_max_orders_per_second`` gate above (that caps the
     # strategy's submit rate; these throttle outbound venue calls). On exhaustion
     # a bucket AWAITS (back-pressure) — it never drops a request nor raises to the
-    # caller. ``0`` disables a bucket (unlimited). Settrade enforces two buckets
-    # (POST/PATCH writes vs GET reads) PER OAuth app, so they live per
-    # ``SettradeClient`` (per market, Phase 4.1 — Design Decision §4). Liberator
-    # caps only the placement path.
-    settrade_post_rate_limit: int = 10
-    settrade_get_rate_limit: int = 10
+    # caller. ``0`` disables a bucket (unlimited). Liberator caps only the
+    # placement path.
     liberator_post_rate_limit: int = 5
 
     # Order book service (Phase 5) — a normalized, read-only L2 cache fed by the
-    # Settrade realtime + Liberator WebSocket feeds (ADR D17–D24). The whole
-    # service defaults OFF (D24): nothing connects, no SDK imports, the engine's
-    # existing behavior is bit-for-bit unchanged until an operator opts in. The
-    # endpoints carry no order data/credential and are public-mode-readable.
+    # Liberator WebSocket feed (ADR D17–D24). The whole service defaults OFF
+    # (D24): nothing connects, the engine's existing behavior is bit-for-bit
+    # unchanged until an operator opts in. The endpoints carry no order
+    # data/credential and are public-mode-readable.
     order_book_enabled: bool = False
-    # Default LIBERATOR (operator decision 2026-06-12): verified streaming live;
-    # InnovestX/Settrade realtime is venue-gated (DISPATCH-UM-04 "User is
-    # inactive") until enabled at the portal.
-    order_book_primary_provider: Literal["settrade", "liberator"] = "liberator"
+    # LIBERATOR is the only order-book provider (operator decision 2026-06-12:
+    # verified streaming live).
+    order_book_primary_provider: Literal["liberator"] = "liberator"
     # JSON map symbol -> provider name, e.g. '{"AOT": "liberator"}'.
     order_book_symbol_overrides: dict[str, str] = Field(default_factory=dict)
     order_book_failover_error_threshold: int = 3

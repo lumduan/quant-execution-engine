@@ -1,9 +1,9 @@
 """``TokenBucket`` — the venue-facing rate limiter (Phase 6 / D, Design Decision §7).
 
-A minimal, pure-asyncio token bucket shared by both real-broker adapters: the
-Settrade client's GET + WRITE buckets (D1) and the Liberator placement bucket
-(D2). The prompt forbids a third-party rate-limit library, so this is the one
-primitive; it is deliberately small and deterministic.
+A minimal, pure-asyncio token bucket shared by the real-broker adapters: the
+Liberator placement bucket (D2) and the Streaming Pro POST bucket. The prompt
+forbids a third-party rate-limit library, so this is the one primitive; it is
+deliberately small and deterministic.
 
 Design invariants (the limiter must never harm the order path):
 
@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 class TokenBucket:
     """A single rate bucket: capacity = ``rate_per_second`` (a 1-second burst).
 
-    One bucket guards one venue request class (e.g. Settrade GET, Settrade WRITE,
-    Liberator place). Acquire one token before each outbound call; the bucket
-    refills lazily at ``rate_per_second`` tokens/second up to its capacity.
+    One bucket guards one venue request class (e.g. Liberator place, Streaming
+    Pro POST). Acquire one token before each outbound call; the bucket refills
+    lazily at ``rate_per_second`` tokens/second up to its capacity.
     """
 
     def __init__(

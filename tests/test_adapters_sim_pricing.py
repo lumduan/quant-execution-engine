@@ -56,7 +56,7 @@ def _book(*, bid: str, ask: str, symbol: str = "PTT", market: Market = Market.SE
         bid_levels=[OrderBookLevel(price=Decimal(bid), volume=10)],
         ask_levels=[OrderBookLevel(price=Decimal(ask), volume=10)],
         sequence=1,
-        source=OrderBookSource.SETTRADE,
+        source=OrderBookSource.LIBERATOR,
         received_at=datetime.now(UTC),
     )
 
@@ -123,7 +123,7 @@ async def test_empty_side_falls_through_to_none() -> None:
         bid_levels=[OrderBookLevel(price=Decimal("99"), volume=5)],
         ask_levels=[],
         sequence=1,
-        source=OrderBookSource.SETTRADE,
+        source=OrderBookSource.LIBERATOR,
         received_at=datetime.now(UTC),
     )
     service.publish(book)

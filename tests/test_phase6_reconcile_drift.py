@@ -8,23 +8,16 @@ venue, MemStore store):
 * DB ahead   — order FILLED locally (terminal), NEW at the venue → the reconciler's
                working set excludes terminals, so the store is NEVER regressed (no
                illegal downgrade is even attempted).
-* replace_resolve (Settrade) — a stranded PENDING_REPLACE (ack lost mid-amend)
-               resolves to NEW with venue-truth price/qty when the venue confirms,
-               or restores the pre-replace local values when the venue row is gone;
-               the resolution is logged either way and every edge stays legal.
 """
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 
 import pytest
 import respx
 from src.quant_execution_engine.adapters.liberator.reconciler import LiberatorReconciler
-from src.quant_execution_engine.adapters.settrade.reconciler import SettradeReconciler
 from src.quant_execution_engine.contracts.enums import Broker, OrderState
 from src.quant_execution_engine.db.models import OrderRow
 
@@ -32,16 +25,6 @@ from tests._fakes import MemStore, patch_repositories
 from tests.conftest import make_order
 from tests.unit.adapters.liberator.test_adapter_place import _BASE as _LIB_BASE
 from tests.unit.adapters.liberator.test_adapter_place import make_adapter as make_liberator_adapter
-from tests.unit.adapters.settrade.test_adapter_place import (
-    _BASE as _SET_BASE,
-)
-from tests.unit.adapters.settrade.test_adapter_place import (
-    _BROKER,
-    _login_route,
-)
-from tests.unit.adapters.settrade.test_adapter_place import (
-    make_adapter as make_settrade_adapter,
-)
 
 _NOW = datetime(2026, 6, 13, 8, 0, 0, tzinfo=UTC)
 
@@ -190,131 +173,3 @@ async def test_terminal_rows_excluded_from_reconcile_working_set() -> None:
         store.seed(order, state)
     rows = await store.fetch_orders_for_reconcile(object(), Broker.LIBERATOR)
     assert rows == []  # nothing terminal is ever reconciled
-
-
-# ------------------------------------------------------- settrade replace_resolve
-
-
-def _set_row(store: MemStore, status: OrderState, **overrides: Any) -> OrderRow:
-    order = make_order(broker="settrade", price="100.00", account="ACC-TEST", **overrides)
-    store.seed(order, status)
-    raw = store.orders[order.client_order_id]
-    raw["created_at"] = _NOW - timedelta(seconds=10)
-    return OrderRow(**raw)
-
-
-def _set_reconciler() -> SettradeReconciler:
-    return SettradeReconciler(
-        make_settrade_adapter(),
-        interval_seconds=12,
-        pool_provider=lambda: object(),
-        now=lambda: _NOW,
-    )
-
-
-def _set_orders_url(account: str = "ACC-TEST") -> str:
-    return f"{_SET_BASE}/api/seos/v3/{_BROKER}/accounts/{account}/orders"
-
-
-def _tfex_orders_url(account: str = "ACC-TEST") -> str:
-    return f"{_SET_BASE}/api/seosd/v3/{_BROKER}/accounts/{account}/orders"
-
-
-def _set_venue_json(row: OrderRow, **overrides: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "orderNo": row.broker_order_id or "SET-1",
-        "accountNo": row.account,
-        "symbol": row.symbol,
-        "side": "Buy",
-        "vol": row.quantity,
-        "matched": 0,
-        "balance": row.quantity,
-        "cancelled": 0,
-        "price": 100.0,
-        "status": "O",
-        "rejectCode": 0,
-    }
-    base.update(overrides)
-    return base
-
-
-@respx.mock
-async def test_replace_resolve_venue_confirms_restores_new_with_venue_truth(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Stranded PENDING_REPLACE, venue resting with the new price/qty → NEW (truth)."""
-    store = MemStore()
-    patch_repositories(monkeypatch, store)
-    _login_route()
-    row = _set_row(store, OrderState.PENDING_REPLACE)
-    cid = row.client_order_id
-    store.orders[cid]["broker_order_id"] = "B-SEED"
-    respx.get(_set_orders_url()).respond(
-        json=[_set_venue_json(row, orderNo="B-SEED", price=101.5, vol=80, balance=80)]
-    )
-    respx.get(_tfex_orders_url()).respond(json=[])
-
-    with caplog.at_level(logging.INFO):
-        applied = await _set_reconciler().reconcile_once()
-
-    assert applied >= 1
-    assert store.orders[cid]["status"] is OrderState.NEW  # the only legal PENDING_REPLACE exit
-    assert store.orders[cid]["price"] == Decimal("101.5")  # venue-truth price
-    assert store.orders[cid]["quantity"] == 80
-    assert "PENDING_REPLACE resolved" in caplog.text
-
-
-@respx.mock
-async def test_replace_resolve_venue_missing_restores_local_values(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Stranded PENDING_REPLACE, venue row gone → restore NEW with the local price/qty."""
-    store = MemStore()
-    patch_repositories(monkeypatch, store)
-    _login_route()
-    row = _set_row(store, OrderState.PENDING_REPLACE)
-    cid = row.client_order_id
-    store.orders[cid]["broker_order_id"] = "B-SEED"
-    original_price = store.orders[cid]["price"]
-    original_qty = store.orders[cid]["quantity"]
-    respx.get(_set_orders_url()).respond(json=[])  # the venue row is gone
-    respx.get(_tfex_orders_url()).respond(json=[])
-
-    with caplog.at_level(logging.INFO):
-        applied = await _set_reconciler().reconcile_once()
-
-    assert applied >= 1
-    assert store.orders[cid]["status"] is OrderState.NEW
-    # COALESCE keeps the pre-replace local values (None venue price/qty restores them).
-    assert store.orders[cid]["price"] == original_price
-    assert store.orders[cid]["quantity"] == original_qty
-    assert "PENDING_REPLACE resolved" in caplog.text
-
-
-@respx.mock
-async def test_replace_resolve_with_prior_fills_restores_partially_filled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A partly-filled stranded PENDING_REPLACE resolves to PARTIALLY_FILLED, legally."""
-    store = MemStore()
-    patch_repositories(monkeypatch, store)
-    _login_route()
-    row = _set_row(store, OrderState.PENDING_REPLACE)
-    cid = row.client_order_id
-    store.orders[cid]["broker_order_id"] = "B-SEED"
-    store.fills[cid] = [
-        {"broker_fill_id": "f1", "price": Decimal("100"), "quantity": 30, "exec_ts": _NOW}
-    ]
-    respx.get(_set_orders_url()).respond(
-        json=[_set_venue_json(row, orderNo="B-SEED", matched=30, balance=70, price=101.0)]
-    )
-    respx.get(_tfex_orders_url()).respond(json=[])
-
-    applied = await _set_reconciler().reconcile_once()
-
-    assert applied >= 1
-    # PENDING_REPLACE → NEW (replace_resolve) → PARTIALLY_FILLED (the two-step restore).
-    assert store.orders[cid]["status"] is OrderState.PARTIALLY_FILLED
-    assert store.orders[cid]["price"] == Decimal("101.0")

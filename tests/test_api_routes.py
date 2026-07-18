@@ -96,9 +96,9 @@ def test_submit_lifecycle_dedupe_and_decimal_strings(
 
 
 def test_amend_native_happy_path_same_cid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PATCH a resting settrade order: 200, same cid, updated price."""
+    """PATCH a resting sim (native-amend) order: 200, same cid, updated price."""
     client, store, _ = _owner_client(monkeypatch)
-    body = order_payload(broker="settrade", metadata={"sim_fills": []})
+    body = order_payload(broker="sim", metadata={"sim_fills": []})
     assert client.post("/orders", json=body).status_code == 201
     cid = body["client_order_id"]
 
@@ -137,7 +137,7 @@ def test_amend_native_with_new_cid_409_amend_rejected(
 ) -> None:
     """A native broker must omit new_client_order_id — typed 409 envelope."""
     client, store, _ = _owner_client(monkeypatch)
-    body = order_payload(broker="settrade", metadata={"sim_fills": []})
+    body = order_payload(broker="sim", metadata={"sim_fills": []})
     assert client.post("/orders", json=body).status_code == 201
     response = client.patch(
         f"/orders/{body['client_order_id']}",

@@ -228,7 +228,7 @@ async def test_fetch_orders_for_reconcile_pending_replace_flag() -> None:
 
     extended = FakeConn(fetch_results=[[order_record(status="PENDING_REPLACE")]])
     rows = await repositories.fetch_orders_for_reconcile(
-        FakePool(extended), Broker.SETTRADE, include_pending_replace=True
+        FakePool(extended), Broker.SIM, include_pending_replace=True
     )
     assert "PENDING_REPLACE" in extended.calls[0][2][1]
     assert [r.status for r in rows] == [OrderState.PENDING_REPLACE]

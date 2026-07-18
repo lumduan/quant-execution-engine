@@ -1,13 +1,17 @@
 # Order book service — architecture
 
 > **SHIPPED in Phase 5 (engine side, 2026-06-12)** — an **in-engine, read-only, lossy-tolerant**
-> dual-provider L2 cache (decisions **D17–D22, D24** —
+> L2 cache (decisions **D17–D22, D24** —
 > [`decision-log.md`](decision-log.md#phase-5-realisation-decisions-d14d24-2026-06-12)). It
-> **consumes** broker bid/offer feeds (Settrade realtime + Liberator WebSocket), normalizes them
-> to one shape, caches the best-of-book in memory, and serves (a) `SimAdapter` realistic
-> paper-fill prices, (b) snapshot + SSE endpoints, and (c) a seed for future market-impact /
-> PTRM price-band work. **Additive and default-off.** Source:
-> `src/quant_execution_engine/order_book/`.
+> **consumes** the Liberator WebSocket bid/offer feed, normalizes it to one shape, caches the
+> best-of-book in memory, and serves (a) `SimAdapter` realistic paper-fill prices, (b) snapshot +
+> SSE endpoints, and (c) a seed for future market-impact / PTRM price-band work. **Additive and
+> default-off.** Source: `src/quant_execution_engine/order_book/`.
+>
+> **Updated 2026-07-18 — the Settrade order-book provider was removed with broker-023 /
+> `settrade_v2`.** The service is now **single-provider (Liberator only)**; the `ProviderRouter`
+> stays provider-generic (failover is dormant until a second feed exists). The `settrade-v2` SDK
+> dependency is gone. See [`decision-log.md`](decision-log.md) → the 2026-07-18 removal entry.
 
 ## Two planes (D17 / D1)
 
@@ -22,8 +26,7 @@ the feeds are read-only.
 
 Frozen Pydantic (`order_book/models.py`) — not dataclasses (they cross the API boundary
 serialized): `Decimal` prices, `int` volumes, tz-aware UTC `received_at`, `Decimal`-as-string on
-the wire. **Identical regardless of source** — a consumer cannot tell a Settrade book from a
-Liberator book.
+the wire. **Identical regardless of source** — the `source` tag names the provider (`liberator`).
 
 ```text
 OrderBookLevel                 OrderBook
@@ -34,7 +37,7 @@ OrderBookLevel                 OrderBook
                                  bid_flag    : str   (default "NORMAL")  # "CEILING"|"FLOOR"|…
                                  ask_flag    : str   (default "NORMAL")
                                  sequence    : int          # source-monotonic
-                                 source      : "settrade" | "liberator"
+                                 source      : "liberator"
                                  received_at : datetime UTC
   # convenience: .best_bid / .best_ask (top level or None); .wire_dump()
 ```
@@ -43,29 +46,8 @@ OrderBookLevel                 OrderBook
 
 A `OrderBookProvider` base (`providers/base.py`) defines `start/stop/subscribe/unsubscribe`
 plus `on_book` / `on_error` callbacks; the router fans subscriptions to the active provider.
-
-### Settrade — SDK realtime, CONTAINED (D18)
-
-The bid/offer feed rides the `settrade-v2` SDK's MQTT-backed `subscribe_bid_offer(symbol,
-on_message)`. **Containment rules (non-negotiable):**
-
-- The SDK is imported **lazily via the single `_import_sdk()` seam inside
-  `providers/settrade.py`** — nothing else in the codebase imports it. Its import-time side
-  effects (writes `~/settradesdkv2_config.txt`, an NTP call, a version-check HTTP request) only
-  fire when the order-book service is enabled with a Settrade provider.
-- The **E21 SDK ban for the ORDER-ROUTING path is unchanged** — order routing uses the raw-httpx
-  OAuth client, never the sync SDK (its `requests` calls would block the loop). The SDK may
-  **not** leak into the `adapters/` layer (this is exactly why D23's reconcile-kick is deferred
-  to §I).
-- **All blocking SDK work runs on `asyncio.to_thread`** — `Investor` login,
-  `RealtimeDataConnection().start()`, `subscribe_bid_offer`, and teardown all do blocking
-  network I/O. The SDK's network loop runs on its own thread and delivers **synchronous**
-  callbacks, which are bridged onto the event loop with `loop.call_soon_threadsafe(...)`. We
-  never touch asyncio objects from the SDK thread and never block the SDK thread on the loop.
-- One realtime connection per configured market (reusing the Phase-4.1 per-market credentials).
-- Parser: flat `bid_price1..10 / bid_volume1..10 / ask_price1..10 / ask_volume1..10` +
-  `bid_flag`/`ask_flag`; prices str/float/int → `Decimal` (≤ 0 / missing dropped); partial depth
-  tolerated; `None` when both sides empty.
+Liberator is the sole provider (the Settrade SDK-realtime provider, D18, was removed with
+broker-023 / `settrade_v2` on 2026-07-18).
 
 ### Liberator — ws-ticket + raw `websockets` Engine.IO v4 (D19)
 
@@ -97,6 +79,11 @@ ignored; only a malformed frame **inside** `BidOfferV2` earns a parse-skip WARNI
 
 ## Failover router (D20)
 
+> **Dormant since 2026-07-18** — with Settrade removed the order book has a single provider
+> (Liberator), so no secondary exists and failover cannot trigger. `ProviderRouter` is retained
+> **generic** for a future second feed; the description below is its unchanged behaviour once a
+> second provider is configured.
+
 `order_book/router.py`. `ORDER_BOOK_PRIMARY_PROVIDER` picks the default primary; an optional
 per-symbol `ORDER_BOOK_SYMBOL_OVERRIDES` (JSON) pins symbols to a named provider. When the
 **active** provider records ≥ `FAILOVER_ERROR_THRESHOLD` **consecutive** errors within
@@ -115,7 +102,6 @@ identical from either source.
 | `order_book.subscriber_lagged` | a cache subscriber queue overflowed (drop-oldest) |
 | `order_book.liberator_reconnect` | Liberator reconnect attempt (`attempt=`, `delay=`) |
 | `order_book.liberator_ticket` / `_session_error` / `_live_join_failed` / `_parse_skip` | Liberator session lifecycle / parse |
-| `order_book.settrade_connected` / `_subscribe_failed` / `_parse_failed` | Settrade session lifecycle / parse |
 | `order_book.cache_evict` | LRU eviction (DEBUG) |
 | `order_book.subscribers` | per-key subscriber refcount changed |
 
@@ -172,8 +158,8 @@ symbols, subscriber count) when the service is on (`null` when off).
 
 | Setting | Default | Effect |
 |---|---|---|
-| `ORDER_BOOK_ENABLED` | `false` | Master switch (D24) — off keeps the engine bit-for-bit unchanged. Enabling also needs ≥1 configurable provider (Liberator api-key / a Settrade per-market trio). |
-| `ORDER_BOOK_PRIMARY_PROVIDER` | `liberator` | `settrade \| liberator` (falls back to the only configured provider; default flipped to liberator 2026-06-12 — Settrade realtime venue-gated DISPATCH-UM-04) |
+| `ORDER_BOOK_ENABLED` | `false` | Master switch (D24) — off keeps the engine bit-for-bit unchanged. Enabling also needs the Liberator provider configured (Liberator api-key). |
+| `ORDER_BOOK_PRIMARY_PROVIDER` | `liberator` | `liberator` (the sole provider since the 2026-07-18 Settrade removal) |
 | `ORDER_BOOK_SYMBOL_OVERRIDES` | `{}` | JSON map symbol → provider |
 | `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD` | `3` | consecutive errors before switch |
 | `ORDER_BOOK_FAILOVER_WINDOW_SECONDS` | `30` | error-counting window |
@@ -184,8 +170,8 @@ symbols, subscriber count) when the service is on (`null` when off).
 | `STREAM_SUBSCRIBER_QUEUE_SIZE` | `256` | shared per-subscriber back-pressure bound |
 | `STREAM_KEEPALIVE_SECONDS` | `15` | SSE keep-alive comment interval |
 
-New deps: `websockets`, `settrade-v2` (lazy, market-data-only), `certifi` (explicit — the
-Liberator WS TLS context builds on it).
+New deps: `websockets`, `certifi` (explicit — the Liberator WS TLS context builds on it). (The
+`settrade-v2` SDK dep was removed with the Settrade provider on 2026-07-18.)
 
 ## Real-venue validation (2026-06-12, read-only; AOT = SET, S50M26 = TFEX)
 
@@ -202,23 +188,9 @@ Liberator WS TLS context builds on it).
   2. The ws-ticket needs no fresh OTP while the upstream session is live
      (`/ws-ticket/health` → `ws_token_available: true`); a dead session is an operator
      OTP-runbook matter (order-routing-safety.md), not a provider concern.
-- **Settrade: code path verified up to a venue-side authorization wall.** Per-market OAuth
-  logins succeed (ALGO_EQ + ALGO), the realtime connection builds, but `subscribe_bid_offer`
-  is rejected by the dispatcher with **`DISPATCH-UM-04` "User is inactive"** — realtime
-  streaming is not enabled for the InnovestX apps/user. **Operator prerequisite** (like the
-  missing trading PIN for micro_live): enable realtime/market-data at the Settrade/InnovestX
-  developer portal. The provider surfaces the rejection as a typed failover signal, so with
-  `ORDER_BOOK_PRIMARY_PROVIDER=settrade` the router fails over to Liberator as designed.
-  Two SDK wire findings fixed during validation:
-  1. `RealtimeDataConnection` has **no `start()`** — the MQTT CallBacker starts on the first
-     `Subscriber.start()`.
-  2. The callback payload is `{"is_success": bool, "data": {…}}` (`util.mqtt_to_message`)
-     wrapping a **`BidOfferV3` protobuf** dict (snake_case, default values included):
-     prices are `google.type.Money` dicts `{"units", "nanos"}` (nanos = 10⁻⁹ — parsed with
-     exact Decimal arithmetic, 9-dp tail stripped), volumes int64 (possibly str), flags
-     enum names (`NORMAL`/`ATO`/`ATC`/`UNDEFINED_FLAG`); zero-Money prices during ATO/ATC
-     are dropped like any ≤0 level. `is_success=False` (e.g. `rejectSubscriptions`) feeds
-     `on_error`, never the cache.
+- **Settrade: REMOVED 2026-07-18.** The Settrade SDK-realtime provider (and its 2026-06-12
+  validation notes) were removed with broker-023 / `settrade_v2`; the order book is now
+  Liberator-only. See [`decision-log.md`](decision-log.md) → the 2026-07-18 removal entry.
 
 ## Deferred (§K)
 

@@ -1,5 +1,13 @@
 # Phase 6: Safety, Ops & Reconciliation Hardening
 
+> **Period record (2026-07-18).** broker-023 / `settrade_v2` was removed after this phase. The
+> Settrade-specific mechanics below — the per-`SettradeClient` GET/WRITE rate buckets, the
+> `replace_resolve` reconciler action for stranded native-amend `PENDING_REPLACE`, and the
+> `brokers.settrade.*` health — no longer apply (the Liberator POST bucket + the Streaming Pro
+> POST bucket remain). This plan is retained as the historical Phase-6 record and is **not**
+> rewritten. See [`../../.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md)
+> → the 2026-07-18 removal entry.
+
 **Feature:** feature-execution-engine — Phase 6: Safety, Ops & Reconciliation Hardening
 **Branch:** `feature/phase6-safety-ops-reconciliation-hardening`
 **Created:** 2026-06-13

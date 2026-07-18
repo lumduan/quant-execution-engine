@@ -47,7 +47,7 @@ curl "http://quant-api-gateway:8000/api/v2/engines/execution/order-book/PTT?mark
 | `…volume` | int | level volume (`>= 0`) |
 | `bid_flag` / `ask_flag` | string | venue state flag (`"NORMAL"` by default) |
 | `sequence` | int | the provider's event sequence |
-| `source` | string | the providing feed: `settrade` \| `liberator` |
+| `source` | string | the providing feed: `liberator` |
 | `received_at` | string (UTC) | when the engine received this book |
 
 ## `GET /order-book/{symbol}/stream` — SSE
@@ -67,14 +67,13 @@ data: {"symbol":"PTT","market":"SET","bid_levels":[{"price":"35.50","volume":120
 : keep-alive
 ```
 
-## Dual-provider + failover
+## Provider (single, since 2026-07-18)
 
-The book is fed by **two providers** — Settrade realtime (the `settrade-v2` SDK, contained behind a
-lazy import + `asyncio.to_thread`; the E21 order-routing SDK ban is unchanged) and Liberator
-WebSocket (ws-ticket + raw `websockets` Engine.IO v4; no `curl_cffi`). The primary is
-`ORDER_BOOK_PRIMARY_PROVIDER` (default `liberator`). On `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD`
-consecutive errors within `ORDER_BOOK_FAILOVER_WINDOW_SECONDS` the active provider fails over (no
-auto-failback in v1). Per-symbol overrides: `ORDER_BOOK_SYMBOL_OVERRIDES`.
+The book is fed by a **single provider** — Liberator WebSocket (ws-ticket + raw `websockets`
+Engine.IO v4; no `curl_cffi`). `ORDER_BOOK_PRIMARY_PROVIDER` is `liberator`. The Settrade
+SDK-realtime provider was removed with broker-023 / `settrade_v2` on 2026-07-18, so failover
+cannot trigger (no secondary); the `ProviderRouter` + the `ORDER_BOOK_FAILOVER_*` knobs remain
+generic for a future second feed. Per-symbol overrides: `ORDER_BOOK_SYMBOL_OVERRIDES`.
 
 ## The D1 boundary
 
@@ -92,7 +91,6 @@ routes. A dropped tick is a resubscribe — never a replay from a store. The boo
 ## Notes
 
 - `ORDER_BOOK_ENABLED=false` is the default, so both routes return `404 order_book_unavailable` until
-  an operator enables the service **and** configures at least one provider. Enabling Settrade realtime
-  also requires the venue-side portal flag (else `DISPATCH-UM-04 "User is inactive"`). See
+  an operator enables the service **and** configures the Liberator provider (its api-key). See
   [`../operations/configuration.md`](../operations/configuration.md) and
   [`../operations/troubleshooting.md`](../operations/troubleshooting.md).

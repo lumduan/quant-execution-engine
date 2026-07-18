@@ -1,7 +1,7 @@
 """Process-level Streaming-Pro runtime: adapter singleton + background workers.
 
 ``api/deps.py`` builds an ``OrderRouter`` per request, so the breaker, the httpx client, and the
-heartbeat/reconcile workers MUST live here as module-level singletons (the Liberator/Settrade
+heartbeat/reconcile workers MUST live here as module-level singletons (the Liberator
 pattern). The app lifespan calls ``create_streaming_pro_runtime`` + ``start_streaming_pro_workers``
 on startup and ``close_streaming_pro_runtime`` on shutdown.
 

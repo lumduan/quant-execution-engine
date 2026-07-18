@@ -224,7 +224,7 @@ class StubBrokerAdapter(BrokerAdapter):
     def __init__(
         self,
         *,
-        broker: Broker = Broker.SETTRADE,
+        broker: Broker = Broker.LIBERATOR,
         amend_ack: AmendAck | None = None,
         amend_raises: Exception | None = None,
     ) -> None:

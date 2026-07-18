@@ -5,8 +5,8 @@
 > **Branch:** `feat/phase4-streaming-pro-adapter`
 > **Realises:** `feature-streaming-pro-adapter` **Phase 4** (the engine side) — the bridge
 > (`settrade-streaming-api`) shipped its Phases 0–3 standalone; this adds the engine adapter.
-> **Builds on:** [`phase3-liberator-adapter.md`](phase3-liberator-adapter.md) (the HTTP-bridge precedent)
-> + [`phase4-settrade-adapter.md`](phase4-settrade-adapter.md).
+> **Builds on:** [`phase3-liberator-adapter.md`](phase3-liberator-adapter.md) (the HTTP-bridge
+> precedent). (The Phase-4 Settrade adapter plan was removed with broker-023 on 2026-07-18.)
 
 ## Table of Contents
 

@@ -3,10 +3,7 @@
 The router enforces this BEFORE any venue I/O (D7): an unsupported
 ``(broker, market, order_type, tif, position_effect)`` is rejected with a
 typed error. The Liberator rows are validated against the live adapter since
-Phase 3 (``adapter_installed: true``); Settrade is installed since Phase 4
-(``adapter_installed: true``) with its cells pinned against
-developer.settrade.com (both SET equity and TFEX derivatives books). Every
-prior ``(confirm P4)`` placeholder is now a concrete support entry.
+Phase 3 (``adapter_installed: true``); the Streaming Pro rows since Phase 8.
 """
 
 from __future__ import annotations
@@ -109,45 +106,6 @@ CAPABILITY_MATRIX: tuple[CapabilitySet, ...] = (
         tifs=_ALL_TIFS,
         position_effects=(PositionEffect.OPEN, PositionEffect.CLOSE),
         amend="cancel_replace",
-        adapter_installed=True,
-    ),
-    # Settrade (installed Phase 4): cells pinned from developer.settrade.com.
-    # SET equity (/api/seos/v3) + TFEX derivatives (/api/seosd/v3), native amend.
-    # Deliberately UNSUPPORTED (no contract member / venue API): SET stops
-    # (no equity stop API), TFEX ATC (not a derivatives priceType), GTD `Date`
-    # (no Tif member), `Auto` position (extra permission), NVDR trustee
-    # (no contract field — pinned `Local`), SESSION-trigger stops.
-    CapabilitySet(
-        broker=Broker.SETTRADE,
-        market=Market.SET,
-        order_types=(
-            OrderType.MARKET,
-            OrderType.LIMIT,
-            OrderType.MTL,
-            OrderType.ATO,
-            OrderType.ATC,
-            OrderType.ICEBERG,
-        ),
-        tifs=(Tif.DAY, Tif.GTC, Tif.IOC, Tif.FOK),
-        position_effects=(),
-        amend="native",
-        adapter_installed=True,
-    ),
-    CapabilitySet(
-        broker=Broker.SETTRADE,
-        market=Market.TFEX,
-        order_types=(
-            OrderType.MARKET,
-            OrderType.LIMIT,
-            OrderType.MTL,
-            OrderType.ATO,
-            OrderType.STOP,
-            OrderType.STOP_LIMIT,
-            OrderType.ICEBERG,
-        ),
-        tifs=(Tif.DAY, Tif.GTC, Tif.IOC, Tif.FOK),
-        position_effects=(PositionEffect.OPEN, PositionEffect.CLOSE),
-        amend="native",
         adapter_installed=True,
     ),
     # Streaming Pro (installed Phase 8 / feature-streaming-pro-adapter Phase 4): the retail bridge's

@@ -1,9 +1,20 @@
 # quant-execution-engine — ROADMAP
 
+> **⚠️ Updated 2026-07-18 — broker-023 / `settrade_v2` (the Settrade Open API) REMOVED (Option B).**
+> Real execution routing is now **Sim + Liberator + Streaming Pro** (Streaming Pro = the self-built
+> `settrade-streaming-api` retail bridge; FINANSIA-024 HOME / SBITO-033 AWS). The `SettradeAdapter`,
+> its order-book provider, config, the `settrade-v2` dependency, and the Phase-4 plan docs are gone.
+> **The Phase-4 / Phase-4.1 sections and the Phase-5/6 Settrade sub-parts below are SUPERSEDED
+> period records — not rewritten.** See
+> [`../../.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md) → the
+> 2026-07-18 removal entry. Native amend was Settrade-only among real brokers, so the engine loses
+> real-broker native amend (Liberator + Streaming Pro use `cancel_replace`; only `sim` is native).
+> Terminology: "Streaming Pro" / `streaming_pro` = KEEP; "Settrade" / `settrade_v2` = REMOVED.
+
 The **Execution engine**: a single standalone service (host `:8400`, container `:8000`,
 gateway-proxied under `/api/v2/engines/execution/*`) that is the **only** thing that sends
 orders to brokers. Every strategy submits one canonical `NormalizedOrder`; the engine routes
-it to a broker adapter (Liberator, Settrade) or the `SimAdapter`. Strategies **never** speak a
+it to a broker adapter (Liberator, Streaming Pro) or the `SimAdapter`. Strategies **never** speak a
 broker's native order API and **never** hold a broker credential.
 
 > This is the **per-service realisation** of the cross-cutting
@@ -108,44 +119,46 @@ additive, `live` still gated, no frozen-contract or infra-db schema change. Next
 
 ---
 
-## Broker capability matrix (Liberator vs Settrade vs Sim)
+## Broker capability matrix
+
+> **Updated 2026-07-18 — broker-023 / `settrade_v2` (Settrade Open API) removed.** The real
+> brokers are now **Liberator** + **Streaming Pro** (the self-built `settrade-streaming-api` retail
+> bridge). The former Settrade Open-API column is gone. The canonical cell-level matrix lives in
+> [`.claude/knowledge/capability-matrix.md`](../../.claude/knowledge/capability-matrix.md); the
+> Phase-4/4.1 Settrade sections below are SUPERSEDED period records. Terminology: "Streaming Pro" /
+> `streaming_pro` = KEPT bridge; "Settrade" / `settrade_v2` = REMOVED Open API — never conflate.
 
 Mapped onto one `NormalizedOrder`. Liberator cells are sourced from the existing
 `liberator-trading-api` service models (validated against the live adapter since Phase 3);
-**Settrade cells are pinned (2026-06-11) from the official venue docs** at
-`developer.settrade.com/.../investor-{derivatives,equity}/*.md` (the raw markdown backend of
-the JS SPA) cross-checked against the `settrade-v2` 2.2.1 SDK source — every former
-**(confirm P4)** cell is now a concrete entry. See
-[`.claude/knowledge/capability-matrix.md`](../../.claude/knowledge/capability-matrix.md) for
-the cited extraction and the Phase 4 validation section.
+Streaming Pro cells are the conservative Phase-8 live-verified set (expand as verified).
 
-| Capability | **Liberator** (SET / TFEX) | **Settrade** (SET + TFEX) | **Sim** |
+| Capability | **Liberator** (SET / TFEX) | **Streaming Pro** (SET + TFEX) | **Sim** |
 |---|---|---|---|
-| Auth model | OTP/2FA + SMS-webhook refresh; Redis-backed token; per-order **PIN** | OAuth app creds (`app_id`/`app_secret`/`app_code`/`broker_id`) → access+refresh token (ECDSA P-256 login sig, single-flight refresh), rate-limited; per-order **PIN** | none |
-| Markets | **SET** (equity) + **TFEX** (derivatives) | **SET** (equity, `/api/seos/v3`) + **TFEX** (derivatives, `/api/seosd/v3`) | any (configurable) |
-| Place order | `POST /order/place/{set,tfex}` | `POST /{broker_id}/accounts/{account_no}/orders` (raw httpx, not the SDK) | in-proc |
+| Auth model | OTP/2FA + SMS-webhook refresh; Redis-backed token; per-order **PIN** | bridge-owned login/OTP/session; engine holds only the bridge api-key — **no PIN** (the bridge stamps it) | none |
+| Markets | **SET** (equity) + **TFEX** (derivatives) | **SET** (`fis`) + **TFEX** (`seosd`) via the retail bridge | any (configurable) |
+| Place order | `POST /order/place/{set,tfex}` | bridge order REST (plain httpx) | in-proc |
 | `side` | SET `Buy/Sell`; TFEX `Long/Short` | SET `Buy/Sell`; TFEX `Long/Short` | both |
-| `position_effect` | TFEX `Open/Close/Auto`; SET n/a | TFEX `Open/Close` (`Auto` undeclared — extra permission); SET n/a | both |
-| MARKET / LIMIT | ✅ (`Market`/`Limit`) | ✅ (`MP-MKT` / `Limit`) | ✅ |
-| STOP / STOP_LIMIT | TFEX ✅ (`priceType=Stop` + `stopSymbol`/`stopPrice`/`stopCondition`); SET ✗ | TFEX ✅ (`MP-MKT`/`Limit` + stop trio); **SET ✗** (no equity stop API) | ✅ |
-| ICEBERG (display qty) | ✅ `icebergVol` (SET + TFEX) | ✅ SET `qtyOpen` / TFEX `icebergVol` (`Limit` base) | ✅ |
-| ATO / ATC | SET ✅ (`priceType=ATO/ATC`); TFEX ✗ | SET ✅ (`ATO`/`ATC`); TFEX `ATO` ✅, **`ATC` ✗** (not a derivatives priceType) | ✅ |
-| MTL / MP (market-to-limit) | SET ✅ (`priceType=MP`) | SET + TFEX ✅ (`MP-MTL`) | ✅ |
-| TIF | `Day/GTC/IOC/FOK` | `Day`/`IOC`/`FOK`/`GTC('Cancel')`; **`Date`(GTD) undeclared** (no `Tif` member) | all |
-| Amend | ✗ **no amend route** → adapter does **cancel + replace** | ✅ **native** `PATCH /orders/{order_no}/change` (`newPrice?`/`newVolume?`/SET `newIcebergVolume?`) over `PENDING_REPLACE → NEW` | ✅ native |
-| Cancel | `POST /order/cancelled/{set,tfex}` by `orderNo` list (≤50) + PIN | `PATCH /orders/{order_no}/cancel` + bulk `PATCH /cancel` + PIN | ✅ |
-| Query (reconcile) | `GET /orders`, `/orders/{account_no}`, `/orders/summary` (status, matched/balance/cancelled, reject_code, can_cancel) | `GET /orders` (cumulative `matchQty`/`matched`, `rejectCode`/`rejectReason`, `canCancel`/`canChange`); `GET /trades` reserved for Phase 5 | in-proc state |
-| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | **native** `RealtimeDataConnection.subscribe_{derivatives,equity}_order(...)` (MQTT) — **Phase 5: engine-side normalized stream shipped** (`GET /orders/stream`, SSE), **reconciler-fed for both brokers**; Settrade native MQTT push as a direct transition source deferred (§I/D23) | synthetic events |
-| Client idempotency key | ✗ (broker `orderNo` only) | ✗ (broker `orderNo`/`order_no` only) | n/a |
+| `position_effect` | TFEX `Open/Close/Auto`; SET n/a | TFEX `Open/Close`; SET n/a | both |
+| MARKET / LIMIT | ✅ (`Market`/`Limit`) | ✅ (only these live-verified) | ✅ |
+| STOP / STOP_LIMIT | TFEX ✅ (`priceType=Stop` + `stopSymbol`/`stopPrice`/`stopCondition`); SET ✗ | ✗ (conservative v1) | ✅ |
+| ICEBERG (display qty) | ✅ `icebergVol` (SET + TFEX) | ✗ (conservative v1) | ✅ |
+| ATO / ATC | SET ✅ (`priceType=ATO/ATC`); TFEX ✗ | ✗ (conservative v1) | ✅ |
+| MTL / MP (market-to-limit) | SET ✅ (`priceType=MP`) | ✗ (conservative v1) | ✅ |
+| TIF | `Day/GTC/IOC/FOK` | `Day` only (conservative v1) | all |
+| Amend | ✗ **no amend route** → adapter does **cancel + replace** | ✗ bridge `/order/change` 501 → **cancel + replace** | ✅ native |
+| Cancel | `POST /order/cancelled/{set,tfex}` by `orderNo` list (≤50) + PIN | bridge cancel (bridge-stamped PIN) | ✅ |
+| Query (reconcile) | `GET /orders`, `/orders/{account_no}`, `/orders/summary` (status, matched/balance/cancelled, reject_code, can_cancel) | bridge `fetch_venue_orders` read | in-proc state |
+| Order-update stream | indirect: `POST /ws-ticket` issues a venue WS ticket (no normalized push) | reconciler-fed engine-normalized stream (`GET /orders/stream`, SSE) | synthetic events |
+| Client idempotency key | ✗ (broker `orderNo` only) | ✗ (bridge order id only) | n/a |
 
 **Two findings that shape the design:**
-- **Neither broker accepts a client idempotency key.** The engine therefore owns the
+- **Neither real broker accepts a client idempotency key.** The engine therefore owns the
   `client_order_id` ↔ `broker_order_id` mapping in its durable store, and dedupe happens in
   the engine **before** routing (D5). This is the crux of exactly-once-ish submission.
-- **Amend is asymmetric.** Settrade amends natively; Liberator has no amend endpoint. The
-  `BrokerAdapter.amend()` contract is uniform, but `LiberatorAdapter.amend` is implemented as
-  an atomic **cancel-then-replace** (declared in its capability set so the router/strategy
-  knows the semantics differ).
+- **Amend is cancel+replace for every real broker.** The `BrokerAdapter.amend()` contract is
+  uniform; `LiberatorAdapter.amend` and `StreamingProAdapter.amend` are both implemented as
+  **cancel-then-replace** (declared in their capability sets). Native in-place amend was
+  Settrade-only and left with broker-023 (2026-07-18); among current brokers only `sim` is native.
 
 ---
 
@@ -154,7 +167,7 @@ the cited extraction and the Phase 4 validation section.
 ```text
 NormalizedOrder
   client_order_id : str          # client-generated idempotency key (UUID/ULID)
-  broker          : "sim" | "liberator" | "settrade"
+  broker          : "sim" | "liberator" | "streaming_pro"
   account         : str          # broker account ref (never logged in full)
   market          : "SET" | "TFEX"
   symbol          : str          # venue symbol, e.g. "PTT", "S50H26"
@@ -185,7 +198,7 @@ NormalizedStatus  =  NEW | PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED | EX
 ```
 
 **Side / position mapping** (declared per adapter, enforced by the router):
-`BUY`→ Liberator SET `Buy` / TFEX `Long`, Settrade `Long`; `SELL`→ `Sell` / `Short`.
+`BUY`→ Liberator SET `Buy` / TFEX `Long` (Streaming Pro maps the same); `SELL`→ `Sell` / `Short`.
 `Decimal`-as-string on the wire; `int` quantities; UTC timestamps. No `float` at any money
 boundary (umbrella rule).
 
@@ -212,7 +225,7 @@ PENDING_NEW ───────────────► NEW ──fill(part
 
 | Repo | Effect |
 |---|---|
-| **`quant-execution-engine`** (this repo) | The engine: `BrokerAdapter` interface, `NormalizedOrder` contract + capability matrix, order state machine + idempotency, reconciliation loop, pre-trade risk gate + kill-switch, order-update stream, `SimAdapter`, `LiberatorAdapter`, `SettradeAdapter`. |
+| **`quant-execution-engine`** (this repo) | The engine: `BrokerAdapter` interface, `NormalizedOrder` contract + capability matrix, order state machine + idempotency, reconciliation loop, pre-trade risk gate + kill-switch, order-update stream, `SimAdapter`, `LiberatorAdapter`, `StreamingProAdapter`. |
 | **`quant-infra-db`** | New `execution` schema (Phase 1): `orders` / `fills` / append-only `order_events`. Its own PR. |
 | **`quant-api-gateway`** | Proxy route `/api/v2/engines/execution/*` → `:8400` + register the 5th engine (Phase 2). Its own PR. **No broker credential.** |
 | **`liberator-trading-api`** (existing) | Becomes a `LiberatorAdapter` **target** over HTTP (Phase 3), **vendored as a git submodule** under `third_party/liberator-trading-api/` and bundled into this repo's owner-mode bring-up (`docker-compose.liberator.yml`) as an **internal-only** upstream (no host port). May add a normalized order-update hook. No strategy calls it directly anymore. |
@@ -375,6 +388,11 @@ Liberator runbook. Phase plan: [`phase3-liberator-adapter.md`](phase3-liberator-
 - **Cross-refs:** umbrella ROADMAP Phase 3; `.claude/knowledge/broker-research-liberator.md`.
 
 ### Phase 4 — `SettradeAdapter` (second broker — proves the abstraction) 🔌
+
+> **SUPERSEDED 2026-07-18 — period record.** The `SettradeAdapter` (broker-023 / `settrade_v2`,
+> the Settrade Open API) was **removed** (Option B). This section is retained verbatim as the
+> historical Phase-4 record and is not rewritten. Real routing is now Sim + Liberator + Streaming
+> Pro — see the banner at the top of this file and the decision-log 2026-07-18 entry.
 **Status:** `[x]` **Complete (2026-06-11).** **Repo:** this repo
 (`feature/phase4-settrade-adapter`). **Shipped:** `adapters/settrade/` — the second real venue,
 routing the **same** `NormalizedOrder` to either broker with **zero contract change**. Full
@@ -430,6 +448,9 @@ total coverage (settrade modules 93–100%). Phase plan:
   (venue-docs scraping recipe + equity surface addendum + implemented-vs-researched).
 
 ### Phase 4.1 — Settrade per-market broker apps 🔌
+
+> **SUPERSEDED 2026-07-18 — period record.** Removed with broker-023 / `settrade_v2` (Option B);
+> retained verbatim as the historical Phase-4.1 record, not rewritten.
 **Status:** `[x]` **Complete (2026-06-11).** **Repo:** this repo
 (`feature/phase4.1-settrade-per-market-apps`). **Shipped:** a focused in-engine refactor —
 `SettradeAdapter` now holds **one `SettradeClient` per market** (ctor `clients:
@@ -743,8 +764,8 @@ unchanged):
 - Cross-cutting roadmap → [`../../../plans/feature-execution-engine/ROADMAP.md`](../../../plans/feature-execution-engine/ROADMAP.md)
 - Feature sub-plan → [`liberator-session-self-heal/ROADMAP.md`](liberator-session-self-heal/ROADMAP.md) — auto-login the Liberator broker session when it dies (refactor + enable the bundled `SessionMonitorService`; proposed 2026-06-13)
 - Architecture ADR (Phase-0 gate) → [`../../../.claude/knowledge/feature-execution-engine.md`](../../../.claude/knowledge/feature-execution-engine.md)
-- Broker research (cited) → [`../../.claude/knowledge/broker-research-liberator.md`](../../.claude/knowledge/broker-research-liberator.md),
-  [`../../.claude/knowledge/broker-research-settrade.md`](../../.claude/knowledge/broker-research-settrade.md)
+- Broker research (cited) → [`../../.claude/knowledge/broker-research-liberator.md`](../../.claude/knowledge/broker-research-liberator.md)
+  (the Settrade research note was removed with broker-023 on 2026-07-18)
 - Capability matrix + contract + state machine →
   [`../../.claude/knowledge/capability-matrix.md`](../../.claude/knowledge/capability-matrix.md),
   [`../../.claude/knowledge/normalized-order-contract.md`](../../.claude/knowledge/normalized-order-contract.md),

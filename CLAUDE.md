@@ -13,6 +13,17 @@ under `/api/v2/engines/execution/*`. It writes a durable order store (`execution
 `quant-infra-db`/TimescaleDB) and ships its **own Redis sidecar** (dedupe / single-flight
 submit lock / rate-limit).
 
+> **⚠️ Updated 2026-07-18 — broker-023 / `settrade_v2` (the Settrade Open API) REMOVED.** Real
+> execution routing is now **Sim + Liberator + Streaming Pro** only (Streaming Pro = the self-built
+> `settrade-streaming-api` retail bridge: FINANSIA-024 HOME / SBITO-033 AWS). The `SettradeAdapter`,
+> its order-book provider, config, the `settrade-v2` dependency, and its two Phase-4 plan docs are
+> gone. **The Phase-4 / Phase-4.1 Settrade narrative in the status block below is a SUPERSEDED
+> period record** — see [`.claude/knowledge/decision-log.md`](.claude/knowledge/decision-log.md)
+> → the 2026-07-18 removal entry. Terminology: "Streaming Pro"/`streaming_pro` = KEEP; "Settrade"/
+> `settrade_v2` = REMOVED — never conflate. Native amend was Settrade-only among real brokers, so
+> the engine loses real-broker native amend (Liberator + Streaming Pro use `cancel_replace`; only
+> `sim` retains native amend); the `PATCH /orders` route stays.
+>
 > **Current state: Phases 0–8 complete (Phase 4 + 4.1: 2026-06-11; Phase 5 engine side +
 > Phase 5.1 strategy side: 2026-06-12; Phase 6 safety/ops/reconciliation hardening: 2026-06-13;
 > Phase 7 documentation hub: 2026-06-13; Phase 8 `StreamingProAdapter` — the THIRD real broker:
@@ -68,9 +79,8 @@ submit lock / rate-limit).
 > `third_party` service). (Plans:
 > [`docs/plans/phase1-execution-order-store.md`](docs/plans/phase1-execution-order-store.md),
 > [`docs/plans/phase2-engine-core-simadapter.md`](docs/plans/phase2-engine-core-simadapter.md),
-> [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md),
-> [`docs/plans/phase4-settrade-adapter.md`](docs/plans/phase4-settrade-adapter.md),
-> [`docs/plans/phase4.1-settrade-per-market-apps.md`](docs/plans/phase4.1-settrade-per-market-apps.md).)
+> [`docs/plans/phase3-liberator-adapter.md`](docs/plans/phase3-liberator-adapter.md); the Phase-4 /
+> Phase-4.1 Settrade plan docs were removed with broker-023 on 2026-07-18.)
 > **Phase 5 (2026-06-12): engine side complete — the normalized order-update stream out + a
 > dual-provider order book service.** The engine now pushes the **normalized order-update stream
 > out** (umbrella **D12** realised): `GET /orders/stream` (SSE; `id:`=seq / `event:`=engine-state
@@ -141,8 +151,8 @@ submit lock / rate-limit).
 > no infra-db schema change.** 952 tests, 96.01% cov, mypy strict, ruff clean. (Plan:
 > [`docs/plans/phase6-safety-ops-reconciliation-hardening.md`](docs/plans/phase6-safety-ops-reconciliation-hardening.md).)
 > **`live` stays gated — no real-money default**; real micro_live venue validation is
-> operator-driven (Liberator OTP login / Settrade OAuth app creds; see the safety playbook's
-> Liberator + Settrade runbooks). Build sequence:
+> operator-driven (Liberator OTP login / Streaming Pro bridge session; see the safety playbook's
+> Liberator runbook + the Streaming Pro note). Build sequence:
 > [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) (8 phases, 0–7). **Phase 7 ✓ (2026-06-13)** —
 > the documentation hub (`docs/` + `.claude/` refresh, tvkit-ref style, AI-agent-first); start at
 > [`docs/README.md`](docs/README.md).
@@ -150,11 +160,11 @@ submit lock / rate-limit).
 ### Ownership boundaries (the whole point of this service)
 
 1. **Sole broker-credential owner.** Only this service holds broker order-routing sessions
-   (Liberator OTP/PIN, Settrade OAuth `app_id`/`app_secret`/`app_code`). No strategy, no
-   gateway, and no host holds them. Secrets live **only** in this service's gitignored `.env`
-   — never committed, never logged.
+   (Liberator OTP/PIN, the Streaming Pro bridge api-key). No strategy, no gateway, and no host
+   holds them. Secrets live **only** in this service's gitignored `.env` — never committed, never
+   logged.
 2. **Canonical order router.** Strategies submit one `NormalizedOrder`; the engine routes it
-   to a `BrokerAdapter` (Liberator, Settrade) or `SimAdapter`. Add a broker = write one
+   to a `BrokerAdapter` (Liberator, Streaming Pro) or `SimAdapter`. Add a broker = write one
    adapter, not touch every strategy.
 3. **Gateway-proxied.** Consumers (strategies, OpenBB) call the gateway's
    `/api/v2/engines/execution/*`; the gateway proxies to `:8400` and holds **no** credential.
@@ -182,16 +192,17 @@ and [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normali
 
 `sim` (default) → `paper` → `micro_live` → `live`. **No order reaches a real broker below
 `micro_live`, and never without owner mode on, the kill-switch disengaged, and the broker
-runtime configured.** Since Phases 3–4 (Liberator + Settrade): `paper` keeps each configured
+runtime configured.** Real brokers are Liberator + Streaming Pro: `paper` keeps each configured
 broker session live for reads but intercepts every placement to sim; `micro_live` routes
-`broker=liberator`/`broker=settrade` to the real venue at PTRM-capped size; **`live` stays
+`broker=liberator`/`broker=streaming_pro` to the real venue at PTRM-capped size; **`live` stays
 gated** (typed reject). The kill-switch (`EXECUTION_ENGINE_KILL_SWITCH_ENGAGED`) overrides
-every stage and is checked first in the submit path — including the **native-amend path**,
-which (unlike the un-gated cancel path) is kill-switch-gated up front because an amend can
-*increase* exposure. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default)
-disables all order-submission endpoints. See the ROADMAP's "Safety ladder" section and the
-safety playbook's Liberator + Settrade runbooks (stage-flip rule, breaker trips, native
-amend).
+every stage and is checked first in the submit path — including the **amend path**, which
+(unlike the un-gated cancel path) is kill-switch-gated up front because an amend can *increase*
+exposure. Public mode (`EXECUTION_ENGINE_PUBLIC_MODE=true`, Docker default) disables all
+order-submission endpoints. See the ROADMAP's "Safety ladder" section and the safety playbook's
+Liberator runbook + the Streaming Pro note (stage-flip rule, breaker trips, amend). (Native
+amend was Settrade-only among real brokers and left with broker-023; Liberator + Streaming Pro
+use `cancel_replace`.)
 
 ## Network & ports (`quant-network`)
 
@@ -248,35 +259,29 @@ engine recovers passively via the heartbeat/breaker. Reference:
 [`docs/operations/liberator-session-self-heal.md`](docs/operations/liberator-session-self-heal.md) —
 **rebuild the liberator image after a pin/config change** (a pin bump alone doesn't redeploy it).
 
-Settrade engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`): Settrade is a
-**cloud API — no compose overlay**; creds ride `docker-compose.private.yml`'s `env_file`.
-`SETTRADE_BASE_URL` (prod `https://open-api.settrade.com`; UAT `https://open-api-test.settrade.com`,
-sandbox `BROKER_ID=098`), `SETTRADE_APP_ID` + `SETTRADE_APP_SECRET` + `SETTRADE_PIN` (SecretStr),
-`SETTRADE_APP_CODE` + `SETTRADE_BROKER_ID` — `broker_id` + `pin` + at least one market's app trio
-required for the runtime to start (`SETTRADE_ACCOUNT_NO` is an integration-test convenience only;
-the per-order account comes from `NormalizedOrder.account`). **Per-market broker apps (Phase 4.1)** —
-optional overrides so a broker can split its books across two OAuth apps (InnovestX `023`:
-`ALGO_EQ` = SET, `ALGO` = TFEX): `SETTRADE_EQUITY_APP_ID` + `SETTRADE_EQUITY_APP_SECRET` +
-`SETTRADE_EQUITY_APP_CODE` (SET), `SETTRADE_DERIVATIVES_APP_ID` + `SETTRADE_DERIVATIVES_APP_SECRET` +
-`SETTRADE_DERIVATIVES_APP_CODE` (TFEX); a market with no override falls back to the shared
-`SETTRADE_APP_*` trio, a PARTIAL per-market trio fails loud (market unconfigured + WARNING, no silent
-fallback). `SETTRADE_HEARTBEAT_INTERVAL_SECONDS=30`,
-`SETTRADE_CIRCUIT_BREAKER_THRESHOLD=3`, `SETTRADE_RECONCILE_INTERVAL_SECONDS=12`,
-`SETTRADE_TOKEN_REFRESH_MARGIN_SECONDS=100`.
+Streaming Pro engine-side env (`EXECUTION_ENGINE_` prefix, see `.env.example`): the
+`StreamingProAdapter` composes the bundled `settrade-streaming-api` retail bridge (host `:8700`)
+over plain httpx (mirrors Liberator), brought up by `docker-compose.streaming.yml`. The engine
+holds **only** the bridge api-key + base URL — the **bridge** owns USERNAME/PASSWORD/PIN and
+stamps the PIN itself, so the adapter sends **no PIN**. `STREAMING_PRO_BASE_URL` (default
+`http://streaming-pro-api:8000/api/v1`), `STREAMING_PRO_API_KEY` (SecretStr — required for the
+runtime to start), `STREAMING_PRO_HEARTBEAT_INTERVAL_SECONDS=30`,
+`STREAMING_PRO_CIRCUIT_BREAKER_THRESHOLD=3`, `STREAMING_PRO_RECONCILE_INTERVAL_SECONDS=12`,
+`STREAMING_PRO_POST_RATE_LIMIT=5`. (The Settrade Open-API `EXECUTION_ENGINE_SETTRADE_*` settings
+were removed on 2026-07-18 with broker-023.)
 
 Order book + streaming env (Phase 5; `EXECUTION_ENGINE_` prefix, see `.env.example`): the order
 book service is **additive and default-off** — `ORDER_BOOK_ENABLED=false` (master switch, D24)
-keeps the engine bit-for-bit unchanged; enabling it also needs at least one configured provider
-(reusing the Liberator api-key / per-market Settrade trios). `ORDER_BOOK_PRIMARY_PROVIDER=liberator` (default; Settrade realtime is venue-gated until enabled at the InnovestX portal)
-(`settrade|liberator`), `ORDER_BOOK_SYMBOL_OVERRIDES={}` (JSON symbol→provider),
+keeps the engine bit-for-bit unchanged; enabling it also needs the Liberator provider configured
+(the Liberator api-key). `ORDER_BOOK_PRIMARY_PROVIDER=liberator` (the sole provider since the
+2026-07-18 Settrade removal), `ORDER_BOOK_SYMBOL_OVERRIDES={}` (JSON symbol→provider),
 `ORDER_BOOK_FAILOVER_ERROR_THRESHOLD=3` + `ORDER_BOOK_FAILOVER_WINDOW_SECONDS=30` (consecutive-error
 failover, D20), `ORDER_BOOK_CACHE_MAX_AGE_SECONDS=5` + `ORDER_BOOK_CACHE_MAX_SYMBOLS=500` (LRU).
 `MARKET_DATA_BASE_URL` (optional — the `SimAdapter` last-close fallback hop, D21) +
 `MARKET_DATA_API_KEY` (SecretStr). The order-update stream knobs: `STREAM_KEEPALIVE_SECONDS=15`
 (SSE comment interval), `STREAM_RING_BUFFER_SIZE=1024` (`Last-Event-ID` replay window),
-`STREAM_SUBSCRIBER_QUEUE_SIZE=256` (per-subscriber back-pressure bound). New deps: `websockets`,
-`settrade-v2` (lazy, market-data-only). **`live`/`micro_live` gating is unchanged** — these feeds
-are read-only market data.
+`STREAM_SUBSCRIBER_QUEUE_SIZE=256` (per-subscriber back-pressure bound). New dep: `websockets`.
+**`live`/`micro_live` gating is unchanged** — these feeds are read-only market data.
 
 Safety / ops env (Phase 6; `EXECUTION_ENGINE_` prefix, see `.env.example`) — all additive,
 default-safe; the frozen contracts and gating are unchanged. **Risk-gate hardening:**
@@ -292,10 +297,9 @@ fingerprint under a DIFFERENT cid inside the window → 409; same-cid resends st
 dedupe). **Default ON** (a hardening phase must not silently disable an active guard); the legacy
 `RISK_DUPLICATE_BURST_WINDOW_SECONDS` is retained so old `.env` files load but is **no longer read**
 by the guard. **Venue rate limits** (`adapters/rate_limit.py` `TokenBucket`; on exhaustion the
-bucket awaits — never drops/raises; `0` = unlimited): `SETTRADE_POST_RATE_LIMIT=10` +
-`SETTRADE_GET_RATE_LIMIT=10` — Settrade WRITE (POST/PATCH) vs GET buckets **per `SettradeClient`**
-(per OAuth app/market, not per-adapter); `LIBERATOR_POST_RATE_LIMIT=5` — a POST bucket on
-`place()` only (cancel/heartbeat/reconciler fetches stay unthrottled). The audit reads
+bucket awaits — never drops/raises; `0` = unlimited): `LIBERATOR_POST_RATE_LIMIT=5` — a POST
+bucket on Liberator `place()` only (cancel/heartbeat/reconciler fetches stay unthrottled) +
+`STREAMING_PRO_POST_RATE_LIMIT=5` — a POST bucket on Streaming Pro placement. The audit reads
 (`GET /admin/orders/{cid}/audit`, `GET /admin/audit/export`) add **no** env var — owner-mode,
 synthesized from the existing `order_events` store (no schema change).
 
@@ -326,11 +330,12 @@ Tear down in reverse; only `quant-infra-db` down removes `quant-network`.
    default stage; `live` is gated and off by default.
 4. **Adapters declare capabilities; the router enforces them.** Reject unsupported
    `(broker, market, order_type, tif)` up front with a typed error — never fail silently at a
-   venue. Liberator has **no amend route** → `LiberatorAdapter.amend` is cancel-then-replace
-   (declared, non-atomic); Settrade amends **natively** (Phase 4 — shipped) over the frozen
-   `PENDING_REPLACE → NEW` edge, exposed via `PATCH /orders/{client_order_id}`. The router
-   branches on the capability row's `amend` field; native amends return the **same** cid,
-   cancel_replace returns the **replacement** cid.
+   venue. Liberator and Streaming Pro have **no amend route** → their `.amend` is
+   cancel-then-replace (declared, non-atomic). Native in-place amend over the frozen
+   `PENDING_REPLACE → NEW` edge was Settrade-only and left with broker-023 (2026-07-18); among the
+   current brokers only the `sim` simulator declares native. The `PATCH /orders/{client_order_id}`
+   route stays: the router branches on the capability row's `amend` field — native amends return
+   the **same** cid, cancel_replace returns the **replacement** cid.
 5. **Durable state + reconciliation.** Persist the lifecycle to `execution.orders` /
    `.fills` / append-only `.order_events` before anything reaches a venue; a reconciliation
    loop repairs submit/ack drift against broker truth.
@@ -380,7 +385,7 @@ gated; no secrets (SecretStr examples use `<your-value-here>`).
 | [`docs/overview.md`](docs/overview.md) | One-paragraph service overview + pointers |
 | [`docs/architecture/overview.md`](docs/architecture/overview.md) | Topology, the two planes (D1), gateway-proxy position, sole-credential owner, safety ladder, kill-switch, public mode |
 | [`docs/architecture/state-machine.md`](docs/architecture/state-machine.md) | The frozen 9-state / 13-edge machine, terminal vs in-flight, append-only audit, idempotency, reconciliation window |
-| [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | `BrokerAdapter` interface, the full capability matrix, the two structural consequences, Sim/Liberator/Settrade notes |
+| [`docs/architecture/adapters.md`](docs/architecture/adapters.md) | `BrokerAdapter` interface, the full capability matrix, the two structural consequences, Sim/Liberator/Streaming Pro notes |
 | [`docs/architecture/security-boundary.md`](docs/architecture/security-boundary.md) | Credential ownership, public vs owner mode, PTRM gate + price-band, kill-switch, logging redaction |
 
 ### `docs/api/` — endpoint reference (each with a real curl example)
@@ -415,14 +420,13 @@ gated; no secrets (SecretStr examples use `<your-value-here>`).
 |------|---------|
 | [`.claude/knowledge/architecture.md`](.claude/knowledge/architecture.md) | Service architecture notes |
 | [`.claude/knowledge/broker-research-liberator.md`](.claude/knowledge/broker-research-liberator.md) | Liberator API research |
-| [`.claude/knowledge/broker-research-settrade.md`](.claude/knowledge/broker-research-settrade.md) | Settrade API research + per-market apps |
 | [`.claude/knowledge/capability-matrix.md`](.claude/knowledge/capability-matrix.md) | The canonical cell-level capability matrix |
 | [`.claude/knowledge/coding-standards.md`](.claude/knowledge/coding-standards.md) | Python conventions |
 | [`.claude/knowledge/commands.md`](.claude/knowledge/commands.md) | CLI command reference |
 | [`.claude/knowledge/decision-log.md`](.claude/knowledge/decision-log.md) | D-series / E-series decisions |
 | [`.claude/knowledge/deployment.md`](.claude/knowledge/deployment.md) | **(Phase 7)** Compose topology, env-load order, fresh-clone |
 | [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normalized-order-contract.md) | The frozen `NormalizedOrder` contract |
-| [`.claude/knowledge/order-book-service.md`](.claude/knowledge/order-book-service.md) | Phase 5 dual-provider order book |
+| [`.claude/knowledge/order-book-service.md`](.claude/knowledge/order-book-service.md) | Phase 5 order book (Liberator, single-provider since 2026-07-18) |
 | [`.claude/knowledge/order-flow.md`](.claude/knowledge/order-flow.md) | **(Phase 7)** End-to-end order path (verified pipeline) |
 | [`.claude/knowledge/order-state-machine.md`](.claude/knowledge/order-state-machine.md) | The frozen state machine |
 | [`.claude/knowledge/order-update-stream.md`](.claude/knowledge/order-update-stream.md) | Phase 5 SSE order-update stream |
@@ -434,7 +438,7 @@ gated; no secrets (SecretStr examples use `<your-value-here>`).
 | File | Summary |
 |------|---------|
 | [`.claude/playbooks/development-workflow.md`](.claude/playbooks/development-workflow.md) | **(Phase 7)** Quality gate, branch naming, bring-up, respx-mocked tests, the Python 3.11 CI gotcha |
-| [`.claude/playbooks/order-routing-safety.md`](.claude/playbooks/order-routing-safety.md) | The irreversible-action checklist + venue runbooks (Liberator/Settrade, kill-switch, audit) |
+| [`.claude/playbooks/order-routing-safety.md`](.claude/playbooks/order-routing-safety.md) | The irreversible-action checklist + venue runbooks (Liberator/Streaming Pro, kill-switch, audit) |
 | [`.claude/playbooks/feature-development.md`](.claude/playbooks/feature-development.md) | Feature dev workflow |
 | [`.claude/playbooks/bugfix-workflow.md`](.claude/playbooks/bugfix-workflow.md) | Bug investigation & fix |
 | [`.claude/playbooks/code-review.md`](.claude/playbooks/code-review.md) | Code-review checklist |
@@ -448,8 +452,7 @@ The umbrella operator runbook is [`../.claude/playbooks/execution-engine-runbook
 - **Documentation hub (every endpoint, env var, state transition):** [`docs/README.md`](docs/README.md)
 - **Roadmap (source of truth for what to build next):** [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md)
 - **Architecture ADR (Phase-0 gate, D1–D13):** [`../.claude/knowledge/feature-execution-engine.md`](../.claude/knowledge/feature-execution-engine.md)
-- **Broker research (cited):** [`.claude/knowledge/broker-research-liberator.md`](.claude/knowledge/broker-research-liberator.md),
-  [`.claude/knowledge/broker-research-settrade.md`](.claude/knowledge/broker-research-settrade.md)
+- **Broker research (cited):** [`.claude/knowledge/broker-research-liberator.md`](.claude/knowledge/broker-research-liberator.md)
 - **Capability matrix / contract / state machine:** [`.claude/knowledge/capability-matrix.md`](.claude/knowledge/capability-matrix.md),
   [`.claude/knowledge/normalized-order-contract.md`](.claude/knowledge/normalized-order-contract.md),
   [`.claude/knowledge/order-state-machine.md`](.claude/knowledge/order-state-machine.md)

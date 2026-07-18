@@ -24,7 +24,12 @@ Each real adapter additionally runs a session **heartbeat** + **circuit breaker*
 trips on consecutive heartbeat failures → `broker_circuit_open` (503) + a mass-cancel of that
 broker's open orders.
 
-## Capability matrix — Liberator vs Settrade vs Sim
+## Capability matrix — Liberator vs Streaming Pro vs Sim
+
+> **Updated 2026-07-18 — broker-023 / `settrade_v2` (Settrade Open API) removed.** The real brokers
+> are now Liberator + Streaming Pro (the self-built retail bridge); the Settrade Open-API column is
+> gone. Terminology: "Streaming Pro"/`streaming_pro` = KEPT bridge; "Settrade"/`settrade_v2` =
+> REMOVED Open API.
 
 The router rejects an unsupported `(broker, market, order_type, tif, position_effect)` with a typed
 `capability_unsupported` (422) **before any venue I/O**. `GET /capabilities` returns the narrow
@@ -32,40 +37,41 @@ per-`(broker, market)` `CapabilitySet` cells (order types, TIFs, position effect
 `adapter_installed`); the broader matrix below (auth, cancel, query, stream, idempotency) is the
 canonical cell-level reference (mirrors `.claude/knowledge/capability-matrix.md`).
 
-| Capability | Liberator (SET / TFEX) | Settrade (SET + TFEX) | Sim |
+| Capability | Liberator (SET / TFEX) | Streaming Pro (SET + TFEX) | Sim |
 |---|---|---|---|
-| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | OAuth app creds → token (ECDSA P-256 login sig, single-flight refresh); per-order PIN. **May be split per market across two apps** (Phase 4.1) | none |
-| Markets | SET + TFEX | SET (`/api/seos/v3`) + TFEX (`/api/seosd/v3`) | any |
+| Auth | OTP/2FA + SMS refresh + Redis token; per-order PIN | bridge-owned login/OTP/session; engine holds only the bridge api-key — **no PIN** (the bridge stamps it) | none |
+| Markets | SET + TFEX | SET (`fis`) + TFEX (`seosd`) via the retail bridge | any |
 | `side` | SET Buy/Sell; TFEX Long/Short | SET Buy/Sell; TFEX Long/Short | both |
 | `position_effect` | TFEX Open/Close; SET n/a | TFEX Open/Close; SET n/a | TFEX Open/Close |
-| MARKET / LIMIT | ✅ | ✅ (`MP-MKT` / `Limit`) | ✅ |
-| STOP / STOP_LIMIT | TFEX ✅; **SET ✗** | TFEX ✅; **SET ✗** | ✅ |
-| ICEBERG | ✅ | ✅ (SET `qtyOpen` / TFEX `icebergVol`) | ✅ |
-| ATO / ATC | SET ✅; TFEX ✗ | SET ✅; TFEX `ATO` ✅, **`ATC` ✗** | ✅ |
-| MTL | SET ✅; TFEX ✗ | SET + TFEX ✅ (`MP-MTL`) | ✅ |
-| TIF | Day / GTC / IOC / FOK | Day / GTC / IOC / FOK (`Date`/GTD ✗) | all |
-| **Amend** | ✗ no route → **cancel+replace** (non-atomic, declared) | ✅ **native** `PATCH .../change` (`PENDING_REPLACE → NEW`) | native |
-| Cancel | orderNo list (≤50) + PIN | `PATCH .../cancel` + bulk `PATCH /cancel` + PIN | ✅ |
-| Reconcile query | `GET /orders*` | `GET /orders` + `GET /trades` | in-process |
-| Order-update stream | indirect (reconciler-fed) | reconciler-fed (native MQTT push deferred, §I/D23) | synthetic |
+| MARKET / LIMIT | ✅ | ✅ (only these live-verified) | ✅ |
+| STOP / STOP_LIMIT | TFEX ✅; **SET ✗** | ✗ (conservative v1) | ✅ |
+| ICEBERG | ✅ | ✗ (conservative v1) | ✅ |
+| ATO / ATC | SET ✅; TFEX ✗ | ✗ (conservative v1) | ✅ |
+| MTL | SET ✅; TFEX ✗ | ✗ (conservative v1) | ✅ |
+| TIF | Day / GTC / IOC / FOK | Day only (conservative v1) | all |
+| **Amend** | ✗ no route → **cancel+replace** (non-atomic, declared) | ✗ bridge `/order/change` 501 → **cancel+replace** (non-atomic) | native |
+| Cancel | orderNo list (≤50) + PIN | bridge cancel (bridge-stamped PIN) | ✅ |
+| Reconcile query | `GET /orders*` | bridge `fetch_venue_orders` | in-process |
+| Order-update stream | indirect (reconciler-fed) | reconciler-fed | synthetic |
 | Client idempotency key | ✗ | ✗ | n/a |
 
 > Verified against `contracts/capabilities.py` (the installed `CapabilitySet` rows): SIM SET/TFEX =
 > all 8 order types + all 4 TIFs (native amend); LIBERATOR SET = MARKET/LIMIT/ICEBERG/MTL/ATO/ATC
-> (cancel_replace), LIBERATOR TFEX = MARKET/LIMIT/STOP/STOP_LIMIT/ICEBERG (cancel_replace); SETTRADE
-> SET = MARKET/LIMIT/MTL/ATO/ATC/ICEBERG (native), SETTRADE TFEX =
-> MARKET/LIMIT/MTL/ATO/STOP/STOP_LIMIT/ICEBERG (native). `position_effects=()` for SET, `(OPEN, CLOSE)`
-> for TFEX; all rows `adapter_installed=true`.
+> (cancel_replace), LIBERATOR TFEX = MARKET/LIMIT/STOP/STOP_LIMIT/ICEBERG (cancel_replace);
+> STREAMING_PRO SET + TFEX = MARKET/LIMIT × DAY (cancel_replace, conservative v1). `position_effects=()`
+> for SET, `(OPEN, CLOSE)` for TFEX; all rows `adapter_installed=true`.
 
 ### The two structural consequences
 
-1. **Engine-owned idempotency.** Neither broker accepts a client idempotency key, so the engine
+1. **Engine-owned idempotency.** Neither real broker accepts a client idempotency key, so the engine
    persists the `client_order_id ↔ broker_order_id` mapping and dedupes before routing. "Exactly-once-ish"
    = dedupe + durable state + reconcile + safe re-submit (not true exactly-once).
-2. **Asymmetric amend.** `BrokerAdapter.amend()` is uniform, but `SettradeAdapter.amend` is **native**
-   (atomic, same `client_order_id`) while `LiberatorAdapter.amend` degrades to **cancel-then-replace**
-   (declared non-atomic, returns a **new** `client_order_id`). Callers read `GET /capabilities` to learn
-   the semantics — they never assume them. See [`../api/orders-amend.md`](../api/orders-amend.md).
+2. **Amend is cancel+replace for every real broker.** `BrokerAdapter.amend()` is uniform;
+   `LiberatorAdapter.amend` and `StreamingProAdapter.amend` both degrade to **cancel-then-replace**
+   (declared non-atomic, returns a **new** `client_order_id`). **Native in-place amend was Settrade-only
+   and left with broker-023** — among current brokers only the `sim` simulator declares native (atomic,
+   same `client_order_id`). Callers read `GET /capabilities` to learn the semantics — they never assume
+   them. See [`../api/orders-amend.md`](../api/orders-amend.md).
 
 ## SimAdapter
 
@@ -96,24 +102,28 @@ service — it never re-implements it (D9).
 - **Deployment:** bundled via `docker-compose.liberator.yml` (internal-only, its own `liberator-redis`
   sidecar). See [`../operations/bring-up.md`](../operations/bring-up.md).
 
-## SettradeAdapter
+> **The `SettradeAdapter` (Settrade Open API, broker-023 / `settrade_v2`) was REMOVED on 2026-07-18.**
+> It is not documented here as a live adapter. See
+> [`../../.claude/knowledge/decision-log.md`](../../.claude/knowledge/decision-log.md) → the
+> 2026-07-18 removal entry. The current real venues are LiberatorAdapter (above) and
+> StreamingProAdapter (below).
 
-The **second real venue** (Phase 4) — full **SET equity + TFEX derivatives** — proving the
-abstraction.
+## StreamingProAdapter
 
-- **Transport:** a **raw `httpx.AsyncClient` OAuth client**, deliberately **not** the sync
-  `settrade-v2` SDK for order routing (E21). Why: the SDK is `requests`-based (sync — it blocks the
-  event loop, violating async-first) and carries import-time side effects; the engine re-implements
-  the auth recipe (ECDSA P-256 login signing, single-flight `ensure_token()` with proactive refresh,
-  refresh-fail → fresh login, one reactive-401 retry).
-- **Amend:** **native** over the frozen `PENDING_REPLACE → NEW` edge (one atomic `replace_order`); a
-  venue amend-reject is a **non-terminal** restore + typed `AmendRejected` (409) — the order stays
-  live.
-- **Per-market broker apps (Phase 4.1):** one `SettradeClient` per market behind the unchanged
-  adapter, so a broker that splits its books across two OAuth apps (InnovestX `023`: `ALGO_EQ` = SET,
-  `ALGO` = TFEX) routes both legs concurrently. A partial per-market trio fails loud; one dead app
-  trips the single breaker and mass-cancels both books.
-- **Heartbeat:** the venue has no health endpoint, so the heartbeat is an OAuth **token-liveness**
-  probe (`ensure_token()` per distinct client).
-- **Reconcile loop v1:** mirrors Liberator + the `replace_resolve` action for stranded
-  `PENDING_REPLACE`. No compose overlay (cloud API; creds ride `docker-compose.private.yml`).
+The **retail-bridge venue** (Phase 8) — SET + TFEX via the self-built `settrade-streaming-api`
+bridge. **"Streaming Pro" is the self-built bridge, NOT the removed Settrade Open API.**
+
+- **Transport:** plain `httpx.AsyncClient` composing the bundled `settrade-streaming-api` bridge
+  (host `:8700`) — mirrors `LiberatorAdapter` (composed over an HTTP service, never re-implemented).
+  The engine holds **only** the bridge's api-key + base URL; the **bridge** owns
+  USERNAME/PASSWORD/PIN and stamps the PIN, so the adapter sends **no PIN**.
+- **Amend:** declared **cancel_replace** (the bridge's native `/order/change` returns 501). The
+  router cancels the old order down the `PENDING_CANCEL` path and submits a fresh replacement (new
+  `client_order_id`); no PTRM exemption on the replacement.
+- **Capability cells:** conservative — `(MARKET, LIMIT) × DAY` for SET + TFEX; cells expand as
+  live-verified.
+- **Heartbeat + breaker:** the bridge's `/session/status` liveness probe; consecutive failures trip
+  `broker_circuit_open` + mass-cancel.
+- **Reconcile loop v1:** mirrors Liberator (watermark fills; §B lost-ack/bounded resolution).
+- **Deployment:** bundled via `docker-compose.streaming.yml` (the bridge + its `streaming-pro-redis`
+  sidecar). See [`../operations/bring-up.md`](../operations/bring-up.md).

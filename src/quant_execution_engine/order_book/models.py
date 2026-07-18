@@ -3,8 +3,8 @@
 Frozen Pydantic — not dataclasses — because these cross the API boundary
 serialized (umbrella hard rule 3). ``Decimal`` prices, ``int`` volumes, tz-aware
 UTC ``received_at``, ``Decimal``-as-string on the wire (matches the order
-contract). Identical regardless of source: a consumer cannot tell a Settrade
-book from a Liberator book.
+contract). Identical regardless of source (the ``source`` tag names the
+provider).
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from src.quant_execution_engine.contracts.enums import Market, WireDecimal
 class OrderBookSource(StrEnum):
     """Which provider produced a book (carried on the wire as ``source``)."""
 
-    SETTRADE = "settrade"
     LIBERATOR = "liberator"
 
 
