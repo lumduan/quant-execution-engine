@@ -11,7 +11,8 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
+from fastapi.routing import APIRoute
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import (
@@ -100,6 +101,44 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         reset_event_hub()
 
 
+#: The path prefix ``quant-api-gateway`` proxies this service under. Serving it
+#: here too lets a caller reach the engine on a node that has no gateway (EH3
+#: addendum, 2026-08-20) — the AWS execution host, where a strategy's order path
+#: is hardcoded to the gateway's prefix but no gateway container exists.
+GATEWAY_PROXY_PREFIX = "/api/v2/engines/execution"
+
+#: Paths never exposed under the alias. The gateway deliberately does NOT proxy
+#: ``/admin`` — the kill-switch trip/clear surface — so the alias must not widen
+#: it. This is a prefix test rather than a route list so that a future ``/admin``
+#: route is excluded by construction instead of by someone remembering to.
+ALIAS_EXCLUDED_PREFIX = "/admin"
+
+
+def _gateway_alias_router() -> APIRouter:
+    """Return the gateway-proxied surface, re-mountable under the alias prefix.
+
+    DERIVED from the routers that are already mounted natively rather than
+    transcribed into a second list: a route added later is aliased automatically,
+    and an ``/admin`` route added later is excluded automatically. A hand-kept
+    copy would be one more thing to drift.
+
+    Registration order mirrors :func:`create_app` — streams first, so the literal
+    ``/orders/stream`` out-ranks the ``/orders/{client_order_id}`` path parameter
+    (FastAPI matches in registration order).
+    """
+    alias = APIRouter()
+    for source in (streams_router, router):
+        for route in source.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            if route.path == ALIAS_EXCLUDED_PREFIX or route.path.startswith(
+                f"{ALIAS_EXCLUDED_PREFIX}/"
+            ):
+                continue
+            alias.routes.append(route)
+    return alias
+
+
 def create_app() -> FastAPI:
     """Build the FastAPI app."""
     app = FastAPI(
@@ -117,6 +156,14 @@ def create_app() -> FastAPI:
     # disjoint). Owner-mode is enforced at the audit router level.
     app.include_router(audit_router)
     app.include_router(router)
+    # The gateway's proxy surface, served directly. Additive: every native path
+    # above is unchanged. Safe because the gateway is a pure prefix-strip
+    # passthrough on this surface — it strips the prefix, forwards the body
+    # verbatim, allowlists headers and enforces no auth of its own, so the same
+    # request answered here is the same request. /admin is excluded (see
+    # ALIAS_EXCLUDED_PREFIX); owner-mode and api-key dependencies ride along with
+    # each route and are NOT relaxed by the re-mount.
+    app.include_router(_gateway_alias_router(), prefix=GATEWAY_PROXY_PREFIX)
     register_error_handlers(app)
     return app
 
