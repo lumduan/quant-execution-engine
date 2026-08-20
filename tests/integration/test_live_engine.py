@@ -1,7 +1,8 @@
 """Live-stack smoke tests (run with: uv run pytest -m integration --no-cov).
 
 Requires the engine container up on quant-network (host :8400 by default;
-override with EXECUTION_ENGINE_TEST_BASE_URL). The full owner-mode lifecycle
+override with EXECUTION_ENGINE_TEST_BASE_URL, and set
+EXECUTION_ENGINE_TEST_API_KEY when the target configures an API key). The full owner-mode lifecycle
 acceptance (submit/dedupe/partial fills/cancel/kill-switch + db_execution
 audit rows) is exercised by the Phase 2 verification runbook in
 docs/plans/phase2-engine-core-simadapter.md.
@@ -18,6 +19,18 @@ pytestmark = pytest.mark.integration
 
 BASE_URL = os.environ.get("EXECUTION_ENGINE_TEST_BASE_URL", "http://localhost:8400")
 
+#: Sent as ``X-API-Key`` when set. Optional because ``require_api_key`` is
+#: warn-and-allow while ``EXECUTION_ENGINE_API_KEY`` is unset — the historical
+#: default this file was written against. It stops being optional the moment a
+#: node follows EH8 and configures a key (the AWS execution host does), and
+#: without this the suite reports 401 against a CORRECTLY secured engine — a
+#: red that means "the harness is unauthenticated", not "the engine is broken".
+API_KEY = os.environ.get("EXECUTION_ENGINE_TEST_API_KEY")
+
+
+def _headers() -> dict[str, str]:
+    return {"X-API-Key": API_KEY} if API_KEY else {}
+
 
 async def test_health_answers() -> None:
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=5.0) as client:
@@ -29,7 +42,7 @@ async def test_health_answers() -> None:
 
 async def test_capabilities_answers() -> None:
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=5.0) as client:
-        response = await client.get("/capabilities")
+        response = await client.get("/capabilities", headers=_headers())
     assert response.status_code == 200
     brokers = {row["broker"] for row in response.json()["capabilities"]}
     assert {"sim", "liberator", "streaming_pro"} <= brokers
@@ -41,7 +54,7 @@ async def test_public_mode_blocks_submits_by_default() -> None:
         health = await client.get("/health")
         if not health.json().get("public_mode", True):
             pytest.skip("engine is in owner mode on this host")
-        response = await client.post("/orders", json={})
+        response = await client.post("/orders", json={}, headers=_headers())
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "public_mode"
 
@@ -83,8 +96,8 @@ async def test_alias_admin_is_not_reachable_on_the_live_service() -> None:
     being guarded, which is the thing this is meant to rule out.
     """
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=5.0) as client:
-        aliased = await client.get(f"{GATEWAY_PROXY_PREFIX}/admin/kill-switch")
-        native = await client.get("/admin/kill-switch")
+        aliased = await client.get(f"{GATEWAY_PROXY_PREFIX}/admin/kill-switch", headers=_headers())
+        native = await client.get("/admin/kill-switch", headers=_headers())
 
     assert aliased.status_code == 404
     # Positive control: the route is genuinely served natively, so the 404 above
