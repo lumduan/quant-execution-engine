@@ -1,0 +1,47 @@
+# SIM-OWNER overlay — the committed, durable form of "order endpoints on, sim only".
+#
+#   docker compose -f docker-compose.yml -f docker-compose.sim-owner.yml up -d
+#
+# WHY THIS FILE EXISTS ([[TK-0142]], filed 2026-07-23, closed 2026-08-20)
+# ---------------------------------------------------------------------
+# The cash-and-carry sim soak needs the order endpoints reachable, which means
+# PUBLIC_MODE=false. Until now the ONLY thing setting that was an UNCOMMITTED
+# `docker-compose.override.yml` on the HOME node. An override is auto-loaded by
+# compose, so it worked — right up until the first environment that never had it:
+#
+#   fresh clone / new node  ->  no override  ->  PUBLIC_MODE=true (the safe base
+#   default)  ->  POST /orders returns 403  ->  every trade ABORTED, and NOTHING
+#   surfaces an error until somebody notices the HEDGED rate has gone to zero.
+#
+# TK-0142 predicted exactly that and set its own due date as "before ANY image
+# rebuild / re-clone". The AWS execution-host stand-up (feature-execution-ha) is
+# that event, so the fix lands with it.
+#
+# WHAT THIS IS NOT
+# ----------------
+# NOT `docker-compose.private.yml`. That one is owner mode WITH broker
+# credentials (`env_file: .env` -> Liberator PIN, the Streaming Pro bridge
+# api-key) and is what a real venue route requires. This file deliberately loads
+# NO `.env` and supplies NO credential: with STAGE=sim the router hard-routes to
+# SimAdapter and broker runtimes are never constructed, so the sim path is
+# structurally broker-free at two independent layers rather than by configuration.
+#
+# STAGE is pinned explicitly even though the base compose already sets `sim`.
+# The value is load-bearing here (it is the second of those two layers), and a
+# file whose safety depends on a default set in another file is one edit away
+# from meaning something different.
+#
+# ⚠️ HOME migration note: the untracked `docker-compose.override.yml` is still in
+# place on the HOME node and still auto-applies. It sets the same single value,
+# so the two do not conflict. Retiring it is a SEPARATE step that must accompany
+# a change to HOME's bring-up command — deleting it while HOME still runs a bare
+# `docker compose up -d` would revert HOME to PUBLIC_MODE=true and silently break
+# the live soak, which is the very failure this file exists to prevent.
+services:
+  execution-engine:
+    environment:
+      # Owner mode: order-submission endpoints enabled.
+      EXECUTION_ENGINE_PUBLIC_MODE: "false"
+      # The safety ladder stays at the bottom rung. `paper`/`micro_live`/`live`
+      # are operator-flipped, never by an overlay (EH5).
+      EXECUTION_ENGINE_STAGE: "sim"
