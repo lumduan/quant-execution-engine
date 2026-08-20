@@ -37,11 +37,13 @@
 # mem_limit == memswap_limit (zero swap growth) + oom_score_adj 800 (these die
 # before any capture container) + MALLOC_ARENA_MAX=2. An execution OOM stays
 # inside its own cgroup and can never starve a capture sibling.
-# NOTE the key is `default`, not `quant-network`. The base compose attaches
-# services by naming the DEFAULT network `quant-network`; a `quant-network:` key
-# here would be a second, unused network and the remap would silently not happen
-# — the engine would come up on a network the bridges are not on and every route
-# to a venue would fail at DNS. Verified against `docker compose config`.
+#
+# ─── ④ THE KEY BELOW IS `default`, NOT `quant-network` ──────────────────────
+# The base compose attaches services by naming the DEFAULT network
+# `quant-network`. A `quant-network:` key here would be a second, unused network
+# and the remap would silently not happen — the engine would come up on a network
+# the bridges are not on, and every route to a venue would fail at DNS with the
+# file looking correct. Verified against `docker compose config`, not by reading.
 networks:
   default:
     name: capture-redundancy-aws
@@ -49,6 +51,11 @@ networks:
 
 services:
   execution-engine:
+    # `-aws` suffix per the node's overlay convention
+    # (quant-orderbook-engine/docker-compose.aws.yml). Cosmetic to DNS — service
+    # names, not container names, are the network aliases the engine resolves —
+    # but it stops a `docker ps` on this node reading like HOME's.
+    container_name: quant-execution-engine-aws
     # Arch-pinned + arch-tagged: a wrong-arch image fails at EXEC ("exec format
     # error"), inside a container already created and scheduled. Pinning the
     # platform and tagging by arch moves the mistake to the PULL and makes
@@ -70,6 +77,7 @@ services:
     oom_score_adj: 800
 
   execution-redis:
+    container_name: quant-execution-redis-aws
     platform: linux/arm64
     mem_limit: 24m
     memswap_limit: 24m
@@ -83,7 +91,7 @@ services:
   execution-postgres:
     platform: linux/arm64
     image: postgres:16-alpine
-    container_name: quant-execution-postgres
+    container_name: quant-execution-postgres-aws
     restart: always
     init: true
     # No host port: reachable only from this bridge network. The order store is
