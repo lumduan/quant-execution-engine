@@ -1,0 +1,117 @@
+# AWS EXECUTION-HOST overlay — feature-execution-ha, EH1-EH4 (Phase-0 SIM stand-up).
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.sim-owner.yml \
+#                  -f docker-compose.aws.yml up -d
+#
+# Bring-up order is load-bearing (SA9): bridges up -> relay warm -> engine.
+#
+# ─── ① NO quant-network on this node ────────────────────────────────────────
+# Same remap the broker plane already uses (broker-api/docker-compose.aws.yml):
+# the compose key `quant-network` points at the real network the capture engines
+# and both broker bridges are already on, so `streaming-pro-api` and
+# `liberator-trading-api` resolve by service name exactly as they do on HOME
+# (EH3). That is why the engine needs no *_BASE_URL override here — the defaults
+# in config/settings.py already name those hosts.
+#
+# ─── ② WHY A NODE-LOCAL POSTGRES, and not the node's own cluster ────────────
+# The node runs a native systemd Postgres 16 (it serves the cash-and-carry
+# strategy). The engine cannot use it: it is `listen_addresses = localhost`,
+# bound 127.0.0.1:5432 — measured, not assumed — so it is unreachable from a
+# container on this bridge (172.20.0.0/16). Reaching it would mean either
+# host-networking the engine (which forfeits the service-name DNS ① provides for
+# the bridges) or re-binding a live database the strategy depends on, days before
+# its own cutover. EH2 already chose this: a lightweight postgres carrying only
+# db_execution, DDL bind-mounted read-only from infra-db so infra-db stays the
+# sole schema owner.
+#
+# ⚠️ DEVIATION FROM EH2, recorded rather than taken quietly: EH2 says "PGDATA on
+# EBS". Here it is a named volume on ROOT. EBS is where the live, growing crypto
+# capture lives (AWS_CUTOVER.md §2 found that putting a trade DB there recreates
+# the very colocation the operator's ruling exists to prevent, relocated rather
+# than removed). db_execution is tens of rows a day, so root costs nothing and
+# keeps the order store off the capture volume entirely — which is what the
+# ruling actually asked for. EH2's letter says EBS; its intent says this.
+#
+# ─── ③ CAPTURE-FIRST (EH4) — non-negotiable ─────────────────────────────────
+# mem_limit == memswap_limit (zero swap growth) + oom_score_adj 800 (these die
+# before any capture container) + MALLOC_ARENA_MAX=2. An execution OOM stays
+# inside its own cgroup and can never starve a capture sibling.
+#
+# ─── ④ THE KEY BELOW IS `default`, NOT `quant-network` ──────────────────────
+# The base compose attaches services by naming the DEFAULT network
+# `quant-network`. A `quant-network:` key here would be a second, unused network
+# and the remap would silently not happen — the engine would come up on a network
+# the bridges are not on, and every route to a venue would fail at DNS with the
+# file looking correct. Verified against `docker compose config`, not by reading.
+networks:
+  default:
+    name: capture-redundancy-aws
+    external: true
+
+services:
+  execution-engine:
+    # `-aws` suffix per the node's overlay convention
+    # (quant-orderbook-engine/docker-compose.aws.yml). Cosmetic to DNS — service
+    # names, not container names, are the network aliases the engine resolves —
+    # but it stops a `docker ps` on this node reading like HOME's.
+    container_name: quant-execution-engine-aws
+    # Arch-pinned + arch-tagged: a wrong-arch image fails at EXEC ("exec format
+    # error"), inside a container already created and scheduled. Pinning the
+    # platform and tagging by arch moves the mistake to the PULL and makes
+    # `docker images` self-describing on a host where both arches could sit under
+    # similar names. NEVER `latest`, never the bare HOME image name.
+    platform: linux/arm64
+    image: quant-execution-engine:aws-arm64
+    # EXECUTION_ENGINE_API_KEY (EH8 — mandatory in owner mode) lives here.
+    # No broker credential: at STAGE=sim no broker runtime is ever constructed.
+    env_file: .env
+    environment:
+      EXECUTION_ENGINE_PG_DSN: "postgresql://quant:quant@execution-postgres:5432/db_execution"
+      MALLOC_ARENA_MAX: "2"
+    depends_on:
+      execution-postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    memswap_limit: 256m
+    oom_score_adj: 800
+
+  execution-redis:
+    container_name: quant-execution-redis-aws
+    platform: linux/arm64
+    mem_limit: 24m
+    memswap_limit: 24m
+    oom_score_adj: 800
+
+  # Node-local order store (EH2). Carries ONLY db_execution: POSTGRES_DB does what
+  # infra-db's 01_create_databases.sql would do for this one database, so the
+  # other seven are not created on a node that has no use for them. The two
+  # SCHEMA scripts are mounted UNCHANGED and read-only — they self-target with
+  # `\connect db_execution` and create the `quant` application role themselves.
+  execution-postgres:
+    platform: linux/arm64
+    image: postgres:16-alpine
+    container_name: quant-execution-postgres-aws
+    restart: always
+    init: true
+    # No host port: reachable only from this bridge network. The order store is
+    # node-authoritative (EH2) and is never read across the WAN.
+    environment:
+      POSTGRES_DB: db_execution
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${EXECUTION_POSTGRES_SUPERUSER_PASSWORD:?set it in .env}
+    volumes:
+      - execution_pgdata:/var/lib/postgresql/data
+      - ./aws-initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d db_execution"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 160m
+    memswap_limit: 160m
+    oom_score_adj: 800
+
+volumes:
+  execution_pgdata:

@@ -53,3 +53,8 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# AWS deploy-time only: infra-db DDL copies, transported at deploy (see
+# docker-compose.aws.yml ②). NEVER committed — infra-db is the sole schema
+# owner and a second copy in git is exactly the drift EH2 exists to prevent.
+aws-initdb/
