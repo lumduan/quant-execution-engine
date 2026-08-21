@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
 from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
+from src.quant_execution_engine.adapters.streaming_pro.runtime import get_streaming_pro_adapter
 from src.quant_execution_engine.api.deps import (
     get_operator_id,
     get_router_dep,
@@ -68,6 +69,12 @@ def _broker_runtime_health() -> dict[str, BrokerRuntimeHealth] | None:
         brokers["liberator"] = BrokerRuntimeHealth(
             breaker_state=liberator.breaker.state.value,
             session_healthy=liberator.last_heartbeat_ok,
+        )
+    streaming_pro = get_streaming_pro_adapter()
+    if streaming_pro is not None:
+        brokers["streaming_pro"] = BrokerRuntimeHealth(
+            breaker_state=streaming_pro.breaker.state.value,
+            session_healthy=streaming_pro.last_heartbeat_ok,
         )
     return brokers or None
 
