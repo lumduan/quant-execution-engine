@@ -17,6 +17,12 @@ and **never speak a broker API**.
 
 This page is the **documentation hub** — start here and follow the links.
 
+## Start here — building a strategy against this service
+
+| Doc | What it covers |
+|-----|----------------|
+| [`broker-commands.md`](broker-commands.md) | 🔑 **The unified broker-command surface.** Every command a strategy needs — place / cancel / amend / status / positions / balance — across Liberator and Streaming Pro, each marked **LIVE** or **DESIGNED-ONLY**. Includes the multi-broker call pattern and the per-broker gotchas (the streaming_pro quantity cap, cancel-replace amends, SET-only position reads) |
+
 ## Architecture
 
 | Doc | What it covers |

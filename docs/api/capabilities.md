@@ -59,7 +59,7 @@ curl http://quant-api-gateway:8000/api/v2/engines/execution/capabilities \
 |-------|------|---------|
 | `stage` | string | the active safety-ladder stage |
 | `capabilities[]` | array | one `CapabilitySet` row per `(broker, market)` |
-| `…broker` / `…market` | string | the cell's broker (`sim`/`liberator`/`settrade`) and market (`SET`/`TFEX`) |
+| `…broker` / `…market` | string | the cell's broker (`sim`/`liberator`/`streaming_pro`) and market (`SET`/`TFEX`) |
 | `…order_types` | array | supported `order_type` values for this cell |
 | `…tifs` | array | supported `tif` values |
 | `…position_effects` | array | `[]` for SET; `["OPEN","CLOSE"]` for TFEX |
