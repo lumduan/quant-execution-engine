@@ -63,8 +63,32 @@ services:
     # similar names. NEVER `latest`, never the bare HOME image name.
     platform: linux/arm64
     image: quant-execution-engine:aws-arm64
-    # EXECUTION_ENGINE_API_KEY (EH8 — mandatory in owner mode) lives here.
-    # No broker credential: at STAGE=sim no broker runtime is ever constructed.
+    # 🔒 EH8 — "bind :8400 to localhost/WireGuard … not published publicly".
+    # The base publishes "${EXECUTION_ENGINE_HOST_PORT:-8400}:8000" = 0.0.0.0, and this
+    # node runs no host firewall (ufw inactive), so the ONLY thing keeping the engine
+    # off the internet was the security group happening not to list 8400 — default-deny,
+    # not a control anyone designed or tests. An SG edit for an unrelated service could
+    # remove that protection without anyone connecting the two changes.
+    #
+    # `!override` is REQUIRED, not stylistic: compose MERGES `ports` from an overlay by
+    # APPENDING, so a plain entry would leave BOTH bindings in place and change nothing.
+    # Verify with `docker compose config`: exactly one entry, host_ip 127.0.0.1.
+    #
+    # 127.0.0.1 rather than the WireGuard address: verified 2026-08-22 that nothing
+    # reaches this port over WG — HOME holds no reference to 10.77.0.1:8400, quant-monitor
+    # does not probe it, and no connection was established from either side. Reach it by
+    # SSH to the box, then `curl localhost:8400`. If a WG consumer ever appears, widen to
+    # "10.77.0.1:8400:8000" — do NOT go back to 0.0.0.0.
+    ports: !override
+      - "127.0.0.1:8400:8000"
+    # EXECUTION_ENGINE_API_KEY (EH8 — mandatory in owner mode) lives here, and IS set on
+    # this node (HOME's is not — [[TK-0408]]).
+    # ⚠️ This block used to add "No broker credential: at STAGE=sim no broker runtime is
+    # ever constructed." Both halves are now false: .env carries
+    # EXECUTION_ENGINE_STREAMING_PRO_API_KEY (the BRIDGE api-key — not a broker
+    # credential; login/session/PIN stay in the bridge, D10), and this node runs
+    # STAGE=paper, so a Streaming Pro runtime IS constructed. Placements are still
+    # intercepted to SimAdapter at paper and reach no venue.
     env_file: .env
     environment:
       EXECUTION_ENGINE_PG_DSN: "postgresql://quant:quant@execution-postgres:5432/db_execution"
