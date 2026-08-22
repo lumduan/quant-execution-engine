@@ -15,7 +15,15 @@ services:
       # kill-switch disengaged but order routing inert (PUBLIC_MODE blocks submits).
       # Owner/live-routing mode is the docker-compose.private.yml overlay.
       EXECUTION_ENGINE_PUBLIC_MODE: "true"
-      EXECUTION_ENGINE_STAGE: "sim"
+      # Interpolated, NOT a literal. `environment:` OVERRIDES `env_file:`, so a literal
+      # here makes EXECUTION_ENGINE_STAGE in .env silently INERT — while the
+      # docker-compose.private.yml header has documented that exact .env mechanism
+      # ("requires EXECUTION_ENGINE_STAGE=live (set in .env)") since Phase 3. The doc
+      # was unreachable, not wrong-in-spirit; this makes it true.
+      # Default is UNCHANGED: unset (the case on HOME, verified 2026-08-22) -> "sim".
+      # EH5 authorizes sim and paper this way; micro_live/live stay operator-flipped
+      # and are additionally hard-gated in code (`live` is a typed reject).
+      EXECUTION_ENGINE_STAGE: "${EXECUTION_ENGINE_STAGE:-sim}"
       EXECUTION_ENGINE_KILL_SWITCH_ENGAGED: "false"
       EXECUTION_ENGINE_PG_DSN: "postgresql://quant:quant@quant-postgres:5432/db_execution"
       EXECUTION_ENGINE_REDIS_URL: "redis://execution-redis:6379/0"
