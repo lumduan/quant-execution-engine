@@ -27,6 +27,9 @@ _STATUS_BY_CODE: dict[str, int] = {
     "order_book_unavailable": status.HTTP_404_NOT_FOUND,
     "order_stream_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
     "illegal_transition": status.HTTP_409_CONFLICT,
+    # 23514 on INSERT: the row does not satisfy a column CHECK. 422 (not 500) because it is
+    # well-formed but refused, and TERMINAL — retrying it against the same schema cannot help.
+    "store_constraint_violated": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "submit_in_flight": status.HTTP_409_CONFLICT,
     "amend_rejected": status.HTTP_409_CONFLICT,
     "broker_circuit_open": status.HTTP_503_SERVICE_UNAVAILABLE,
