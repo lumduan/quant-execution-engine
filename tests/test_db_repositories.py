@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from src.quant_execution_engine.contracts.enums import Broker, OrderState
-from src.quant_execution_engine.contracts.errors import IllegalTransition
+from src.quant_execution_engine.contracts.errors import IllegalTransition, StoreConstraintViolated
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
 from src.quant_execution_engine.events.hub import EventHub, create_event_hub, get_event_hub
@@ -63,6 +63,36 @@ async def test_insert_order_sql_params_and_duplicate_mapping() -> None:
     dup = FakeConn(raise_map={"INSERT INTO execution.orders": unique_violation()})
     with pytest.raises(DuplicateOrderSignal):
         await repositories.insert_order(FakePool(dup), order)
+
+
+async def test_insert_order_maps_check_violation_to_a_TERMINAL_typed_error() -> None:
+    """TK-0395: 23514 on INSERT must be typed, and must map to 422 — not 500, not the 400 fallback.
+
+    The bug this guards: `insert_order` caught only UniqueViolationError, so a CHECK violation
+    escaped as a bare HTTP 500. Every calling adapter reads 500 as RETRYABLE, so a PERMANENT
+    schema mismatch wore a transient signature and would be retried forever.
+    """
+    from src.quant_execution_engine.api.error_handlers import _STATUS_BY_CODE, _status_for
+
+    order = make_order()
+    bad = FakeConn(raise_map={"INSERT INTO execution.orders": check_violation()})
+    with pytest.raises(StoreConstraintViolated) as caught:
+        await repositories.insert_order(FakePool(bad), order)
+
+    # it must carry the cid, or the caller cannot tell WHICH order was refused
+    assert caught.value.client_order_id == order.client_order_id
+
+    # 🔑 the positive control. Asserting "not 500" is NOT enough: an unmapped code falls back to
+    # 400 (error_handlers:_status_for), which is also not 500 and would let a forgotten mapping
+    # pass silently. Pin the code's presence AND its exact status.
+    assert StoreConstraintViolated.code in _STATUS_BY_CODE, "code missing -> silent 400 fallback"
+    assert _status_for(caught.value) == 422
+
+    # and it must stay DISTINCT from IllegalTransition — both are 23514, different statements,
+    # different meanings, different HTTP. Collapsing them would hide an INSERT failure as a
+    # transition failure.
+    assert StoreConstraintViolated.code != IllegalTransition.code
+    assert _status_for(caught.value) != _status_for(IllegalTransition("x"))
 
 
 async def test_fetch_order_and_result_aggregate() -> None:

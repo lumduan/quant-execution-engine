@@ -117,6 +117,23 @@ class IllegalTransition(OrderRejectedError):
     code: ClassVar[str] = "illegal_transition"
 
 
+class StoreConstraintViolated(OrderRejectedError):
+    """The durable store refused the INSERT on a CHECK constraint (DB 23514).
+
+    Distinct from :class:`IllegalTransition`, which is 23514 on an UPDATE from the
+    ``orders_guard`` trigger. This is 23514 on the INSERT — a column CHECK the row
+    does not satisfy (e.g. an enum value the deployed schema predates).
+
+    It is TERMINAL by construction: the same order resubmitted against the same
+    schema fails identically, so a caller must not retry it. That is the whole
+    point of the type — see TK-0395, where this escaped as a bare 500 and every
+    calling adapter classified it as retryable, giving a permanent config error a
+    transient signature.
+    """
+
+    code: ClassVar[str] = "store_constraint_violated"
+
+
 class ConcurrentSubmit(OrderRejectedError):
     """An identical submit is mid-flight and produced no durable row yet."""
 

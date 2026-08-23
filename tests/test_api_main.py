@@ -41,6 +41,12 @@ def _patch_lifespan_deps(monkeypatch: pytest.MonkeyPatch, *, pool_fails: bool) -
 
 
 def test_lifespan_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Hermetic: `create_app()` builds REAL Settings, which read the host `.env`. Without this
+    # the assertion below tests the developer's machine rather than the code — it went red the
+    # moment HOME's `.env` gained EXECUTION_ENGINE_STAGE=paper (2026-08-23), while CI stayed
+    # green because CI has no `.env`. An env var beats the `.env` file, so pinning it here makes
+    # the test independent of host config without changing what it asserts.
+    monkeypatch.setenv("EXECUTION_ENGINE_STAGE", "sim")
     calls = _patch_lifespan_deps(monkeypatch, pool_fails=False)
     with TestClient(api_main.create_app()) as client:
         response = client.get("/health")

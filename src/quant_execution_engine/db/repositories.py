@@ -6,7 +6,9 @@ Hard constraints (Phase 1 design — DB triggers own the audit trail):
   trigger auto-appends exactly one audit row per INSERT/transition.
 * The ack is ONE UPDATE setting ``status='NEW'`` + ``broker_order_id`` so the
   trigger snapshots the §B id-mapping atomically with the transition.
-* Illegal transitions raise SQLSTATE 23514 from the ``orders_guard`` trigger;
+* SQLSTATE 23514 means TWO different things and is mapped separately in each:
+  UPDATE -> ``orders_guard`` trigger -> :class:`IllegalTransition`;
+  INSERT -> a column CHECK -> :class:`StoreConstraintViolated` (TK-0395);
   the app-side :mod:`core.state_machine` guard runs first for clean errors and
   the DB stays the backstop.
 """
@@ -22,7 +24,7 @@ from decimal import Decimal
 import asyncpg
 
 from src.quant_execution_engine.contracts.enums import Broker, OrderState
-from src.quant_execution_engine.contracts.errors import IllegalTransition
+from src.quant_execution_engine.contracts.errors import IllegalTransition, StoreConstraintViolated
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal, RepositoryError
@@ -149,6 +151,12 @@ async def insert_order(
         )
     except asyncpg.exceptions.UniqueViolationError as exc:
         raise DuplicateOrderSignal(order.client_order_id) from exc
+    except asyncpg.exceptions.CheckViolationError as exc:
+        # 23514 on the INSERT — a column CHECK the row does not satisfy. Mapped rather than
+        # allowed to escape: a bare 500 reads as RETRYABLE to every calling adapter, so a
+        # permanent schema mismatch would wear a transient signature and be retried forever
+        # (TK-0395; the instance that exposed it was the stale orders_broker_check, #183).
+        raise StoreConstraintViolated(str(exc), client_order_id=order.client_order_id) from exc
     hub = get_event_hub()
     if hub is not None:
         if strategy_id is not None:
