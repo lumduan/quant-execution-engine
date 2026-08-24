@@ -36,6 +36,7 @@ from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.core.kill_switch import KillSwitch
 from src.quant_execution_engine.core.price_band import PriceBandCheck
 from src.quant_execution_engine.core.risk import RiskGate
+from src.quant_execution_engine.core.routing_authority import assert_may_route_real
 from src.quant_execution_engine.core.stage import AdapterIntent, resolve_adapter
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
@@ -120,10 +121,16 @@ class OrderRouter:
         self,
         broker: Broker,
         *,
+        account: str,
         intent: AdapterIntent = AdapterIntent.TRADE,
     ) -> BrokerAdapter:
-        """Thread every injected adapter through the stage ladder (one call site)."""
-        return resolve_adapter(
+        """Thread every injected adapter through the stage ladder (one call site).
+
+        EH6 is enforced here, immediately after resolution, because this is the **only**
+        production path to a real adapter — ``resolve_adapter`` itself never sees the account
+        (it takes stage and broker only), so the check has to sit where both are in hand.
+        """
+        adapter = resolve_adapter(
             self._settings.stage,
             broker,
             sim_adapter=self._sim,
@@ -131,6 +138,14 @@ class OrderRouter:
             streaming_pro_adapter=self._streaming_pro,
             intent=intent,
         )
+        assert_may_route_real(
+            settings=self._settings,
+            account=account,
+            broker=broker,
+            adapter=adapter,
+            sim_adapter=self._sim,
+        )
+        return adapter
 
     # ------------------------------------------------------------------ submit
     async def submit(self, order: NormalizedOrder, strategy_id: str | None = None) -> SubmitOutcome:
@@ -156,7 +171,7 @@ class OrderRouter:
         # market-data hop, and the kill-switch-first invariant is preserved.
         await self._price_band.check(order)
 
-        adapter = self._resolve_adapter(order.broker)
+        adapter = self._resolve_adapter(order.broker, account=order.account)
         adapter.breaker.guard()
         # Venue-class field validation hook: per-(broker, market, order_type)
         # strict rules plug in here in Phases 3/4 (ADR §G); no-op in Phase 2.
@@ -253,7 +268,7 @@ class OrderRouter:
                 f"no frozen cancel edge from {row.status} (transient pending state)",
                 client_order_id=client_order_id,
             )
-        adapter = self._resolve_adapter(row.broker)
+        adapter = self._resolve_adapter(row.broker, account=row.account)
         adapter.breaker.guard()
         await repositories.update_status(self._pool, client_order_id, OrderState.PENDING_CANCEL)
         ack = await adapter.cancel(client_order_id)
@@ -374,7 +389,7 @@ class OrderRouter:
         amended = _amended_order(row, cid, new_price=new_price, new_qty=new_qty)
         await self._risk.check(amended)  # NO exemption (E17): a reject leaves the original resting
 
-        adapter = self._resolve_adapter(row.broker)
+        adapter = self._resolve_adapter(row.broker, account=row.account)
         adapter.breaker.guard()
 
         await repositories.update_status(self._pool, cid, OrderState.PENDING_REPLACE)
@@ -432,7 +447,7 @@ class OrderRouter:
         failed: list[str] = []
         for row in await repositories.fetch_open_orders(self._pool):
             try:
-                adapter = self._resolve_adapter(row.broker)
+                adapter = self._resolve_adapter(row.broker, account=row.account)
                 await repositories.update_status(
                     self._pool, row.client_order_id, OrderState.PENDING_CANCEL
                 )

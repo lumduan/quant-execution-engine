@@ -19,6 +19,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     "kill_switch_env_pinned": status.HTTP_409_CONFLICT,
     "kill_switch_not_engaged": status.HTTP_409_CONFLICT,
     "stage_rejected": status.HTTP_403_FORBIDDEN,
+    # EH6: the request is well-formed and the venue would take it -- the DEPLOYMENT
+    # forbids it. 409, deliberately distinct from stage_rejected so a log can tell
+    # "the ladder said no" from "this node is not that account's router".
+    "real_routing_not_authorized": status.HTTP_409_CONFLICT,
     "capability_unsupported": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "risk_rejected": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "price_band_exceeded": status.HTTP_422_UNPROCESSABLE_CONTENT,

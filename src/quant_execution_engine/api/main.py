@@ -36,6 +36,7 @@ from src.quant_execution_engine.api.routes import router
 from src.quant_execution_engine.api.streams import router as streams_router
 from src.quant_execution_engine.cache.redis_client import close_redis, create_redis
 from src.quant_execution_engine.config.settings import get_settings
+from src.quant_execution_engine.core.routing_authority import assert_startup_declaration
 from src.quant_execution_engine.db.postgres import close_pool, create_pool
 from src.quant_execution_engine.events.hub import create_event_hub, reset_event_hub
 from src.quant_execution_engine.logging_config import configure_logging
@@ -53,6 +54,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Open/close the DB pool and Redis client around the app's lifetime."""
     settings = get_settings()
     configure_logging(settings.log_level)
+    # EH6 FIRST — a deployment that could route real orders without a declaration
+    # must not start at all. Raises ConfigError; deliberately OUTSIDE the degrade
+    # try/except below, because this is not a degradable condition.
+    assert_startup_declaration(settings)
     logger.info(
         "starting quant-execution-engine (public_mode=%s, stage=%s, kill_switch_env=%s)",
         settings.public_mode,
