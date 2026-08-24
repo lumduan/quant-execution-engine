@@ -23,6 +23,8 @@ This page is the **documentation hub** — start here and follow the links.
 |-----|----------------|
 | [`broker-commands.md`](broker-commands.md) | 🔑 **The unified broker-command surface.** Every command a strategy needs — place / cancel / amend / status / positions / balance — across Liberator and Streaming Pro, each marked **LIVE** or **DESIGNED-ONLY**. Includes the multi-broker call pattern and the per-broker gotchas (the streaming_pro quantity cap, cancel-replace amends, SET-only position reads) |
 
+| [`../../docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md) | 🔑 **Captured Liberator wire formats** (umbrella `docs/reference/`). Which endpoint carries balance vs holdings, the 8-digit account grammar, the `errMsg` authorization discriminator, latency, and every fabricated source in the bridge repo named so it is not copied again |
+
 ## Architecture
 
 | Doc | What it covers |
