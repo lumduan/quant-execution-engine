@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from src.quant_execution_engine.adapters.errors import AdapterError
+from src.quant_execution_engine.contracts.errors import OrderRejectedError
 
 
 class StreamingProAdapterError(AdapterError):
@@ -24,3 +27,14 @@ class StreamingProMappingError(StreamingProAdapterError):
     Raised before any HTTP I/O; the adapter converts it into a rejected ack so
     the reason persists durably — never a silent drop.
     """
+
+
+class StreamingProAccountUnavailable(OrderRejectedError):
+    """``account-info`` carried no balance for this account.
+
+    ⚠️ Raised rather than degrading to ``Decimal("0")`` ([[TK-0396]]). SP's balance read is
+    **SET-only** (the bridge hardcodes the ``fis`` segment), so a TFEX account produces exactly
+    this — and a zero would have made an unreadable account look like a flat one.
+    """
+
+    code: ClassVar[str] = "streaming_pro_account_unavailable"

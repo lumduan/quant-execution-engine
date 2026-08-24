@@ -11,13 +11,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.quant_execution_engine.adapters.session import SessionCircuitBreaker
 from src.quant_execution_engine.contracts.capabilities import CapabilitySet
-from src.quant_execution_engine.contracts.enums import Broker, Market
+from src.quant_execution_engine.contracts.enums import Broker, Market, WireDecimal
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 
@@ -70,11 +71,87 @@ class Position(BaseModel):
     net_qty: int
 
 
+class AccountType(StrEnum):
+    """Which balance sheet an account keeps — the discriminator for the margin block.
+
+    Named from the venue's own ``type`` string (Liberator ``/va/profile`` returns
+    ``"CASH BALANCE"`` / ``"DERIVATIVE"``). ``UNKNOWN`` is for brokers that do not say.
+    """
+
+    CASH = "cash"
+    DERIVATIVE = "derivative"
+    UNKNOWN = "unknown"
+
+
 class AccountInfo(BaseModel):
+    """A normalized account snapshot.
+
+    🔴 **Every optional field means "this broker did not report it", NEVER "it is zero".**
+    That distinction is the whole of [[TK-0396]]: a ``0`` returned for something the venue
+    never sent is indistinguishable from a real zero, and the adapter that did exactly that
+    reported ``buying_power=0`` for accounts holding real five-figure balances.
+
+    Coverage is **deliberately asymmetric**, because the venues are
+    (``docs/reference/liberator-account-reads.md``):
+
+    ==========================  ==========  ================  ==============
+    field                       Liberator   Liberator DERIV   Streaming Pro
+    ==========================  ==========  ================  ==============
+    ``buying_power``            ✔           ✔                 ✔ (SET only)
+    ``cash_balance``            ✔           ✔                 ✔ (SET only)
+    ``credit_limit``            ✔           ✔                 ✔ (SET only)
+    ``withdrawable``            ✔           ✔                 ✘
+    ``equity`` ``excess_equity``  ✘         ✔                 ✘
+    ``initial_margin`` ``maintenance_margin``  ✘  ✔           ✘
+    ==========================  ==========  ================  ==============
+
+    ⇒ the margin block is fillable by **one of six (broker, market) cells**. Modelling it as
+    required would have forced five of them to lie.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     account: str
-    buying_power: Decimal
+    account_type: AccountType = AccountType.UNKNOWN
+
+    # Buying power. Kept as the one REQUIRED money field so every existing caller is unaffected.
+    buying_power: WireDecimal
+
+    # Cash / credit — the only tier both brokers supply.
+    cash_balance: WireDecimal | None = None
+    credit_limit: WireDecimal | None = None
+    withdrawable: WireDecimal | None = None
+
+    # Margin — DERIVATIVE accounts only. See the validator: forbidden elsewhere, not merely absent.
+    equity: WireDecimal | None = None
+    excess_equity: WireDecimal | None = None
+    initial_margin: WireDecimal | None = None
+    maintenance_margin: WireDecimal | None = None
+
+    @model_validator(mode="after")
+    def _margin_block_belongs_to_derivatives(self) -> AccountInfo:
+        """Forbid the margin block on a non-derivative account — both directions.
+
+        Copying ``NormalizedOrder``'s TFEX/``position_effect`` rule, which enforces
+        required-when *and* forbidden-when. Enforcing only "optional" would let a cash
+        account carry a margin figure that cannot exist, and nothing would object.
+
+        Not required-when: a DERIVATIVE account read from a broker that reports no margin
+        is legitimately all-``None`` — that is the asymmetry, not an error.
+        """
+        if self.account_type is AccountType.DERIVATIVE:
+            return self
+        named = [
+            n
+            for n in ("equity", "excess_equity", "initial_margin", "maintenance_margin")
+            if getattr(self, n) is not None
+        ]
+        if named:
+            raise ValueError(
+                f"{', '.join(named)} is only valid on a DERIVATIVE account "
+                f"(account_type={self.account_type.value})"
+            )
+        return self
 
 
 class BrokerAdapter(ABC):
