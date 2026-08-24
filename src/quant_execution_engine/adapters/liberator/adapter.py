@@ -27,6 +27,7 @@ from pydantic import SecretStr
 
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
+    AccountType,
     AmendAck,
     BrokerAdapter,
     CancelAck,
@@ -96,6 +97,44 @@ def _venue_decimal(value: Any, *, field: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         raise LiberatorTransportError(f"liberator profile: {field} is not a number ({value!r})")
     return Decimal(str(value))
+
+
+_ACCOUNT_TYPES = {"CASH BALANCE": AccountType.CASH, "DERIVATIVE": AccountType.DERIVATIVE}
+
+
+def _opt_decimal(raw: dict[str, Any], key: str) -> Decimal | None:
+    """A venue money field, or ``None`` when the venue did not send it.
+
+    🔴 ``None``, never ``Decimal("0")`` — absent and zero are different facts and conflating
+    them is the whole of [[TK-0396]].
+    """
+    return None if raw.get(key) is None else _venue_decimal(raw.get(key), field=key)
+
+
+def _account_info(account: str, raw: dict[str, Any]) -> AccountInfo:
+    """Map one ``/va/profile`` ``accounts[]`` entry onto :class:`AccountInfo`.
+
+    The margin block is read ONLY for a DERIVATIVE account. Not an optimisation — the model
+    forbids those fields elsewhere, and a cash account never carries them anyway.
+    """
+    account_type = _ACCOUNT_TYPES.get(str(raw.get("type", "")).upper(), AccountType.UNKNOWN)
+    margin: dict[str, Decimal | None] = {}
+    if account_type is AccountType.DERIVATIVE:
+        margin = {
+            "equity": _opt_decimal(raw, "equity"),
+            "excess_equity": _opt_decimal(raw, "excessEquity"),
+            "initial_margin": _opt_decimal(raw, "totalMr"),
+            "maintenance_margin": _opt_decimal(raw, "totalMm"),
+        }
+    return AccountInfo(
+        account=account,
+        account_type=account_type,
+        buying_power=_venue_decimal(raw.get("lineAvailable"), field="lineAvailable"),
+        cash_balance=_opt_decimal(raw, "cashBalance"),
+        credit_limit=_opt_decimal(raw, "creditLimit"),
+        withdrawable=_opt_decimal(raw, "withdrawAvailable"),
+        **margin,
+    )
 
 
 class LiberatorAdapter(BrokerAdapter):
@@ -254,10 +293,7 @@ class LiberatorAdapter(BrokerAdapter):
             raise LiberatorTransportError("liberator profile: result carried no accounts list")
         for raw in accounts:
             if isinstance(raw, dict) and raw.get("accountNo") == account:
-                return AccountInfo(
-                    account=account,
-                    buying_power=_venue_decimal(raw.get("lineAvailable"), field="lineAvailable"),
-                )
+                return _account_info(account, raw)
         raise LiberatorAccountNotFound(
             f"account {account!r} is not on this login's profile "
             "(accounts are 8-digit <login><suffix>; a bare login is not an account)"

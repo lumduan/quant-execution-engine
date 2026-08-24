@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import respx
+from src.quant_execution_engine.adapters.base import AccountType
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
     LiberatorPositionsUncaptured,
@@ -199,6 +200,45 @@ def _cash_account(acct: str, line: Any) -> dict[str, Any]:
         "realizedPL": 0,
         "stocks": [],
     }
+
+
+def _deriv_account(acct: str, line: float) -> dict[str, Any]:
+    """A DERIVATIVE entry — the captured 2026-08-24 shape, margin block included."""
+    return {
+        **_cash_account(acct, line),
+        "type": "DERIVATIVE",
+        "equity": line,
+        "excessEquity": line,
+        "totalMr": 0,
+        "totalMm": 0,
+        "callForceFlag": "No",
+        "callForceMr": 0,
+    }
+
+
+@respx.mock
+async def test_get_account_maps_the_derivative_margin_block() -> None:
+    """TFEX accounts carry equity + margin; the SET sibling in the same response must not."""
+    respx.get(f"{_BASE}/profile").respond(
+        json=_profile(_cash_account("70173292", 50885.83), _deriv_account("70173297", 13506.72))
+    )
+    adapter = make_adapter()
+
+    deriv = await adapter.get_account("70173297")
+    assert deriv.account_type is AccountType.DERIVATIVE
+    assert deriv.equity == Decimal("13506.72")
+    assert deriv.excess_equity == Decimal("13506.72")
+    assert deriv.initial_margin == Decimal("0")  # totalMr -> IM; a REAL zero, not an absence
+    assert deriv.maintenance_margin == Decimal("0")
+    assert deriv.cash_balance == Decimal("13506.72")
+
+    # 🔑 the contrast is the test: same response, same call, and the cash account carries NO
+    # margin block. If the mapper leaked it across, the model itself would refuse.
+    cash = await adapter.get_account("70173292")
+    assert cash.account_type is AccountType.CASH
+    assert cash.equity is None and cash.initial_margin is None
+    assert cash.withdrawable == Decimal("50885.83")
+    await adapter.aclose()
 
 
 @respx.mock

@@ -28,6 +28,8 @@ _STATUS_BY_CODE: dict[str, int] = {
     # The account is not on the logged-in profile (or the venue refused it). 404, not a zero
     # balance -- TK-0396: a 0 for an unknown account is indistinguishable from a real zero.
     "liberator_account_not_found": status.HTTP_404_NOT_FOUND,
+    # SP reports the account as unknown (its balance read is SET-only). 404, not a zero.
+    "streaming_pro_account_unavailable": status.HTTP_404_NOT_FOUND,
     # 501: the read is not implementable yet -- the venue's positions element schema has never
     # been captured. Deliberately NOT 200-with-[] , which is the defect TK-0396 replaced.
     "liberator_positions_uncaptured": status.HTTP_501_NOT_IMPLEMENTED,

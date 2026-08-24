@@ -21,6 +21,7 @@ from typing import Any, ClassVar
 
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
+    AccountType,
     AmendAck,
     BrokerAdapter,
     CancelAck,
@@ -31,6 +32,7 @@ from src.quant_execution_engine.adapters.rate_limit import TokenBucket
 from src.quant_execution_engine.adapters.session import SessionCircuitBreaker
 from src.quant_execution_engine.adapters.streaming_pro import mapping
 from src.quant_execution_engine.adapters.streaming_pro.errors import (
+    StreamingProAccountUnavailable,
     StreamingProMappingError,
     StreamingProTransportError,
 )
@@ -51,6 +53,14 @@ OrderRef = tuple[str, Market, str, str]
 OrderIdResolver = Callable[[str], Awaitable[OrderRef | None]]
 
 _HEARTBEAT_PATH = "session/status"
+
+
+def _opt_decimal(body: dict[str, Any], key: str) -> Decimal | None:
+    """A money field, or ``None`` when absent/unusable — never a sentinel zero."""
+    raw = body.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, str | int | float):
+        return None
+    return Decimal(str(raw))
 
 
 class StreamingProAdapter(BrokerAdapter):
@@ -194,16 +204,36 @@ class StreamingProAdapter(BrokerAdapter):
         return positions
 
     async def get_account(self, account: str) -> AccountInfo:
-        """Buying power from account-info (0 when unavailable)."""
+        """Balance from ``account-info``.
+
+        ⚠️ **SET-only.** ``account_service.py`` hardcodes the ``fis`` segment, so a TFEX
+        account reaches the equity front and comes back unknown. There is no margin block:
+        SP reports none, which is why those fields stay ``None`` and ``account_type`` is CASH.
+
+        Raises :class:`StreamingProAccountUnavailable` when the body carries no balance.
+        ⚠️ It previously returned ``Decimal("0")`` here — the last surviving instance of the
+        silent-degrade [[TK-0396]] removed everywhere else. A zero for an unreadable account
+        is indistinguishable from a real zero.
+        """
         body = await self._transport.get_json(mapping.account_path(account))
-        buying_power = Decimal("0")
-        if isinstance(body, dict):
-            for key in ("lineAvailable", "cashBalance", "creditLimit"):
-                raw = body.get(key)
-                if isinstance(raw, str | int | float) and not isinstance(raw, bool):
-                    buying_power = Decimal(str(raw))
-                    break
-        return AccountInfo(account=account, buying_power=buying_power)
+        if not isinstance(body, dict):
+            raise StreamingProAccountUnavailable(
+                f"streaming_pro account-info for {account!r} returned no object"
+            )
+        buying_power = _opt_decimal(body, "lineAvailable")
+        if buying_power is None:
+            raise StreamingProAccountUnavailable(
+                f"streaming_pro account-info for {account!r} carried no lineAvailable "
+                f"(keys: {sorted(body)[:8]}) — the venue reports this account as unknown "
+                "when the account is not on the SET/`fis` front"
+            )
+        return AccountInfo(
+            account=account,
+            account_type=AccountType.CASH,
+            buying_power=buying_power,
+            cash_balance=_opt_decimal(body, "cashBalance"),
+            credit_limit=_opt_decimal(body, "creditLimit"),
+        )
 
     # ------------------------------------------------------------- liveness
     async def heartbeat(self) -> bool:

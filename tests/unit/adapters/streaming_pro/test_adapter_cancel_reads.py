@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
+import pytest
 import respx
+from src.quant_execution_engine.adapters.base import AccountType
+from src.quant_execution_engine.adapters.streaming_pro.errors import (
+    StreamingProAccountUnavailable,
+)
 from src.quant_execution_engine.contracts.enums import Market
 
 from tests.unit.adapters.streaming_pro.test_adapter_place import _BASE, make_adapter
@@ -124,22 +130,34 @@ async def test_get_positions_maps_portfolio() -> None:
 
 
 @respx.mock
-async def test_get_account_maps_buying_power() -> None:
+async def test_get_account_maps_the_cash_block() -> None:
+    """SP supplies buying power + cash + credit, and NO margin block — it reports none."""
     respx.get(f"{_BASE}/account-info", params={"account": "ACC"}).respond(
-        json={"lineAvailable": "12345.67", "cashBalance": "1.0"}
+        json={"lineAvailable": "12345.67", "cashBalance": "1.0", "creditLimit": 3920000.0}
     )
     adapter = make_adapter()
     info = await adapter.get_account("ACC")
     assert str(info.buying_power) == "12345.67"
+    assert info.cash_balance == Decimal("1.0")
+    assert info.credit_limit == Decimal("3920000.0")  # int/float both accepted
+    assert info.account_type is AccountType.CASH
+    # 🔴 absent, not zero — SP reports no margin at all
+    assert info.equity is None and info.initial_margin is None
     await adapter.aclose()
 
 
 @respx.mock
-async def test_get_account_defaults_to_zero_on_empty() -> None:
+async def test_get_account_raises_rather_than_returning_zero_on_empty() -> None:
+    """🔴 The replaced test asserted `buying_power == 0` here and was named ...defaults_to_zero.
+
+    That was the last surviving instance of the silent degrade TK-0396 removed everywhere
+    else: an empty body meant an UNREADABLE account, and a zero made it look like a flat one.
+    SP's balance read is SET-only, so a TFEX account produces exactly this empty body.
+    """
     respx.get(f"{_BASE}/account-info", params={"account": "ACC"}).respond(json={})
     adapter = make_adapter()
-    info = await adapter.get_account("ACC")
-    assert info.buying_power == 0
+    with pytest.raises(StreamingProAccountUnavailable, match="no lineAvailable"):
+        await adapter.get_account("ACC")
     await adapter.aclose()
 
 
