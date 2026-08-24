@@ -9,6 +9,10 @@ from typing import Any
 
 import pytest
 import respx
+from src.quant_execution_engine.adapters.liberator.errors import (
+    LiberatorAccountNotFound,
+    LiberatorPositionsUncaptured,
+)
 from src.quant_execution_engine.contracts.enums import Market, OrderType, Side
 
 from tests.conftest import make_order
@@ -157,40 +161,122 @@ async def test_fetch_venue_orders_and_get_open_orders_view() -> None:
     await adapter.aclose()
 
 
+# ── reads (TK-0396) ────────────────────────────────────────────────────────────
+# 🔴 The bodies below are the REAL captured shape (2026-08-24, AWS node), not invented.
+# The fixtures these replaced mocked `data.positions[]` + `data.summary.buying_power` --
+# a body the venue cannot produce -- which is why a broken adapter tested green for weeks.
+# Wire record: docs/reference/liberator-account-reads.md (umbrella).
+
+
+def _profile(*accounts: dict[str, Any]) -> dict[str, Any]:
+    """The bridge envelope for GET /va/profile. `data` is ALWAYS None on this route."""
+    return {
+        "success": True,
+        "data": None,
+        "message": "Profile data retrieved successfully",
+        "error_code": None,
+        "raw_response": {
+            "errorCode": 0,
+            "errMsg": "",
+            "result": {"libfam": True, "accounts": list(accounts), "watchList": []},
+        },
+    }
+
+
+def _cash_account(acct: str, line: Any) -> dict[str, Any]:
+    return {
+        "accountNo": acct,
+        "type": "CASH BALANCE",
+        "creditLimit": 500000,
+        "lineAvailable": line,
+        "cashBalance": line,
+        "withdrawAvailable": line,
+        "investorId": acct[:-1],
+        "amount": 0,
+        "marketVal": 0,
+        "unrealizedPL": 0,
+        "unrealizedPLPercent": 0,
+        "realizedPL": 0,
+        "stocks": [],
+    }
+
+
 @respx.mock
-async def test_get_positions_and_account_parse_portfolio() -> None:
-    respx.get(f"{_BASE}/portfolio/get/70173292").respond(
-        json={
-            "success": True,
-            "message": "ok",
-            "data": {
-                "account_number": "70173292",
-                "positions": [
-                    {"symbol": "PTT", "quantity": 300},
-                    {"symbol": "CPALL", "quantity": -100},
-                    "garbage",
-                    {"symbol": 42, "quantity": "bad"},
-                ],
-                "summary": {"buying_power": 125000.50},
-            },
-        }
+async def test_get_account_reads_line_available_from_profile() -> None:
+    """The fix: balance comes from /va/profile, matched on accountNo."""
+    respx.get(f"{_BASE}/profile").respond(
+        json=_profile(_cash_account("70173292", 50885.83), _cash_account("70173297", 13506.72))
     )
     adapter = make_adapter()
-    positions = await adapter.get_positions("70173292")
-    assert [(p.symbol, p.net_qty) for p in positions] == [("PTT", 300), ("CPALL", -100)]
-    account = await adapter.get_account("70173292")
-    assert account.buying_power == Decimal("125000.5")
+    account = await adapter.get_account("70173297")
+    assert account.buying_power == Decimal("13506.72")  # the SECOND entry, not the first
+    assert account.account == "70173297"
     await adapter.aclose()
 
 
 @respx.mock
-async def test_get_account_defaults_to_zero_when_shape_missing() -> None:
-    respx.get(f"{_BASE}/portfolio/get/70173292").respond(json={"success": False})
+async def test_get_account_accepts_int_and_float_money() -> None:
+    """⚠️ The venue sends float when non-zero and **int** at zero, in the same field."""
+    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70412572", 0)))
     adapter = make_adapter()
-    account = await adapter.get_account("70173292")
+    account = await adapter.get_account("70412572")
     assert account.buying_power == Decimal("0")
-    positions = await adapter.get_positions("70173292")
-    assert positions == []
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_get_account_raises_rather_than_returning_zero_for_unknown_account() -> None:
+    """🔴 The mutation that matters: a 0 here would be indistinguishable from a real zero.
+
+    The replaced test asserted `buying_power == 0` for a missing shape, encoding the
+    silent degrade as *intended* -- and it was green against the live bridge, because
+    that branch was the only one production ever took.
+    """
+    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70173292", 50885.83)))
+    adapter = make_adapter()
+    with pytest.raises(LiberatorAccountNotFound):
+        await adapter.get_account("99999999")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_get_account_refuses_on_venue_errmsg_even_though_success_is_true() -> None:
+    """🔴 `success: true` on a REFUSED account is the bridge's live behaviour (GH #208).
+
+    A caller trusting `success` gets an authoritative wrong answer, so the adapter reads
+    `raw_response.errMsg` instead. Positive control: the happy-path tests above share this
+    envelope with an empty errMsg and pass.
+    """
+    respx.get(f"{_BASE}/profile").respond(
+        json={
+            "success": True,
+            "data": None,
+            "message": "Profile data retrieved successfully",
+            "error_code": None,
+            "raw_response": {
+                "errorCode": 0,
+                "errMsg": "Error AccessAuthen: Account Not Authorized",
+                "result": {"accounts": []},
+            },
+        }
+    )
+    adapter = make_adapter()
+    with pytest.raises(LiberatorAccountNotFound, match="Account Not Authorized"):
+        await adapter.get_account("70173292")
+    await adapter.aclose()
+
+
+async def test_get_positions_refuses_loudly_instead_of_returning_empty() -> None:
+    """Positions stay unimplemented until a populated body is captured -- and say so.
+
+    Returning `[]` is what the broken implementation did for every account. An empty list
+    is a valid-looking answer; the refusal is the honest one while the element schema of
+    result.{list,stock} has never been observed.
+    """
+    adapter = make_adapter()
+    with pytest.raises(LiberatorPositionsUncaptured) as exc:
+        await adapter.get_positions("70173292")
+    assert exc.value.detail["account"] == "70173292"
     await adapter.aclose()
 
 
@@ -235,3 +321,24 @@ async def test_pin_never_logged_on_place_cancel_amend(
     assert pin not in rendered
     assert order.account not in rendered
     await adapter.aclose()
+
+
+def test_new_read_codes_are_mapped_not_silently_400() -> None:
+    """TK-0396: both new codes must be PRESENT in the status map, with the right status.
+
+    🔑 The positive control matters here. Asserting "not 500" would be met by an unmapped
+    code too, because `_status_for` falls back to **400** — so a forgotten mapping would
+    pass a not-500 check silently. Pin presence AND the exact status.
+    """
+    from src.quant_execution_engine.api.error_handlers import _STATUS_BY_CODE, _status_for
+
+    for exc, expected in (
+        (LiberatorAccountNotFound("x"), 404),
+        (LiberatorPositionsUncaptured("x"), 501),
+    ):
+        assert exc.code in _STATUS_BY_CODE, f"{exc.code} missing -> silent 400 fallback"
+        assert _status_for(exc) == expected
+
+    # and they must stay distinct: "this account does not exist" and "we cannot read positions
+    # at all" are different failures, and collapsing them would hide one behind the other.
+    assert LiberatorAccountNotFound.code != LiberatorPositionsUncaptured.code
