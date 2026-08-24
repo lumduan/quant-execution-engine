@@ -7,6 +7,12 @@ plainly which of them you can call **today**.
 > **Verified 2026-08-21 against the running service and the two bridge repos**
 > (`lumduan/liberator-trading-api` @ `76d925e`, `lumduan/settrade-streaming-api` @ `c3a987c`),
 > not against older docs. Where a statement came from a doc rather than code, it says so.
+>
+> 🔴 **Partially superseded 2026-08-24 by live measurement against both venues.** The liberator
+> balance/positions claims made under this banner were verified *against the bridge source*, which
+> is itself documented with fabricated examples — so "verified" meant self-consistent, not correct.
+> Corrections are marked inline below rather than silently edited. Captured wire formats:
+> [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md).
 
 Per-endpoint detail lives in [`api/`](api/). This page is the cross-cutting guide those pages lack.
 
@@ -55,8 +61,18 @@ exists, so you cannot reach it).
 
 **Why the bottom three are DESIGNED-ONLY and not "missing":** `get_open_orders`, `get_positions` and
 `get_account` are **implemented in all three adapters**, and the two real adapters genuinely call
-their bridges. They simply have **no HTTP route and no caller** anywhere in the service. The work to
-expose them is two routes, not a capability — see §7 and [[TK-0396]].
+their bridges. They simply have **no HTTP route and no caller** anywhere in the service.
+
+> 🔴 **CORRECTED 2026-08-24 — "the work to expose them is two routes, not a capability" was TRUE for
+> streaming_pro and FALSE for liberator.** Measured live: `LiberatorAdapter.get_account` calls
+> `portfolio/get`, **an endpoint that carries no balance field in any shape**, and returns
+> `buying_power=0` for accounts holding real five-figure balances. Shipping the route today ships a
+> confident zero. "The two real adapters genuinely call their bridges" is literally true and
+> materially misleading — the call lands on a payload that cannot answer the question.
+>
+> The endpoint ruling and its status are on [[TK-0396]]; the captured wire formats are in
+> [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md)
+> (umbrella).
 
 ---
 
@@ -115,7 +131,7 @@ order.
 // call 1
 POST /orders
 { "client_order_id": "8f14e45f-…-a1", "broker": "liberator",
-  "account": "7041257", "market": "SET", "symbol": "PTT",
+  "account": "70412572", "market": "SET", "symbol": "PTT",   // 8 digits — see the note below
   "side": "BUY", "order_type": "LIMIT", "price": "35.50",
   "quantity": 100, "tif": "DAY" }
 
@@ -178,12 +194,29 @@ route — not one returning empty, it does not exist.
 buying-power) is equally SET-only. Any future `/positions` or `/account` response must mark this
 per-broker rather than implying symmetric coverage.
 
-### liberator: the typed portfolio/profile models are **not populated**
+### liberator: portfolio and profile are **two different endpoints with two different jobs**
 
 `portfolio_service` returns `data=None` unconditionally and passes the venue payload through as an
 untyped `raw_response`. The rich `PortfolioPosition` / `PortfolioSummary` models are dead code.
-Whether a given account's portfolio covers SET, TFEX or both **cannot be determined from the bridge
-source** and must be verified empirically.
+*(Both still true — and together they are the mechanism behind the zero above.)*
+
+> ✅ **ANSWERED 2026-08-24 — the old closing sentence said market coverage "cannot be determined from
+> the bridge source and must be verified empirically". It was verified empirically.** There is **no
+> SET/TFEX read split at all**: one route, `POST /va/portfolio`, body `{accountNo}`, no market
+> parameter. **Market is a property of the account number**, and `/va/profile`'s `type` field is the
+> only place that mapping is stated.
+>
+> | I want | Call |
+> |---|---|
+> | balance / buying power / margin | `GET /va/profile` → `result.accounts[]` — the **only** source |
+> | holdings | `POST /va/portfolio` → `result.{list, stock}` |
+> | "is this account authorized?" | `raw_response.errMsg` — 🔴 **never** `success`, which is `true` even for a refused account |
+>
+> ⚠️ **Liberator accounts are 8 digits, `<login><suffix>`** — suffix `2` = CASH BALANCE (SET), `7` =
+> DERIVATIVE (TFEX). A bare login is **not** an account, and the portfolio read *accepts* one and
+> returns an authorized-looking empty. The zero-padded 10-digit form is **rejected**. Full grammar,
+> both captured envelopes, and the latency comparison:
+> [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md).
 
 ### liberator: the PIN you send is discarded
 
@@ -198,6 +231,13 @@ directly.
 
 It looks like an authoritative endpoint map and is **dead code** — nothing imports it, and the paths
 it lists (`/trading/orders`, `/account/balance`) do not exist. A trap, not a source.
+
+⚠️ **Do not take the wrong lesson from that.** "`/account/balance` does not exist" is true of *that
+file*; a balance surface **does** exist — `GET /va/profile` → `result.accounts[]`. And it is not the
+only fabrication in that repo: its portfolio/profile docs and fixtures carry three mutually
+contradictory shapes, an `AAPL` position, and an account form the venue rejects. Every one is
+enumerated under "FABRICATED — do not copy" in
+[`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md).
 
 ---
 
@@ -233,7 +273,14 @@ These return the **existing contracts unchanged** (`adapters/base.py`), which me
 * ❌ no cost basis, no market value, no unrealised P&L — **`net_qty` only**
 * ❌ no cash / equity / margin split — **`buying_power` only**
 * ❌ **streaming_pro TFEX would be empty**, per §5
-* ❌ liberator coverage unverified, per §5
+* 🔴 **liberator balance is BROKEN, not "unverified"** — corrected 2026-08-24; see §5 and [[TK-0396]]
+
+> 🔴 **The second bullet is now a live design question, not an accepted limitation.** It described the
+> endpoint the adapter *was* calling. The endpoint it *should* call — `/va/profile` — returns
+> `lineAvailable`, `cashBalance`, `withdrawAvailable`, `creditLimit`, and on derivatives `equity`,
+> `excessEquity`, `totalMr`, `totalMm`, `callForceFlag`. **The venue has the cash/equity/margin split;
+> the contract below discards it.** So the closing paragraph's "say so before this is built" is no
+> longer hypothetical — the data is there and the decision is whether `AccountInfo` grows to carry it.
 
 If your strategy needs P&L or a cash breakdown, say so before this is built — the contracts would
 have to grow, and that is a bigger change than the two routes.

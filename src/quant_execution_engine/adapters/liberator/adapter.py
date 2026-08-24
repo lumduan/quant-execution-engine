@@ -177,7 +177,19 @@ class LiberatorAdapter(BrokerAdapter):
         return normalized
 
     async def get_positions(self, account: str) -> list[Position]:
-        """Portfolio positions (v1: the equities portfolio — market SET)."""
+        """Portfolio positions from ``portfolio/get``.
+
+        .. warning::
+           **Known broken — see TK-0396.** This parses ``data["positions"]``, a key the bridge
+           never emits: it sets ``data=None`` on this route and puts the payload in
+           ``raw_response.result.{list, stock}``. The parse therefore takes its shape-mismatch
+           early-return and yields ``[]`` for every account, without raising.
+
+           The ``market=Market.SET`` below is also not a property of this endpoint. Liberator has
+           **no SET/TFEX read split** — one route, no market parameter — so market is a property of
+           the *account number* (``<login>2`` = SET, ``<login>7`` = TFEX). Wire detail:
+           ``docs/reference/liberator-account-reads.md`` in the umbrella.
+        """
         body = await self._transport.get_json(f"{_PORTFOLIO_PATH}/{account}")
         data = body.get("data")
         if not isinstance(data, dict):
@@ -199,7 +211,18 @@ class LiberatorAdapter(BrokerAdapter):
         return positions
 
     async def get_account(self, account: str) -> AccountInfo:
-        """Buying power from the portfolio summary (0 when unavailable)."""
+        """Buying power — **currently always zero; this calls the wrong endpoint (TK-0396)**.
+
+        .. warning::
+           There is no "portfolio summary". ``portfolio/get`` carries **no balance field in any
+           shape** — its entire payload for a real, authorized, funded account is
+           ``{"list": [], "stock": []}``. So ``data["summary"]["buying_power"]`` cannot ever match,
+           and the ``Decimal("0")`` default below is not a fallback: it is the only value this
+           method can return. Measured against accounts holding real five-figure balances.
+
+           Balance lives on ``GET /va/profile`` -> ``result.accounts[].lineAvailable``. Fixing this
+           needs a different **endpoint**, not a re-key. Ruling + status: TK-0396.
+        """
         body = await self._transport.get_json(f"{_PORTFOLIO_PATH}/{account}")
         buying_power = Decimal("0")
         data = body.get("data")
