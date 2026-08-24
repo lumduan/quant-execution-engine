@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     account_max_notional: dict[str, Decimal] = Field(default_factory=dict)
     account_max_qty: dict[str, int] = Field(default_factory=dict)
 
+    # EH6 — the accounts THIS node is the authoritative real-router for.
+    # 🔴 Empty means "route nothing real", NOT "route anything". Absent ⇒ refuse.
+    # ⚠️ These are 8-digit TRADING accounts (`<login><suffix>`), not the 7-digit logins in the
+    # umbrella CLAUDE.md broker table — one suffix apart, and NormalizedOrder.account carries
+    # the former.
+    real_routing_accounts: list[str] = Field(default_factory=list)
+
     # Price-band advisory pre-trade check (Phase 6 / A2). When enabled AND a
     # market-data base URL is configured, a LIMIT order whose price deviates from
     # the symbol's last close by more than ``price_band_max_pct`` percent is

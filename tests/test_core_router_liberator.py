@@ -40,6 +40,10 @@ def _router(
 ) -> tuple[OrderRouter, MemStore]:
     store = store or MemStore()
     patch_repositories(monkeypatch, store)
+    # EH6: a harness that injects a REAL adapter is modelling an AUTHORIZED node, so it must
+    # declare the account it routes -- otherwise routing_authority refuses, correctly. Tests
+    # that want the refusal itself live in tests/test_core_routing_authority.py.
+    settings_overrides.setdefault("real_routing_accounts", ["ACC-TEST"])
     settings = make_settings(submit_lock_wait_ms=120, **settings_overrides)
     router = OrderRouter(
         settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
