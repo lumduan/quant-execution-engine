@@ -36,7 +36,9 @@ from src.quant_execution_engine.adapters.base import (
 from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.liberator import mapping
 from src.quant_execution_engine.adapters.liberator.errors import (
+    LiberatorAccountNotFound,
     LiberatorMappingError,
+    LiberatorPositionsUncaptured,
     LiberatorTransportError,
 )
 from src.quant_execution_engine.adapters.liberator.models import (
@@ -61,6 +63,39 @@ OrderIdResolver = Callable[[str], Awaitable[tuple[str, Market] | None]]
 
 _HEARTBEAT_PATH = "order/health/set"
 _PORTFOLIO_PATH = "portfolio/get"
+_PROFILE_PATH = "profile"
+
+
+def _venue_result(body: Any, *, what: str) -> dict[str, Any]:
+    """Unwrap the bridge envelope, refusing on the venue's own error text.
+
+    🔴 Reads ``raw_response.errMsg``, **never** ``success`` — the bridge returns
+    ``success: true`` even for an account the venue refused ([[TK-0396]], GH #208).
+    ``data`` is ignored because the bridge hard-codes it to ``None`` on both read
+    routes; the payload only ever lives under ``raw_response``.
+    """
+    raw = body.get("raw_response") if isinstance(body, dict) else None
+    if not isinstance(raw, dict):
+        raise LiberatorTransportError(f"liberator {what}: no raw_response in the envelope")
+    err = raw.get("errMsg")
+    if isinstance(err, str) and err:
+        raise LiberatorAccountNotFound(f"liberator {what}: {err}")
+    result = raw.get("result")
+    if not isinstance(result, dict):
+        raise LiberatorTransportError(f"liberator {what}: raw_response carried no result object")
+    return result
+
+
+def _venue_decimal(value: Any, *, field: str) -> Decimal:
+    """Money off this venue, without ever touching ``float`` arithmetic.
+
+    ⚠️ The venue switches JSON type by value — ``lineAvailable`` is a float at
+    ``50885.83`` and an **int** at ``0`` — so both must be accepted, and the
+    ``str()`` round-trip is the boundary conversion.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise LiberatorTransportError(f"liberator profile: {field} is not a number ({value!r})")
+    return Decimal(str(value))
 
 
 class LiberatorAdapter(BrokerAdapter):
@@ -177,66 +212,57 @@ class LiberatorAdapter(BrokerAdapter):
         return normalized
 
     async def get_positions(self, account: str) -> list[Position]:
-        """Portfolio positions from ``portfolio/get``.
+        """🔴 Not implementable yet — raises :class:`LiberatorPositionsUncaptured`.
 
-        .. warning::
-           **Known broken — see TK-0396.** This parses ``data["positions"]``, a key the bridge
-           never emits: it sets ``data=None`` on this route and puts the payload in
-           ``raw_response.result.{list, stock}``. The parse therefore takes its shape-mismatch
-           early-return and yields ``[]`` for every account, without raising.
+        ``POST /va/portfolio`` answers with ``result.{list, stock}`` and **neither array
+        has ever been observed non-empty**: no Liberator account on this platform holds
+        a position, so the element schema has never been captured.
 
-           The ``market=Market.SET`` below is also not a property of this endpoint. Liberator has
-           **no SET/TFEX read split** — one route, no market parameter — so market is a property of
-           the *account number* (``<login>2`` = SET, ``<login>7`` = TFEX). Wire detail:
-           ``docs/reference/liberator-account-reads.md`` in the umbrella.
+        The previous implementation parsed ``data["positions"]`` — a key the bridge does
+        not emit — and returned ``[]`` for every account **without raising**. Replacing
+        one invented parse with another would repeat the defect, so this refuses loudly
+        instead. See ``docs/reference/liberator-account-reads.md`` (umbrella) §7.
         """
-        body = await self._transport.get_json(f"{_PORTFOLIO_PATH}/{account}")
-        data = body.get("data")
-        if not isinstance(data, dict):
-            return []
-        raw_positions = data.get("positions")
-        if not isinstance(raw_positions, list):
-            return []
-        positions: list[Position] = []
-        for raw in raw_positions:
-            if not isinstance(raw, dict):
-                continue
-            symbol = raw.get("symbol")
-            quantity = raw.get("quantity")
-            if not isinstance(symbol, str) or not isinstance(quantity, int):
-                continue
-            positions.append(
-                Position(account=account, market=Market.SET, symbol=symbol, net_qty=quantity)
-            )
-        return positions
+        raise LiberatorPositionsUncaptured(
+            "liberator positions are not readable: the element schema of "
+            "raw_response.result.{list,stock} has never been captured (TK-0396)",
+            detail={"account": account, "endpoint": f"{_PORTFOLIO_PATH}/{account}"},
+        )
 
     async def get_account(self, account: str) -> AccountInfo:
-        """Buying power — **currently always zero; this calls the wrong endpoint (TK-0396)**.
+        """Buying power for ``account``, from ``GET /va/profile``.
 
-        .. warning::
-           There is no "portfolio summary". ``portfolio/get`` carries **no balance field in any
-           shape** — its entire payload for a real, authorized, funded account is
-           ``{"list": [], "stock": []}``. So ``data["summary"]["buying_power"]`` cannot ever match,
-           and the ``Decimal("0")`` default below is not a fallback: it is the only value this
-           method can return. Measured against accounts holding real five-figure balances.
+        ⚠️ **Not** from ``portfolio/get``, which is what this used to call: that route
+        carries **no balance field in any shape** — its entire payload for a real,
+        funded account is ``{"list": [], "stock": []}`` — so it returned ``0`` for
+        accounts holding real money ([[TK-0396]]).
 
-           Balance lives on ``GET /va/profile`` -> ``result.accounts[].lineAvailable``. Fixing this
-           needs a different **endpoint**, not a re-key. Ruling + status: TK-0396.
+        ``lineAvailable`` is the buying-power field. The venue also exposes
+        ``cashBalance`` / ``withdrawAvailable`` / ``creditLimit`` and, on derivatives,
+        ``equity`` / ``excessEquity`` / ``totalMr`` / ``totalMm``; :class:`AccountInfo`
+        carries only buying power today, so the rest is deliberately dropped — see
+        ``docs/broker-commands.md`` §7, where growing the contract is an open question.
+
+        Raises :class:`LiberatorAccountNotFound` when ``account`` is not on the profile.
+        ⚠️ It does **not** fall back to zero: a ``0`` for an unknown account cannot be
+        told apart from a real zero, and that ambiguity is the defect this replaces.
         """
-        body = await self._transport.get_json(f"{_PORTFOLIO_PATH}/{account}")
-        buying_power = Decimal("0")
-        data = body.get("data")
-        if isinstance(data, dict):
-            summary = data.get("summary")
-            if isinstance(summary, dict):
-                raw = summary.get("buying_power")
-                # Upstream serializes Decimal as a JSON number; str() round-trip
-                # is the boundary conversion (never keep the float).
-                if isinstance(raw, str | int | float) and not isinstance(raw, bool):
-                    buying_power = Decimal(str(raw))
-        return AccountInfo(account=account, buying_power=buying_power)
+        body = await self._transport.get_json(_PROFILE_PATH)
+        result = _venue_result(body, what="profile")
+        accounts = result.get("accounts")
+        if not isinstance(accounts, list):
+            raise LiberatorTransportError("liberator profile: result carried no accounts list")
+        for raw in accounts:
+            if isinstance(raw, dict) and raw.get("accountNo") == account:
+                return AccountInfo(
+                    account=account,
+                    buying_power=_venue_decimal(raw.get("lineAvailable"), field="lineAvailable"),
+                )
+        raise LiberatorAccountNotFound(
+            f"account {account!r} is not on this login's profile "
+            "(accounts are 8-digit <login><suffix>; a bare login is not an account)"
+        )
 
-    # ------------------------------------------------------------- liveness
     async def heartbeat(self) -> bool:
         """Low-impact session probe (ADR §G): no venue round-trip, no PIN.
 

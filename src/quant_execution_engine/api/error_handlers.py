@@ -25,6 +25,12 @@ _STATUS_BY_CODE: dict[str, int] = {
     "duplicate_burst_detected": status.HTTP_409_CONFLICT,
     "order_not_found": status.HTTP_404_NOT_FOUND,
     "order_book_unavailable": status.HTTP_404_NOT_FOUND,
+    # The account is not on the logged-in profile (or the venue refused it). 404, not a zero
+    # balance -- TK-0396: a 0 for an unknown account is indistinguishable from a real zero.
+    "liberator_account_not_found": status.HTTP_404_NOT_FOUND,
+    # 501: the read is not implementable yet -- the venue's positions element schema has never
+    # been captured. Deliberately NOT 200-with-[] , which is the defect TK-0396 replaced.
+    "liberator_positions_uncaptured": status.HTTP_501_NOT_IMPLEMENTED,
     "order_stream_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
     "illegal_transition": status.HTTP_409_CONFLICT,
     # 23514 on INSERT: the row does not satisfy a column CHECK. 422 (not 500) because it is
