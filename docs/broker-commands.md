@@ -54,14 +54,28 @@ exists, so you cannot reach it).
 | **Order updates (stream)** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/stream` (SSE) |
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
 | **Open orders** | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | — no route |
-| **Positions** | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | — no route |
-| **Account balance** | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | — no route |
+| **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
+| **Account balance** | 🔴 DESIGNED-ONLY³ | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
-**Why the bottom three are DESIGNED-ONLY and not "missing":** `get_open_orders`, `get_positions` and
-`get_account` are **implemented in all three adapters**, and the two real adapters genuinely call
-their bridges. They simply have **no HTTP route and no caller** anywhere in the service.
+² ⛔ **A THIRD label, added 2026-08-24, and the distinction is the point.** DESIGNED-ONLY means *the
+adapter works; only the route is missing* — build the route and you get the data.
+**NOT IMPLEMENTED means the adapter does not work either.** `LiberatorAdapter.get_positions` now
+**raises `LiberatorPositionsUncaptured` (501)**. **Adding a route would not fix it** — see §7.
+
+³ Liberator balance **does** work now (proven live against two funded accounts), it simply has no
+route. This row moved from broken to merely unexposed on 2026-08-24 — see §5.
+
+**Why the bottom three are not simply "missing":** `get_open_orders`, `get_positions` and
+`get_account` exist on all three adapters, and they have **no HTTP route and no caller** anywhere in
+the service.
+
+> ⛔ **CORRECTED 2026-08-24 (PR #38) — "implemented in all three adapters" is NO LONGER TRUE.**
+> `LiberatorAdapter.get_positions` raises rather than returning data. The sentence above used to say
+> *"implemented in all three adapters, and the two real adapters genuinely call their bridges"*, and
+> a reader could reasonably conclude that shipping two routes would deliver positions. **It would
+> not.** See footnote ² and §7.
 
 > 🔴 **CORRECTED 2026-08-24 — "the work to expose them is two routes, not a capability" was TRUE for
 > streaming_pro and FALSE for liberator.** Measured live: `LiberatorAdapter.get_account` calls
@@ -73,6 +87,11 @@ their bridges. They simply have **no HTTP route and no caller** anywhere in the 
 > The endpoint ruling and its status are on [[TK-0396]]; the captured wire formats are in
 > [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md)
 > (umbrella).
+>
+> 🔴 **Reconciled again 2026-08-24 (later the same day) after PRs #37/#38 shipped.** Three things
+> changed *after* the correction above was written: `LiberatorAdapter.get_positions` now **raises**,
+> `AccountInfo` **gained** the cash/equity/margin split it was described as lacking, and `micro_live`
+> acquired a **new start-up requirement** (EH6). All three are marked inline below.
 
 ---
 
@@ -82,11 +101,30 @@ Both path forms are equivalent; use whichever your deployment reaches.
 
 | | native | via the gateway prefix |
 |---|---|---|
-| all routes below | `http://quant-execution-engine:8000/…` | `…/api/v2/engines/execution/…` |
+| all routes below | `http://<engine-host>:8000/…` | `…/api/v2/engines/execution/…` |
 
-**Auth:** `X-API-Key` on everything. Writes (`POST`/`DELETE`/`PATCH`) additionally require the engine
-to be in **owner mode** (`EXECUTION_ENGINE_PUBLIC_MODE=false`); in public mode they return
-`403 public_mode`.
+> 🔴 **Corrected 2026-08-24 — this table said `http://quant-execution-engine:8000`, which resolves on
+> HOME and NOT on the AWS node.** The AWS container's network aliases are **`execution-engine`** and
+> `quant-execution-engine-aws` (measured). Copying the old literal gets a DNS failure that reads like
+> the engine being down.
+>
+> **How to address it depends on how YOUR caller is networked — get this right before debugging
+> anything else:**
+>
+> | your caller | use | why |
+> |---|---|---|
+> | a container on the **same docker network** (`capture-redundancy-aws` on AWS) | `http://execution-engine:8000` | service-name DNS on that bridge |
+> | a container on **`network=host`** | ✅ **`http://localhost:8400`** — measured HTTP 200 | it shares the host's loopback, so the `127.0.0.1` bind is reachable |
+> | anything **not on that bridge and not host-networked** | ⛔ neither works | `execution-engine` does not resolve, and `:8400` is bound to `127.0.0.1` — **not** `0.0.0.0` |
+>
+> ⚠️ **The two are mutually exclusive, and the host-networked case is counter-intuitive:** a bind to
+> `127.0.0.1` normally means "containers cannot reach this", and for a *bridge*-networked container it
+> does. A **host**-networked one reaches it fine. If `execution-engine:8000` fails for you, you are
+> probably host-networked — use `localhost:8400`, do not conclude the engine is unreachable.
+
+**Auth:** `X-API-Key` on everything — **omitting it returns `401` on the AWS node** (verified). Writes
+(`POST`/`DELETE`/`PATCH`) additionally require the engine to be in **owner mode**
+(`EXECUTION_ENGINE_PUBLIC_MODE=false`); in public mode they return `403 public_mode`.
 
 ### `POST /orders` — place
 
@@ -268,22 +306,36 @@ GET /positions?account=<acct>&broker=<broker>   ->  [ {account, market, symbol, 
 GET /account?account=<acct>&broker=<broker>     ->  { account, buying_power }
 ```
 
-These return the **existing contracts unchanged** (`adapters/base.py`), which means, plainly:
+Where each stands, as of 2026-08-24:
 
-* ❌ no cost basis, no market value, no unrealised P&L — **`net_qty` only**
-* ❌ no cash / equity / margin split — **`buying_power` only**
-* ❌ **streaming_pro TFEX would be empty**, per §5
-* 🔴 **liberator balance is BROKEN, not "unverified"** — corrected 2026-08-24; see §5 and [[TK-0396]]
+* ✅ **`AccountInfo` NOW CARRIES the cash/equity/margin split** (PR #37). `account_type` plus
+  `buying_power`, `cash_balance`, `credit_limit`, `withdrawable`, and — on a **DERIVATIVE** account —
+  `equity`, `excess_equity`, `initial_margin`, `maintenance_margin`. **This bullet previously read
+  "❌ no cash / equity / margin split — `buying_power` only". That is no longer true.**
+  🔑 **Absent means "this broker does not report it", NEVER zero.** Do not read a `None` as `0`.
+* ✅ **liberator balance WORKS** — proven live against two funded accounts. Not exposed; not broken.
+* ⛔ **liberator POSITIONS DO NOT WORK AT ALL, and a route would not help** — see the block below.
+* ❌ no cost basis, no market value, no unrealised P&L — **`net_qty` only**, and **no marks anywhere
+  in the contract**
+* ❌ **streaming_pro is SET-only for BOTH positions and balance**, per §5 — its TFEX side is not a
+  route gap either; the bridge hardcodes the SET (`fis`) segment
 
-> 🔴 **The second bullet is now a live design question, not an accepted limitation.** It described the
-> endpoint the adapter *was* calling. The endpoint it *should* call — `/va/profile` — returns
-> `lineAvailable`, `cashBalance`, `withdrawAvailable`, `creditLimit`, and on derivatives `equity`,
-> `excessEquity`, `totalMr`, `totalMm`, `callForceFlag`. **The venue has the cash/equity/margin split;
-> the contract below discards it.** So the closing paragraph's "say so before this is built" is no
-> longer hypothetical — the data is there and the decision is whether `AccountInfo` grows to carry it.
+> ⛔ **Why liberator positions are NOT a "just add the route" item — read this before planning around
+> one.**
+>
+> `POST /va/portfolio` answers `result.{list, stock}`, and **neither array has ever been observed
+> non-empty on this platform** — no Liberator account has ever held a position, so **the element
+> schema (field names, types) has never been captured.** The previous implementation parsed a key the
+> bridge does not emit and returned `[]` for every account **without raising**; replacing one invented
+> parse with another would repeat that defect, so `get_positions` now **refuses loudly (501)**
+> instead.
+>
+> ⇒ **The blocker is a missing capture, upstream of any route.** Shipping `GET /positions` today would
+> return a 501 or an empty list, not positions. What would settle it: one funded account holding one
+> position, captured once — [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md) §7.
 
-If your strategy needs P&L or a cash breakdown, say so before this is built — the contracts would
-have to grow, and that is a bigger change than the two routes.
+If your strategy needs P&L or marks, say so — those still require the contracts to grow, and that is a
+bigger change than the two routes.
 
 ---
 
@@ -298,6 +350,42 @@ have to grow, and that is a bigger change than the two routes.
 
 **A `SIM-` prefix on `broker_order_id` means nothing reached a venue** — the reliable signal, whatever
 the stage says.
+
+### 🔴 At `paper`, a GREEN test does not prove broker connectivity
+
+**No order reaches any real broker at `paper`, regardless of which `broker` value you send.** Every
+placement is intercepted to `SimAdapter` before the real adapter is consulted. So a passing
+place/status/cancel run at `paper` proves **the contract and the durable-store path** — it proves
+**nothing** about whether the broker session works.
+
+> **The concrete illustration, from 2026-08-21 on this service.** A paper run produced three
+> `liberator`-branded **FILLED** rows on a node that held **no Liberator credential at all**. The
+> store records the **requested** broker, not the one contacted — so `broker: "liberator"` in a
+> result row is *not* evidence that Liberator was reached. Nothing was wrong; that is the design. But
+> a gate that reads those rows as broker proof is measuring the wrong thing.
+
+⚠️ **Reads are the exception, and it cuts the other way:** at `paper`, `intent=READ` is **not**
+intercepted — it goes to the **real** adapter and the real venue. So a balance read at `paper` touches
+the live broker with real credentials. Treat it as a live call, not a rehearsal.
+
+### 🔴 `micro_live` now REFUSES TO START without an EH6 declaration (new 2026-08-24, PR #38)
+
+**`paper` is unaffected — you need nothing for it.** But a stage flip is no longer just a stage flip:
+
+| | requirement |
+|---|---|
+| `sim`, `paper` | nothing new |
+| `micro_live`, `live` | **`EXECUTION_ENGINE_REAL_ROUTING_ACCOUNTS`** must name the **8-digit trading accounts** this node is authoritative for — and a broker credential must back it |
+
+**Absent ⇒ the app refuses to start.** A declaration that disagrees with the credentials the node
+actually holds ⇒ **also refuses**, rather than picking one. An order for an undeclared account is
+rejected at submit with a typed **`409 real_routing_not_authorized`** — deliberately distinct from
+`stage_rejected`, so a log can tell *"the ladder said no"* from *"this node is not that account's
+router"*.
+
+This is **EH6**: exactly one authoritative real-router per broker account, because orders are not
+idempotent across nodes and two routers on one account is double fills. ⚠️ Note the account **is the
+8-digit trading account** (`<login><suffix>`), not the 7-digit login — they are one suffix apart.
 
 ---
 
