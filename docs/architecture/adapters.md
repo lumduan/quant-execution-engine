@@ -96,7 +96,17 @@ service — it never re-implements it (D9).
 - **Amend:** declared `cancel_replace` (Liberator has no amend route). The router cancels the old
   order down the `PENDING_CANCEL` path and submits a fresh replacement (new `client_order_id`); no
   PTRM exemption on the replacement.
-- **Reconcile loop v1:** §B lost-ack fuzzy match (±5 s), bounded resolution (~60 s).
+- 🔴 **The place-ack carries NO `orderNo`** — unconditionally, measured 2026-08-25 on both a
+  terminal-on-arrival FOK and a DAY LIMIT that rested. The handle exists only in
+  `GET orders/{account}`. This is the venue's normal behaviour, **not** a fault or a lost ack.
+- **Handle recovery (TK-0423):** because of the above, `_place_and_settle` bursts against venue truth
+  when the ack has no handle — 250 ms cadence (≈ the bridge read), 1500 ms budget anchored on the
+  **submit** timestamp (the venue answers *before* our POST returns). It stops on handle-recovered,
+  never on terminal — a resting order has none. The submit response reports
+  `resolution: confirmed | pending | unknown`; see [`../api/orders-submit.md`](../api/orders-submit.md).
+- **Reconcile loop v1:** §B lost-ack fuzzy match (±5 s), bounded resolution (~60 s). Shares its
+  matcher and executor with the burst above — one implementation, two entry points, so they cannot
+  drift.
 - **Heartbeat + breaker:** ~30 s `GET order/health/*` liveness probe; consecutive failures trip
   `broker_circuit_open` + mass-cancel.
 - **Deployment:** bundled via `docker-compose.liberator.yml` (internal-only, its own `liberator-redis`

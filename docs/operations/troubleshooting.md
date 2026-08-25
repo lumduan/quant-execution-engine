@@ -15,9 +15,42 @@ which also mass-cancelled that broker's open orders. **Resolve:** investigate th
 (Liberator OTP session expiry / upstream down; the Streaming Pro bridge session — `/session/status`),
 confirm credentials, and let the heartbeat recover the breaker (or restart the adapter runtime).
 
+## 🔴 `resolution: "unknown"` on a submit — the order MAY BE LIVE
+
+**Symptom:** `POST /orders` returned **201** (or 200) with `"resolution": "unknown"`.
+
+**Meaning:** the venue **could not be read** within the recovery budget, so the engine does not hold
+the order's venue handle. It is **not** a statement that the order failed — the placement itself
+succeeded, and the order may be resting at the venue right now.
+
+🔴 **NEVER resubmit on `unknown`.** A resubmit double-fills. `unknown` and `pending` look similar and
+are not: under `pending` the venue *was* read and the order is working; under `unknown` nothing was
+confirmed. Only `unknown` is dangerous.
+
+**Do:**
+```bash
+# 1. what does OUR store say now? (the reconcile loop repairs the row within ~12 s)
+curl -s localhost:8400/orders/<cid> -H "X-API-Key: <key>" | jq '{engine_state, broker_order_id}'
+# 2. what does the VENUE say? (ground truth — the handle only ever exists here)
+curl -s -H "api-key: <bridge-key>" localhost:8210/api/v1/orders/<account> \
+  | jq '.raw_response.result.list[] | {orderNo, symbol, status, balance, canCancel}'
+```
+An order with `balance > 0` or `canCancel: true` is **live** — cancel it deliberately rather than
+leaving it. If the store still shows `PENDING_NEW` after a minute, see the next section.
+
+**Likely cause:** the Liberator bridge or session was unreachable during the burst — check
+`GET /health` `brokers.liberator` and the bridge's `/session/status`.
+
 ## `PENDING_NEW` stuck / ack lost (§B)
 
-**Symptom:** an order sits in `engine_state: "PENDING_NEW"` after submit. **Cause:** the broker ack
+**Symptom:** an order sits in `engine_state: "PENDING_NEW"` after submit.
+
+⚠️ **This is now the second line of defence, not the first.** Since TK-0423 the submit path recovers
+the handle inline (see `resolution` above), so reaching this state means the burst returned `pending`
+or `unknown` — i.e. the venue did not have the order yet, or could not be read at all. The loop below
+still runs and still repairs it.
+
+**Cause:** the broker ack
 was lost before the `broker_order_id` was recorded. **Resolve:** the reconciliation loop fuzzy-matches
 the venue's open orders on `(account, symbol, side, quantity)` within **±5 s** of the submit time and
 acks the order to `NEW`; if no unique match is found it resolves to `REJECTED` after a bounded

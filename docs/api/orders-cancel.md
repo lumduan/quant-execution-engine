@@ -29,7 +29,26 @@ The cancel walks the frozen two-step edge — `NEW` / `PARTIALLY_FILLED → PEND
   reconciliation loop first.
 - A cancel of a **terminal** order (`FILLED`/`CANCELLED`/`REJECTED`/`EXPIRED`) is `illegal_transition`.
 
-At the venue: Liberator cancels by orderNo list (bulk ≤ 50) + PIN; Settrade uses `PATCH .../cancel`.
+**Measured (Liberator, 2026-08-25, a genuinely resting SET order):** `DELETE` returned **200 in
+1,027 ms**, engine terminal **`CANCELLED` at +1,032 ms**.
+
+### ⚠️ `CANCELLED` vs `EXPIRED` — it depends on WHO cancelled
+
+The Liberator venue reports a resting order that was cancelled as `status=X`, and the reconciler's
+`classify_venue_state` maps `X` → **`EXPIRED`**. That mapping does **not** reach a cancel you issued
+here:
+
+| who cancelled | engine records |
+|---|---|
+| **this endpoint** (`DELETE /orders/{cid}`) | **`CANCELLED`** — the engine drives its own frozen `PENDING_CANCEL → CANCELLED` path, and the venue's `X` is never re-interpreted (the row is terminal by then, and the reconciler's working set excludes terminal rows) |
+| venue-side, or issued directly at the bridge | **`EXPIRED`** — discovered by the reconciler, which only has the venue's `X` to go on |
+
+⇒ if you are writing an unwind path that asks *"did my cancel work?"*, cancel **through the engine**
+and expect `CANCELLED`. Venue wire detail:
+[`../../../docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) §3.
+
+At the venue: Liberator cancels by orderNo list (bulk ≤ 50) + PIN. (Settrade's `PATCH .../cancel` left
+with broker-023 on 2026-07-18.)
 
 ## Request
 

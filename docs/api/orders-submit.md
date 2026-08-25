@@ -17,7 +17,7 @@ price-band → stage ladder → adapter) and persists the lifecycle before anyth
 | Field | Type | Required | Allowed / constraint | Notes |
 |-------|------|:---:|----------------------|-------|
 | `client_order_id` | string | ✅ | **UUIDv4** | The idempotency key; client-generated, format-validated |
-| `broker` | string | ✅ | `sim` \| `liberator` \| `settrade` | Routing target (subject to the stage ladder) |
+| `broker` | string | ✅ | `sim` \| `liberator` \| `streaming_pro` | Routing target (subject to the stage ladder). ⚠️ `settrade` (broker-023, the Settrade Open API) was **removed 2026-07-18** — the third broker is `streaming_pro` |
 | `account` | string | ✅ | non-empty | Broker account; never logged |
 | `market` | string | ✅ | `SET` \| `TFEX` | |
 | `symbol` | string | ✅ | non-empty | e.g. `PTT`, `S50Z2026` |
@@ -45,7 +45,7 @@ Body is a `NormalizedOrderResult`:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `client_order_id` | string | echo |
-| `broker_order_id` | string \| null | venue id; `null` until the ack |
+| `broker_order_id` | string \| null | venue id. ⚠️ **Not always on the ack** — the Liberator place-ack carries none at all, so it is recovered from venue truth during the submit (see `resolution` below). `null` means it was **not** recovered |
 | `broker` | string | routed broker |
 | `status` | string | public status: `NEW` \| `PARTIALLY_FILLED` \| `FILLED` \| `CANCELLED` \| `REJECTED` \| `EXPIRED` |
 | `engine_state` | string | truthful internal 9-state value (incl. `PENDING_*`) |
