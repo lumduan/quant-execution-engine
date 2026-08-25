@@ -41,6 +41,7 @@ from src.quant_execution_engine.api.schemas import (
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
+from src.quant_execution_engine.contracts.enums import Broker
 from src.quant_execution_engine.contracts.errors import KillSwitchNotEngagedError
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
@@ -105,6 +106,35 @@ async def health(settings: SettingsDep) -> HealthResponse:
     )
 
 
+def _routable_now(broker: Broker) -> bool:
+    """Can THIS deployment actually route ``broker`` right now?
+
+    🔴 The reason this exists: ``adapter_installed`` used to be served straight from
+    :data:`CAPABILITY_MATRIX`, where it is a **hardcoded ``True``** — a build-time constant
+    wearing a deployment-fact name. It meant *"an adapter class exists in this codebase"* and
+    was read, reasonably, as *"this node can route it"*.
+
+    On the AWS node that gap was live and load-bearing: ``/capabilities`` reported
+    ``liberator adapter_installed=True`` while the node held **no Liberator credential**, so a
+    ``micro_live`` order would have been ``StageRejected``. ``session:cash-carry`` hit it while
+    planning a gate — and `docs/broker-commands.md` §6 tells strategy authors to *"query
+    /capabilities, don't hardcode"*, so the documented advice led straight into it.
+
+    ⚠️ Note what a ``False`` here does and does not mean. It means **not routable on this node
+    as currently configured** — which at ``sim``/``paper`` includes the real brokers, because no
+    real runtime is constructed below ``paper`` + owner mode + credentials. It does **not** mean
+    the adapter is missing from the build. The response carries ``stage`` alongside, which is
+    the context that disambiguates it.
+    """
+    if broker is Broker.SIM:
+        return True  # SimAdapter is always constructed; it needs no credential
+    if broker is Broker.LIBERATOR:
+        return get_liberator_adapter() is not None
+    if broker is Broker.STREAMING_PRO:
+        return get_streaming_pro_adapter() is not None
+    return False
+
+
 @router.get(
     "/capabilities",
     response_model=CapabilitiesResponse,
@@ -112,10 +142,19 @@ async def health(settings: SettingsDep) -> HealthResponse:
     summary="Declared per-(broker, market) capability sets",
 )
 async def capabilities(settings: SettingsDep) -> CapabilitiesResponse:
-    """The full static matrix (D7): the router enforces exactly these rows."""
+    """The matrix (D7) — rows are static; ``adapter_installed`` is RUNTIME-computed.
+
+    The order-type/tif/position-effect cells are the frozen contract the router enforces and
+    are served unchanged. Only ``adapter_installed`` is recomputed per request, because it is
+    the one field that asserts something about *this deployment* rather than about the
+    contract — see :func:`_routable_now`.
+    """
     return CapabilitiesResponse(
         stage=settings.stage,
-        capabilities=CAPABILITY_MATRIX,
+        capabilities=tuple(
+            row.model_copy(update={"adapter_installed": _routable_now(row.broker)})
+            for row in CAPABILITY_MATRIX
+        ),
         brokers=_broker_runtime_health(),
     )
 

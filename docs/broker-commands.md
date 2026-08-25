@@ -295,6 +295,23 @@ From `contracts/capabilities.py`, cross-checked against the live `GET /capabilit
 streaming_pro's cells are deliberately conservative and expand as combinations are live-verified.
 The router rejects an unsupported combination up front with `capability_unsupported`.
 
+> 🔴 **`adapter_installed` — read this before trusting it, and note what it used to be.**
+>
+> **Until 2026-08-25 it was a hardcoded `True`** in the static matrix: a *build-time* constant
+> wearing a *deployment-fact* name. It meant *"an adapter class exists in this codebase"* and was
+> reasonably read as *"this node can route it"*. On the AWS node it reported
+> `liberator adapter_installed=True` while the node held **no Liberator credential** — where a
+> `micro_live` order is `StageRejected`, not a fill. `session:cash-carry` hit exactly that while
+> planning a gate, **following this section's own "query, don't hardcode" advice.**
+>
+> ✅ **It is now computed per request from the constructed runtime** — `true` only if this
+> deployment can actually route that broker right now.
+>
+> ⚠️ **A `false` means "not routable on THIS node as configured", not "missing from the build".**
+> At `sim`/`paper` the real brokers read `false` by design: no real runtime is constructed without
+> owner mode plus credentials. The response's `stage` field is the context that disambiguates it,
+> and the sibling `brokers` object carries breaker/session state for whatever *is* constructed.
+
 ---
 
 ## 7 · DESIGNED-ONLY — positions, balance, open orders
