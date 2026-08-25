@@ -109,3 +109,29 @@ def to_public_status(state: OrderState, filled_qty: int) -> PublicOrderStatus:
     if state in (OrderState.PENDING_CANCEL, OrderState.PENDING_REPLACE):
         return PublicOrderStatus.PARTIALLY_FILLED if filled_qty > 0 else PublicOrderStatus.NEW
     return PublicOrderStatus(state.value)
+
+
+class HandleResolution(StrEnum):
+    """How much the engine actually KNOWS about a just-submitted order (TK-0423).
+
+    Emitted on the ``POST /orders`` response. It answers a question the order
+    state cannot: *did we read the venue, or are we guessing?*
+
+    🔴 ``PENDING`` and ``UNKNOWN`` must never be collapsed. They differ in the
+    only way that costs money: under ``PENDING`` the venue was read and the
+    order is working; under ``UNKNOWN`` the venue could **not** be read, so the
+    order may be live with its handle unrecovered — and a retry double-fills.
+    That is the discriminator problem this project keeps paying for: a signal
+    whose healthy reading is produced by the same path as its failure.
+    """
+
+    CONFIRMED = "confirmed"
+    """The venue was read and answered: state and handle are venue truth."""
+
+    PENDING = "pending"
+    """The venue was read; the order is accepted but not yet resolvable there.
+    Safe to wait on — it is working. NEVER resubmit."""
+
+    UNKNOWN = "unknown"
+    """The venue could NOT be read within the deadline. The order may be LIVE.
+    🔴 NEVER resubmit; reconcile or read ``GET /orders/{cid}`` instead."""

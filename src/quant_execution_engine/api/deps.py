@@ -10,7 +10,10 @@ from typing import Annotated, Any
 import asyncpg
 from fastapi import Depends, HTTPException, Request, status
 
-from src.quant_execution_engine.adapters.liberator.runtime import get_liberator_adapter
+from src.quant_execution_engine.adapters.liberator.runtime import (
+    get_liberator_adapter,
+    get_liberator_handle_resolver,
+)
 from src.quant_execution_engine.adapters.market_data import get_market_data_client
 from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.adapters.streaming_pro.runtime import get_streaming_pro_adapter
@@ -113,4 +116,5 @@ def get_router_dep(
         streaming_pro_adapter=get_streaming_pro_adapter(),
         sim_price_source=get_sim_pricer(),
         market_data_client=get_market_data_client(),
+        handle_resolver=get_liberator_handle_resolver(),
     )

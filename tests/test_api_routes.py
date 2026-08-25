@@ -86,13 +86,20 @@ def test_submit_lifecycle_dedupe_and_decimal_strings(
     assert payload["avg_fill_price"] == "123.456789"
     assert isinstance(payload["avg_fill_price"], str)
     assert "raw" not in payload
+    # TK-0423: the submit response carries per-submit knowledge. Sim issues its own
+    # handle, so nothing is ever unknown on this path.
+    assert payload["resolution"] == "confirmed"
     resend = client.post("/orders", json=body)
     assert resend.status_code == 200
     assert resend.json() == payload
     assert len(store.orders) == 1
     read = client.get(f"/orders/{body['client_order_id']}")
     assert read.status_code == 200
-    assert read.json() == payload
+    # A LATER read is not evidence about what we knew AT SUBMIT TIME, so `resolution`
+    # is deliberately absent here — asserted rather than assumed, because silently
+    # leaking it onto the read would make a stale value look like fresh venue truth.
+    assert "resolution" not in read.json()
+    assert read.json() == {k: v for k, v in payload.items() if k != "resolution"}
 
 
 def test_amend_native_happy_path_same_cid(monkeypatch: pytest.MonkeyPatch) -> None:

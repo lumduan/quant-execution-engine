@@ -176,9 +176,20 @@ async def submit_order(
     echoed on the order-update stream; absent it, behavior is unchanged.
     """
     outcome = await order_router.submit(order, strategy_id=strategy_id)
+    # ``resolution`` (TK-0423) answers what the order state cannot: did we READ the
+    # venue, or are we guessing? It is per-submit knowledge, not persisted state, so
+    # it is merged here rather than carried on the frozen result contract — and
+    # `GET /orders/{cid}` deliberately does NOT carry it (a later read is not evidence
+    # about what we knew at submit time).
+    #
+    # 🔴 `pending` (venue read, order working) and `unknown` (venue NOT read, order may
+    # be LIVE) must never be collapsed by a caller. Only `unknown` means the handle was
+    # not recovered — and a resubmit on it double-fills.
+    content = outcome.result.wire_dump()
+    content["resolution"] = outcome.resolution.value
     return JSONResponse(
         status_code=status.HTTP_200_OK if outcome.duplicate else status.HTTP_201_CREATED,
-        content=outcome.result.wire_dump(),
+        content=content,
     )
 
 

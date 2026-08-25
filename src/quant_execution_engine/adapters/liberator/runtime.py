@@ -30,6 +30,7 @@ from src.quant_execution_engine.adapters.liberator.transport import LiberatorTra
 from src.quant_execution_engine.cache.redis_client import get_redis
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.enums import Market, Stage
+from src.quant_execution_engine.core.handle_recovery import HandleResolver
 from src.quant_execution_engine.core.router import OrderRouter
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.postgres import get_pool
@@ -40,6 +41,7 @@ _BROKER_STAGES = frozenset({Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE})
 _RECONCILE_STAGES = frozenset({Stage.MICRO_LIVE, Stage.LIVE})
 
 _adapter: LiberatorAdapter | None = None
+_reconciler: LiberatorReconciler | None = None
 _tasks: list[asyncio.Task[None]] = []
 _trip_lock = asyncio.Lock()
 
@@ -96,6 +98,19 @@ def create_liberator_runtime(settings: Settings) -> LiberatorAdapter | None:
     return _adapter
 
 
+def get_liberator_handle_resolver() -> HandleResolver | None:
+    """The TK-0423 handle resolver, or None when no reconciler is running.
+
+    None is returned at ``sim``/``paper`` (no reconciler is started there) — which is
+    correct rather than a gap: below ``micro_live`` every placement is intercepted to
+    ``SimAdapter``, which always issues its own handle, so this path is unreachable.
+    """
+    reconciler = _reconciler
+    if reconciler is None:
+        return None
+    return reconciler.resolve_order_now
+
+
 def get_liberator_adapter() -> LiberatorAdapter | None:
     """The singleton, or None before the lifespan created it / when disabled."""
     return _adapter
@@ -134,12 +149,16 @@ async def start_liberator_workers(settings: Settings) -> None:
         )
     )
     if settings.stage in _RECONCILE_STAGES:
-        reconciler = LiberatorReconciler(
+        global _reconciler
+        _reconciler = LiberatorReconciler(
             adapter,
             interval_seconds=settings.liberator_reconcile_interval_seconds,
             pool_provider=get_pool,
         )
-        _tasks.append(asyncio.create_task(reconciler.run(), name="liberator-reconciler"))
+        # Held as a singleton so the submit path can borrow ONE venue read for the
+        # TK-0423 post-placement burst — same matcher, same executor, so the burst
+        # and the steady loop cannot drift apart.
+        _tasks.append(asyncio.create_task(_reconciler.run(), name="liberator-reconciler"))
     logger.info(
         "liberator workers started (heartbeat=%ds, reconciler=%s)",
         settings.liberator_heartbeat_interval_seconds,
@@ -149,7 +168,8 @@ async def start_liberator_workers(settings: Settings) -> None:
 
 async def close_liberator_runtime() -> None:
     """Cancel workers, close the transport, clear the singleton (idempotent)."""
-    global _adapter
+    global _adapter, _reconciler
+    _reconciler = None
     for task in _tasks:
         task.cancel()
     for task in _tasks:

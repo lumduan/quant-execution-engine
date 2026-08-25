@@ -40,6 +40,7 @@ from src.quant_execution_engine.adapters.liberator.mapping import (
 )
 from src.quant_execution_engine.adapters.liberator.models import VenueOrderItem
 from src.quant_execution_engine.contracts.enums import Broker, OrderState
+from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.models import OrderRow
 
@@ -49,6 +50,17 @@ _STUCK_PENDING_SECONDS = 5.0  # ADR §B: lost-ack window opens
 _ACK_LOST_TIMEOUT_SECONDS = 60.0  # bounded resolution (~5 passes at the 12 s default)
 _FUZZY_WINDOW_SECONDS = 5.0  # ADR §B: ±5 s around the persisted submit ts
 _PRICE_QUANTUM = Decimal("0.000001")  # numeric(18,6) — the DB price precision
+
+
+def _is_resolved(row: OrderRow) -> bool:
+    """Is there anything left for a venue read to tell us about this order?
+
+    Resolved = we hold the venue handle, OR the order is terminal. Deliberately
+    NOT "status != PENDING_NEW": a row can be acked without a handle in principle,
+    and the handle is the thing a caller needs in order to cancel or amend — which
+    is exactly what ``session:cash-carry``'s unwind path depends on.
+    """
+    return row.broker_order_id is not None or state_machine.is_terminal(row.status)
 
 
 @dataclass(frozen=True)
@@ -250,28 +262,85 @@ class LiberatorReconciler:
             index = {item.order_no: item for item in items}
             claimed = {r.broker_order_id for r in account_rows if r.broker_order_id is not None}
             for row in account_rows:
-                item = index.get(row.broker_order_id) if row.broker_order_id else None
-                if (
-                    item is None
-                    and row.status is OrderState.PENDING_NEW
-                    and (now - row.created_at).total_seconds() > _STUCK_PENDING_SECONDS
-                ):
-                    item = fuzzy_match(row, items, claimed_order_nos=claimed)
-                    if item is not None:
-                        claimed.add(item.order_no)
-                result = await repositories.fetch_order_result(pool, row.client_order_id)
-                filled_qty = result.filled_qty if result is not None else 0
-                for action in plan_actions(row, filled_qty, item, now=now):
-                    try:
-                        await self._execute(pool, action)
-                        applied += 1
-                    except Exception:  # noqa: BLE001 - one bad row never stops the pass
-                        logger.exception(
-                            "reconcile: action %s failed for %s",
-                            action.kind,
-                            action.client_order_id,
-                        )
+                applied += await self._apply_row(
+                    pool, row, items, index, claimed, now, require_stuck=True
+                )
         return applied
+
+    async def _apply_row(
+        self,
+        pool: asyncpg.Pool,
+        row: OrderRow,
+        items: list[VenueOrderItem],
+        index: dict[str, VenueOrderItem],
+        claimed: set[str],
+        now: datetime,
+        *,
+        require_stuck: bool,
+    ) -> int:
+        """Resolve ONE row against one venue snapshot; returns actions applied.
+
+        Shared by the steady loop and the post-placement burst so the two cannot
+        drift — the class of defect that produced the TK-0036/37/90 back-ports.
+
+        ``require_stuck`` gates the lost-ack fuzzy match on
+        ``_STUCK_PENDING_SECONDS``. The steady loop passes ``True``: it cannot
+        tell an ack still in flight from one that was lost, so it waits out the
+        window. The burst passes ``False`` — it runs ONLY after an ack that
+        already returned carrying no handle, so the ambiguity the gate protects
+        against cannot exist there. 🔴 Do not relax it anywhere else.
+        """
+        item = index.get(row.broker_order_id) if row.broker_order_id else None
+        if item is None and row.status is OrderState.PENDING_NEW:
+            old_enough = (now - row.created_at).total_seconds() > _STUCK_PENDING_SECONDS
+            if old_enough or not require_stuck:
+                item = fuzzy_match(row, items, claimed_order_nos=claimed)
+                if item is not None:
+                    claimed.add(item.order_no)
+        result = await repositories.fetch_order_result(pool, row.client_order_id)
+        filled_qty = result.filled_qty if result is not None else 0
+        applied = 0
+        for action in plan_actions(row, filled_qty, item, now=now):
+            try:
+                await self._execute(pool, action)
+                applied += 1
+            except Exception:  # noqa: BLE001 - one bad row never stops the pass
+                logger.exception(
+                    "reconcile: action %s failed for %s", action.kind, action.client_order_id
+                )
+        return applied
+
+    async def resolve_order_now(self, client_order_id: str) -> bool:
+        """ONE venue read for ONE order — the TK-0423 post-placement burst step.
+
+        Returns ``True`` once the order is RESOLVED: a venue handle is recorded, or
+        a terminal state has been applied. Returns ``False`` when the venue was read
+        and simply does not have it yet.
+
+        🔴 Raises :class:`LiberatorTransportError` when the venue could NOT be read.
+        The caller must never collapse that into ``False`` — "the venue says not yet"
+        and "we could not ask the venue" are the two readings this whole mechanism
+        exists to keep apart.
+        """
+        pool = self._pool_provider()
+        row = await repositories.fetch_order(pool, client_order_id)
+        if row is None or _is_resolved(row):
+            return True
+        # Handles held by OTHER live rows on this account, so the fuzzy match can
+        # never bind a venue order that already belongs to a different order.
+        working_set = await repositories.fetch_orders_for_reconcile(pool, Broker.LIBERATOR)
+        claimed = {
+            r.broker_order_id
+            for r in working_set
+            if r.broker_order_id is not None
+            and r.account == row.account
+            and r.client_order_id != client_order_id
+        }
+        items = await self._adapter.fetch_venue_orders(row.account)  # raises => UNKNOWN
+        index = {item.order_no: item for item in items}
+        await self._apply_row(pool, row, items, index, claimed, self._now(), require_stuck=False)
+        after = await repositories.fetch_order(pool, client_order_id)
+        return after is not None and _is_resolved(after)
 
     async def _execute(self, pool: asyncpg.Pool, action: ReconcileAction) -> None:
         cid = action.client_order_id

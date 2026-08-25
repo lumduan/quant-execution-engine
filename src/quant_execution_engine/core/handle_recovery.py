@@ -1,0 +1,124 @@
+"""Post-placement handle recovery — the bounded burst behind submit-to-known (TK-0423).
+
+WHY THIS EXISTS
+---------------
+The Liberator place-ack carries **no** ``orderNo`` — measured 2026-08-25 across both
+order classes, so the omission is unconditional, not a terminal-on-arrival quirk:
+
+  * 9 FOKs that died on arrival (``session:cash-carry``)  -> no handle
+  * 1 DAY LIMIT that RESTED at the venue (this session)   -> no handle
+
+The handle exists only in ``GET orders/{account}``. Before this module the router
+raised ``AdapterError`` on the missing handle, so an order the venue had **accepted**
+came back to the caller as HTTP 500 ([[TK-0424]]); the steady 12 s reconcile loop
+repaired the durable row ~15 s later, long after the caller had already decided.
+
+THE TWO NUMBERS THAT SHAPE THE DESIGN (measured, not assumed)
+------------------------------------------------------------
+  venue holds the terminal answer   567-752 ms after submit
+  our own placement round-trip      959-1175 ms  (1068 ms here)
+
+⇒ **the venue answers BEFORE our POST returns.** So the budget is anchored on the
+persisted submit timestamp, never on the ack: an ack-anchored clock starts ~400 ms
+late and no cadence recovers that. It also means the first attempt usually succeeds —
+the cadence exists for the tail, not the common case.
+
+Polling faster than the read itself (~200-244 ms) cannot produce a fresher answer; it
+only queues reads and adds load to a venue session **shared with the capture plane**,
+whose data is not backfillable. Hence a cadence at the read latency and a hard deadline
+rather than a spin.
+
+WHAT THIS MODULE IS NOT
+-----------------------
+It does not wait for a TERMINAL state. A resting order has none — waiting for one would
+hang the POST until the close. It stops as soon as the venue has been *resolved* for this
+order (handle recorded, or a terminal state applied); resting-vs-terminal is then a fact
+reported, never a thing waited on.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+
+from src.quant_execution_engine.contracts.enums import HandleResolution
+
+logger = logging.getLogger(__name__)
+
+# One venue read for ONE order. True  -> resolved (handle recorded / terminal applied).
+#                                False -> read fine, this order not resolvable yet.
+#                                raises -> the venue could NOT be read.
+HandleResolver = Callable[[str], Awaitable[bool]]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def recover_handle(
+    resolve: HandleResolver,
+    *,
+    client_order_id: str,
+    submitted_at: datetime,
+    cadence_seconds: float,
+    deadline_seconds: float,
+    now: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> HandleResolution:
+    """Burst against venue truth until this order resolves, or the budget runs out.
+
+    ``deadline_seconds`` is measured from ``submitted_at`` (the persisted submit
+    timestamp), NOT from entry — see the module docstring. **At least one attempt
+    always runs**, even when the placement round-trip already consumed the budget,
+    because that is precisely the case where the venue has had longest to answer.
+
+    Returns, and the distinction is the whole point:
+
+    * :attr:`HandleResolution.CONFIRMED` — a read resolved the order.
+    * :attr:`HandleResolution.PENDING` — the venue WAS read, and did not have it yet.
+      The order is working; the steady reconciler will finish the job.
+    * :attr:`HandleResolution.UNKNOWN` — every attempt failed to READ the venue. The
+      order may be live with an unrecovered handle. 🔴 Never resubmit on this.
+    """
+    read_ok = False
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            if await resolve(client_order_id):
+                logger.info(
+                    "handle_recovery: %s CONFIRMED from venue truth in %d attempt(s), "
+                    "%.0f ms after submit",
+                    client_order_id,
+                    attempts,
+                    _elapsed_ms(now(), submitted_at),
+                )
+                return HandleResolution.CONFIRMED
+            read_ok = True
+        except Exception as exc:  # noqa: BLE001 - any read failure is "we do not know"
+            # Deliberately broad: the caller-visible contract is *did we read the
+            # venue*, and every way of failing to read means the same thing here.
+            logger.warning("handle_recovery: %s venue read failed: %s", client_order_id, exc)
+
+        elapsed = _elapsed_ms(now(), submitted_at) / 1000.0
+        if elapsed + cadence_seconds > deadline_seconds:
+            break
+        await sleep(cadence_seconds)
+
+    resolution = HandleResolution.PENDING if read_ok else HandleResolution.UNKNOWN
+    logger.warning(
+        "handle_recovery: %s -> %s after %d attempt(s), %.0f ms after submit "
+        "(order may be LIVE at the venue; never resubmit)",
+        client_order_id,
+        resolution.value,
+        attempts,
+        _elapsed_ms(now(), submitted_at),
+    )
+    return resolution
+
+
+def _elapsed_ms(now_ts: datetime, submitted_at: datetime) -> float:
+    """Milliseconds since submit, clamped at 0 so clock skew cannot go negative."""
+    return max(0.0, (now_ts - submitted_at).total_seconds() * 1000.0)

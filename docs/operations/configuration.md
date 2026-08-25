@@ -115,6 +115,8 @@ Enforced in **every** stage (including `sim`), after the capability check and be
 | `EXECUTION_ENGINE_LIBERATOR_HEARTBEAT_INTERVAL_SECONDS` | int | `30` | — | Session heartbeat cadence |
 | `EXECUTION_ENGINE_LIBERATOR_CIRCUIT_BREAKER_THRESHOLD` | int | `3` | — | Consecutive heartbeat failures before the breaker trips |
 | `EXECUTION_ENGINE_LIBERATOR_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
+| `EXECUTION_ENGINE_HANDLE_RECOVERY_CADENCE_MS` | int | `250` | — | Post-placement burst cadence (TK-0423). ≈ the bridge read latency (200–244 ms) — polling faster cannot produce a fresher answer, it only loads a venue session shared with the capture plane |
+| `EXECUTION_ENGINE_HANDLE_RECOVERY_DEADLINE_MS` | int | `1500` | — | Budget for the burst, measured from the **submit** timestamp (not the ack — the venue answers at 567–752 ms while our placement round-trip is 959–1175 ms). On expiry the submit reports `resolution: pending`/`unknown` instead of blocking |
 | `EXECUTION_ENGINE_LIBERATOR_POST_RATE_LIMIT` | int | `5` | — | Token bucket on `place()` only (req/s); `0` = unlimited |
 
 ## Streaming Pro adapter

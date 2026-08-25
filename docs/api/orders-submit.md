@@ -55,6 +55,37 @@ Body is a `NormalizedOrderResult`:
 | `reject_reason` | string \| null | venue/internal reason when `REJECTED` |
 | `created_at` / `updated_at` | string (UTC) | e.g. `"2026-06-13T09:00:00Z"` |
 
+…plus one field that is **not** part of `NormalizedOrderResult`:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `resolution` | string | `confirmed` \| `pending` \| `unknown` — how much the engine actually **knows**, at submit time |
+
+### `resolution` — read this before writing an unwind path (TK-0423)
+
+It answers what the order state cannot: *did we read the venue, or are we guessing?*
+Some venues (Liberator) return **no order handle on the place-ack at all**, so after placing,
+the engine bursts against venue truth — cadence `HANDLE_RECOVERY_CADENCE_MS` (250 ms, ≈ the read
+latency), budget `HANDLE_RECOVERY_DEADLINE_MS` (1500 ms, measured from **submit**, not from the ack).
+
+| value | meaning | may the caller resubmit? |
+|---|---|---|
+| `confirmed` | the venue was read and answered; `broker_order_id` and state are venue truth | n/a |
+| `pending` | the venue **was** read; the order is accepted and working, not yet resolvable there | **no** — it is working |
+| `unknown` | the venue could **not** be read within the budget | 🔴 **never** — the order may be LIVE with its handle unrecovered; a resubmit double-fills |
+
+🔴 **`pending` and `unknown` must not be collapsed.** They are the same "we did not get the handle"
+outcome arriving by two different routes, and only one of them is dangerous. Read `unknown` as
+*"an order may exist that I cannot name"*: poll `GET /orders/{client_order_id}` or let the
+reconcile loop finish the job — never re-place.
+
+**The guarantee is structural, not statistical:** this endpoint cannot return before the venue has
+been read at least once, so submit-to-known is bounded by the call's own latency (~1.1–1.5 s
+measured) rather than by the 12 s reconcile interval.
+
+⚠️ `GET /orders/{client_order_id}` deliberately does **not** carry `resolution` — a later read is
+not evidence about what was known at submit time.
+
 ## Errors (typed envelope)
 
 `{"error": {"code": "...", "message": "...", "client_order_id": "...", "detail": {...}}}`

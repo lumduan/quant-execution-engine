@@ -104,6 +104,22 @@ class Settings(BaseSettings):
     liberator_circuit_breaker_threshold: int = 3
     liberator_reconcile_interval_seconds: int = 12
 
+    # Post-placement handle recovery (TK-0423). The Liberator place-ack carries NO
+    # orderNo, so without this the handle only appears at the next reconcile pass —
+    # ~6 s on average at the 12 s default, against dislocations that live 0.58-2.6 s.
+    #
+    # Both numbers are floors read off measurement, not preferences:
+    #   * cadence 250 ms ~= the bridge read itself (200-244 ms). Polling faster cannot
+    #     produce a fresher answer — it queues reads and loads a venue session SHARED
+    #     with the capture plane, whose data is not backfillable.
+    #   * deadline 1500 ms is measured from the SUBMIT timestamp, and the venue holds
+    #     the answer at 567-752 ms while our own placement round-trip is 959-1175 ms,
+    #     so the first attempt normally succeeds. The budget is for the tail.
+    # Raising the deadline trades caller latency for a slightly better hit rate; it
+    # never makes the answer arrive sooner. Lowering the cadence buys nothing.
+    handle_recovery_cadence_ms: int = 250
+    handle_recovery_deadline_ms: int = 1500
+
     # Broker: Streaming Pro (Phase 8 / feature-streaming-pro-adapter Phase 4) — the
     # retail bridge `settrade-streaming-api` composed over plain HTTP (mirrors
     # Liberator). The engine holds ONLY the bridge's api-key + base_url: the bridge

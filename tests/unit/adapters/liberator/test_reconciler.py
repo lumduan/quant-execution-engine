@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import respx
+from src.quant_execution_engine.adapters.liberator.errors import LiberatorTransportError
 from src.quant_execution_engine.adapters.liberator.models import VenueOrderItem
 from src.quant_execution_engine.adapters.liberator.reconciler import (
     LiberatorReconciler,
@@ -309,3 +310,113 @@ async def test_empty_working_set_is_a_no_op_without_http(
     applied = await _reconciler(store).reconcile_once()
     assert applied == 0
     assert not route.called
+
+
+# --------------------------------------------- resolve_order_now (TK-0423 burst)
+
+
+@respx.mock
+async def test_resolve_order_now_matches_a_row_TOO_YOUNG_for_the_steady_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 The gate bypass, proven by CONTRAST rather than asserted.
+
+    The same row and the same venue snapshot are put through both entry points:
+    ``reconcile_once`` must SKIP it (younger than ``_STUCK_PENDING_SECONDS``, so an
+    ack could still be in flight) while ``resolve_order_now`` must MATCH it (it runs
+    only after an ack that already returned with no handle).
+
+    Asserting only that the burst matches would pass even if the gate had been
+    deleted globally — which would let the steady loop fuzzy-match orders whose ack
+    is still in flight. The skip is half the property.
+    """
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=1)  # inside the 5 s gate
+    cid = row.client_order_id
+    respx.get(f"{_BASE}/orders/{row.account}").respond(
+        json=_orders_response([_venue_json(row, orderNo="18439")])
+    )
+    reconciler = _reconciler(store)
+
+    applied = await reconciler.reconcile_once()
+    assert applied == 0, "the STEADY loop must still wait out the lost-ack window"
+    assert store.orders[cid]["broker_order_id"] is None
+
+    assert await reconciler.resolve_order_now(cid) is True
+    assert store.orders[cid]["broker_order_id"] == "18439"
+    assert store.orders[cid]["status"] is OrderState.NEW
+
+
+@respx.mock
+async def test_resolve_order_now_returns_False_when_the_venue_lacks_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Venue read fine, order not there -> False (the caller reports PENDING)."""
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=1)
+    respx.get(f"{_BASE}/orders/{row.account}").respond(json=_orders_response([]))
+
+    assert await _reconciler(store).resolve_order_now(row.client_order_id) is False
+    assert store.orders[row.client_order_id]["broker_order_id"] is None
+
+
+@respx.mock
+async def test_resolve_order_now_RAISES_when_the_venue_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 An unreadable venue must RAISE, never return False.
+
+    False means "the venue says it does not have it"; a transport failure means "we
+    never asked". Collapsing them would let an outage be reported to the caller as
+    PENDING — an order presented as safely working while nothing has been confirmed.
+    """
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=1)
+    respx.get(f"{_BASE}/orders/{row.account}").respond(status_code=503)
+
+    with pytest.raises(LiberatorTransportError):
+        await _reconciler(store).resolve_order_now(row.client_order_id)
+
+
+@respx.mock
+async def test_resolve_order_now_short_circuits_an_already_resolved_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row that already holds a handle needs no venue read at all.
+
+    The route is left unmocked on purpose: if the implementation asked the venue
+    anyway, respx would fail the request rather than let a wasted read pass silently.
+    """
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    row = _row(store, OrderState.NEW)
+    store.orders[row.client_order_id]["broker_order_id"] = "ALREADY-HELD"
+
+    assert await _reconciler(store).resolve_order_now(row.client_order_id) is True
+
+
+@respx.mock
+async def test_resolve_order_now_will_not_steal_a_handle_owned_by_another_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The only venue row is already bound to a DIFFERENT order, so no match is legal.
+
+    Two economically identical orders are exactly what ``fuzzy_match`` cannot tell
+    apart, so the claimed-handle exclusion is the thing standing between the burst
+    and binding one venue order to two local rows.
+    """
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    owner = _row(store, OrderState.NEW)
+    store.orders[owner.client_order_id]["broker_order_id"] = "18439"
+    twin = _row(store, OrderState.PENDING_NEW, age_seconds=1)
+    respx.get(f"{_BASE}/orders/{twin.account}").respond(
+        json=_orders_response([_venue_json(twin, orderNo="18439")])
+    )
+
+    assert await _reconciler(store).resolve_order_now(twin.client_order_id) is False
+    assert store.orders[twin.client_order_id]["broker_order_id"] is None
+    assert store.orders[owner.client_order_id]["broker_order_id"] == "18439"
