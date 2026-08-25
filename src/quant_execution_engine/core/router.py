@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -24,7 +25,12 @@ from src.quant_execution_engine.adapters.sim import FillPriceSource, SimAdapter
 from src.quant_execution_engine.cache.single_flight import single_flight
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts import capabilities
-from src.quant_execution_engine.contracts.enums import Broker, OrderState, to_public_status
+from src.quant_execution_engine.contracts.enums import (
+    Broker,
+    HandleResolution,
+    OrderState,
+    to_public_status,
+)
 from src.quant_execution_engine.contracts.errors import (
     AmendRejected,
     ConcurrentSubmit,
@@ -33,6 +39,7 @@ from src.quant_execution_engine.contracts.errors import (
 )
 from src.quant_execution_engine.contracts.orders import NormalizedOrder, NormalizedOrderResult
 from src.quant_execution_engine.core import state_machine
+from src.quant_execution_engine.core.handle_recovery import HandleResolver, recover_handle
 from src.quant_execution_engine.core.kill_switch import KillSwitch
 from src.quant_execution_engine.core.price_band import PriceBandCheck
 from src.quant_execution_engine.core.risk import RiskGate
@@ -47,12 +54,22 @@ logger = logging.getLogger(__name__)
 _POLL_INTERVAL_SECONDS = 0.05
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 @dataclass(frozen=True)
 class SubmitOutcome:
-    """The result plus whether it was served from the dedupe path."""
+    """The result, whether it was served from the dedupe path, and how much we KNOW.
+
+    ``resolution`` is transient per-submit knowledge, not order state, which is why
+    it rides here and not on the persisted :class:`NormalizedOrderResult`. It answers
+    the question the state cannot: *did we read the venue, or are we guessing?*
+    """
 
     result: NormalizedOrderResult
     duplicate: bool
+    resolution: HandleResolution = HandleResolution.CONFIRMED
 
 
 def _amended_order(
@@ -97,6 +114,7 @@ class OrderRouter:
         streaming_pro_adapter: BrokerAdapter | None = None,
         sim_price_source: FillPriceSource | None = None,
         market_data_client: MarketDataClient | None = None,
+        handle_resolver: HandleResolver | None = None,
     ) -> None:
         self._settings = settings
         self._pool = pool
@@ -108,6 +126,9 @@ class OrderRouter:
         # Injected process singletons (api/deps.py / runtime); None = not configured.
         self._liberator = liberator_adapter
         self._streaming_pro = streaming_pro_adapter
+        # TK-0423: recovers a venue handle the place-ack did not carry. None => the
+        # submit path reports UNKNOWN rather than guessing (it never raises again).
+        self._handle_resolver = handle_resolver
         self._risk = RiskGate(settings, redis)
         # The price-band check (A2) is advisory + default-off: with no market-data
         # client injected it runs against an unconfigured client, so .enabled is
@@ -192,24 +213,37 @@ class OrderRouter:
                         client_order_id=order.client_order_id,
                     ) from None
                 return SubmitOutcome(result=self._to_result(row), duplicate=True)
-            await self._place_and_settle(adapter, order)
+            resolution = await self._place_and_settle(adapter, order)
 
         row = await repositories.fetch_order_result(self._pool, order.client_order_id)
         if row is None:  # pragma: no cover - we just inserted it
             raise OrderNotFound("order vanished mid-submit", client_order_id=order.client_order_id)
-        return SubmitOutcome(result=self._to_result(row), duplicate=False)
+        return SubmitOutcome(result=self._to_result(row), duplicate=False, resolution=resolution)
 
-    async def _place_and_settle(self, adapter: BrokerAdapter, order: NormalizedOrder) -> None:
-        """Route to the adapter and persist the resulting lifecycle."""
+    async def _place_and_settle(
+        self, adapter: BrokerAdapter, order: NormalizedOrder
+    ) -> HandleResolution:
+        """Route to the adapter and persist the resulting lifecycle.
+
+        Returns how much the engine actually KNOWS afterwards — see
+        :class:`HandleResolution`. A venue that answered (ack or reject) is
+        ``CONFIRMED``; only the handle-recovery path can degrade that.
+        """
         ack = await adapter.place(order)
         if ack.rejected:
             await repositories.update_status(self._pool, order.client_order_id, OrderState.REJECTED)
             await repositories.set_reject_reason(
                 self._pool, order.client_order_id, ack.reject_reason or "rejected by adapter"
             )
-            return
-        if ack.broker_order_id is None:  # pragma: no cover - adapter contract
-            raise AdapterError("adapter ack carried no broker_order_id")
+            return HandleResolution.CONFIRMED
+        if ack.broker_order_id is None:
+            # 🔴 This used to `raise AdapterError(...)`, which surfaced as HTTP 500 for an
+            # order the venue had ACCEPTED ([[TK-0424]]) — the caller could not tell "it
+            # failed" from "it is live and I lost the handle". The Liberator place-ack
+            # carries no orderNo AT ALL (measured 2026-08-25 on both a terminal-on-arrival
+            # FOK and a resting DAY limit), so this is the normal path for that venue, not
+            # a contract violation. Recover the handle from venue truth instead.
+            return await self._recover_handle(order)
         # ONE statement: status -> NEW + broker_order_id (§B atomic; trigger audits).
         await repositories.ack_order(self._pool, order.client_order_id, ack.broker_order_id)
         for fill in ack.fills:
@@ -230,6 +264,34 @@ class OrderRouter:
             await repositories.update_status(
                 self._pool, order.client_order_id, OrderState.CANCELLED
             )
+        return HandleResolution.CONFIRMED
+
+    async def _recover_handle(self, order: NormalizedOrder) -> HandleResolution:
+        """Burst against venue truth to recover a handle the ack did not carry.
+
+        With no resolver injected this does NOT raise and does NOT invent state: the
+        row stays ``PENDING_NEW`` and the caller is told ``UNKNOWN``, which is the
+        honest reading — the order is at the venue and we hold no handle. The steady
+        reconcile loop repairs the row on its next pass either way.
+        """
+        cid = order.client_order_id
+        if self._handle_resolver is None:
+            logger.error(
+                "submit %s: ack carried no broker_order_id and no handle resolver is "
+                "configured for %s — the order MAY BE LIVE at the venue; never resubmit",
+                cid,
+                order.broker.value,
+            )
+            return HandleResolution.UNKNOWN
+        row = await repositories.fetch_order(self._pool, cid)
+        submitted_at = row.created_at if row is not None else _utc_now()
+        return await recover_handle(
+            self._handle_resolver,
+            client_order_id=cid,
+            submitted_at=submitted_at,
+            cadence_seconds=self._settings.handle_recovery_cadence_ms / 1000.0,
+            deadline_seconds=self._settings.handle_recovery_deadline_ms / 1000.0,
+        )
 
     async def _await_concurrent(self, client_order_id: str) -> SubmitOutcome:
         """Lock-miss: an identical submit is mid-flight — wait briefly for its row."""
