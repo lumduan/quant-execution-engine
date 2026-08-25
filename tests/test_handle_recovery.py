@@ -189,13 +189,16 @@ async def test_a_read_that_succeeds_ONCE_downgrades_to_PENDING_not_UNKNOWN() -> 
     assert result is HandleResolution.PENDING
 
 
-async def test_budget_is_anchored_on_SUBMIT_not_on_entry() -> None:
-    """The venue answers BEFORE our POST returns, so an ack-anchored clock starts late.
+async def test_a_slow_placement_CANNOT_starve_the_retries() -> None:
+    """🔴 TK-0426 regression — the retry floor beats the submit-anchored ceiling.
 
-    Here the placement round-trip has already eaten the whole budget. An entry-anchored
-    burst would still poll for a further 1.5 s; a submit-anchored one stops — but must
-    STILL make one attempt, because that is exactly when the venue has had longest to
-    answer.
+    ``deadline_seconds`` is anchored on SUBMIT, so the placement round-trip sits inside
+    the budget. Here it has eaten the budget entirely (9 s elapsed against a 1.5 s
+    deadline). Before the floor, that collapsed the burst to a single attempt — zero
+    retries — which made ``UNKNOWN`` reachable because *our own call* was slow rather
+    than because the venue was unreachable.
+
+    The floor is checked FIRST and ANDed, so the ceiling cannot cut below it.
     """
     calls: list[str] = []
 
@@ -209,11 +212,72 @@ async def test_budget_is_anchored_on_SUBMIT_not_on_entry() -> None:
         submitted_at=_T0,
         cadence_seconds=0.25,
         deadline_seconds=1.5,
-        now=_clock(9000),  # 9 s after submit — long past the deadline
+        min_polls=3,
+        now=_clock(9000),  # 9 s after submit — the ceiling is long gone
         sleep=_no_sleep,
     )
-    assert len(calls) == 1, "exactly one attempt: never zero, never a spin"
+    assert len(calls) == 3, "the floor must survive a placement that ate the whole budget"
     assert result is HandleResolution.PENDING
+
+
+async def test_a_slow_placement_can_no_longer_produce_UNKNOWN() -> None:
+    """The money property, stated as behaviour rather than as a count.
+
+    One transient read failure followed by clean reads. With no floor there was only a
+    single attempt, so that blip WAS the whole burst and the caller was told `UNKNOWN` —
+    "the order may be LIVE, never resubmit" — about a perfectly healthy order. With the
+    floor the retry lands and the answer degrades no further than `PENDING`.
+    """
+    outcomes: list[Exception | bool] = [RuntimeError("blip"), False, False]
+
+    async def resolve(_cid: str) -> bool:
+        nxt = outcomes.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    result = await recover_handle(
+        resolve,
+        client_order_id="cid-7",
+        submitted_at=_T0,
+        cadence_seconds=0.25,
+        deadline_seconds=1.5,
+        min_polls=3,
+        now=_clock(9000),  # placement ate the budget AND the first read failed
+        sleep=_no_sleep,
+    )
+    assert result is HandleResolution.PENDING, (
+        "a blip under a slow placement must not read as UNKNOWN"
+    )
+
+
+async def test_the_ceiling_still_bounds_the_burst_once_the_floor_is_met() -> None:
+    """The floor must not become an unbounded spin — the ceiling still stops it.
+
+    Without this, `min_polls` could be satisfied and the loop would keep going on a fast
+    placement, trading the operator's submit-to-known bar away to buy retries nobody
+    asked for.
+    """
+    calls: list[str] = []
+
+    async def resolve(cid: str) -> bool:
+        calls.append(cid)
+        return False
+
+    await recover_handle(
+        resolve,
+        client_order_id="cid-8",
+        submitted_at=_T0,
+        cadence_seconds=0.25,
+        deadline_seconds=1.5,
+        min_polls=2,
+        # a FAST placement: recovery starts at 300 ms, so the ceiling — not the floor —
+        # is what ends the burst. 300/550/800/1050/1300 then 1300+250 > 1500 -> stop.
+        now=_clock(300, 550, 800, 1050, 1300, 1550),
+        sleep=_no_sleep,
+    )
+    assert len(calls) == 5, f"ceiling should stop it at 5, got {len(calls)}"
+    assert len(calls) > 2, "and the floor is not what ended it here"
 
 
 # --------------------------------------------------- the router integration (TK-0424)
@@ -280,6 +344,7 @@ def _micro_live_router(
         submit_lock_wait_ms=120,
         handle_recovery_cadence_ms=1,
         handle_recovery_deadline_ms=5,
+        handle_recovery_min_polls=1,  # router tests assert routing, not the TK-0426 floor
     )
     router = OrderRouter(
         settings=settings,
@@ -370,3 +435,44 @@ async def test_a_normal_ack_is_untouched_by_any_of_this(monkeypatch: pytest.Monk
     assert not called, "recovery must not run when the ack already carried a handle"
     assert outcome.resolution is HandleResolution.CONFIRMED
     assert outcome.result.broker_order_id is not None
+
+
+async def test_the_router_actually_THREADS_min_polls_into_the_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 A setting that exists but is never passed is a silent no-op.
+
+    Every other test here calls `recover_handle` directly, so all of them would still
+    pass if the router simply never forwarded `handle_recovery_min_polls` — the floor
+    would fall back to its default of 1 in production while the unit tests stayed green.
+    This drives the REAL production path and counts the attempts it produces.
+    """
+    calls: list[str] = []
+
+    async def resolver(cid: str) -> bool:
+        calls.append(cid)
+        return False  # never resolves, so the burst runs to its bound
+
+    store = MemStore()
+    patch_repositories(monkeypatch, store)
+    adapter = _NoHandleAdapter()
+    settings = make_settings(
+        stage="micro_live",
+        real_routing_accounts=[_ACCOUNT],
+        submit_lock_wait_ms=120,
+        handle_recovery_cadence_ms=1,
+        handle_recovery_deadline_ms=1,  # ceiling already blown => only the floor can bound it
+        handle_recovery_min_polls=3,
+    )
+    router = OrderRouter(
+        settings=settings,
+        pool=object(),
+        redis=FakeRedis(),
+        liberator_adapter=adapter,
+        handle_resolver=resolver,
+    )
+
+    outcome = await router.submit(make_order(broker="liberator", account=_ACCOUNT))
+
+    assert len(calls) == 3, f"router must forward min_polls=3; burst ran {len(calls)}x"
+    assert outcome.resolution is HandleResolution.PENDING

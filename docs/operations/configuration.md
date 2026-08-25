@@ -116,7 +116,8 @@ Enforced in **every** stage (including `sim`), after the capability check and be
 | `EXECUTION_ENGINE_LIBERATOR_CIRCUIT_BREAKER_THRESHOLD` | int | `3` | — | Consecutive heartbeat failures before the breaker trips |
 | `EXECUTION_ENGINE_LIBERATOR_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
 | `EXECUTION_ENGINE_HANDLE_RECOVERY_CADENCE_MS` | int | `250` | — | Post-placement burst cadence (TK-0423). ≈ the bridge read latency (200–244 ms) — polling faster cannot produce a fresher answer, it only loads a venue session shared with the capture plane |
-| `EXECUTION_ENGINE_HANDLE_RECOVERY_DEADLINE_MS` | int | `1500` | — | Budget for the burst, measured from the **submit** timestamp (not the ack — the venue answers at 567–752 ms while our placement round-trip is 959–1175 ms). On expiry the submit reports `resolution: pending`/`unknown` instead of blocking |
+| `EXECUTION_ENGINE_HANDLE_RECOVERY_MIN_POLLS` | int | `3` | — | **Retry floor** (TK-0426). At least this many venue reads run, counted from whenever recovery starts. It exists because the deadline is submit-anchored, so a slow placement used to leave ~1 retry — making `unknown` ("the venue could not be read") reachable because **our own call** was slow. 🔴 Checked BEFORE the deadline and ANDed with it: the ceiling can never cut below the floor |
+| `EXECUTION_ENGINE_HANDLE_RECOVERY_DEADLINE_MS` | int | `1500` | — | **Submit-anchored ceiling**; may only end the burst *after* `MIN_POLLS` is satisfied. Bounds total submit-to-known inside the operator's 2 s bar: 3 × 250 ms on top of the worst observed placement (1175 ms) = 1925 ms. On expiry the submit reports `resolution: pending`/`unknown` instead of blocking |
 | `EXECUTION_ENGINE_LIBERATOR_POST_RATE_LIMIT` | int | `5` | — | Token bucket on `place()` only (req/s); `0` = unlimited |
 
 ## Streaming Pro adapter
