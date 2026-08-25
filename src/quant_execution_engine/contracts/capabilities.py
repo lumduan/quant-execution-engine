@@ -3,7 +3,14 @@
 The router enforces this BEFORE any venue I/O (D7): an unsupported
 ``(broker, market, order_type, tif, position_effect)`` is rejected with a
 typed error. The Liberator rows are validated against the live adapter since
-Phase 3 (``adapter_installed: true``); the Streaming Pro rows since Phase 8.
+Phase 3; the Streaming Pro rows since Phase 8.
+
+⚠️ ``adapter_installed`` is ``True`` on every row **here** because this matrix is the
+static contract — it records that the codebase HAS an adapter for that ``(broker,
+market)``. It is **not** served this way: ``api/routes.py::capabilities`` recomputes it
+per request from the constructed runtime, because as a wire field it must answer *"can
+this deployment route it"*, which this file cannot know. Serving the constant directly
+is the bug fixed 2026-08-25 — see ``_routable_now``.
 """
 
 from __future__ import annotations
