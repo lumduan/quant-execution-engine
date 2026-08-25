@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 import respx
 from pydantic import SecretStr
-from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
 from src.quant_execution_engine.adapters.liberator.errors import LiberatorTransportError
 from src.quant_execution_engine.adapters.liberator.transport import LiberatorTransport
@@ -112,13 +111,23 @@ async def test_place_mapping_error_rejects_preflight_without_http() -> None:
 
 
 @respx.mock
-async def test_place_missing_order_no_raises_adapter_error() -> None:
+async def test_place_missing_order_no_returns_an_accepted_ack_and_does_NOT_raise() -> None:
+    """🔴 REPLACES `test_place_missing_order_no_raises_adapter_error`, which asserted the bug.
+
+    That test encoded raising-after-a-venue-write as INTENDED, and was green for months. It
+    fired for real on 2026-08-25: the bridge returned 200, the venue accepted and numbered the
+    order 10993, and the caller got an HTTP 500 with an empty body — a duplicate-order shape on
+    any path that retries.
+
+    Full behaviour (marker, cancel wording, the AST guard) lives in test_adapter_lost_ack.py;
+    this keeps the old scenario in its original file so the change is visible where it broke.
+    """
     respx.post(f"{_BASE}/order/place/set").respond(
         json={"success": True, "data": {"errorCode": 0, "errMsg": "", "result": {}}}
     )
     adapter = make_adapter()
-    with pytest.raises(AdapterError, match="orderNo"):
-        await adapter.place(_liberator_order())
+    ack = await adapter.place(_liberator_order())
+    assert ack.rejected is False and ack.broker_order_id is None
     await adapter.aclose()
 
 

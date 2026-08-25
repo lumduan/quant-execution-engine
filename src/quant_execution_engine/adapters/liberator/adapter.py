@@ -34,7 +34,6 @@ from src.quant_execution_engine.adapters.base import (
     PlaceAck,
     Position,
 )
-from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.liberator import mapping
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
@@ -164,6 +163,10 @@ class LiberatorAdapter(BrokerAdapter):
         # cid -> (orderNo, market); warm path for cancels of orders this
         # process placed. The injected resolver is the durable fallback.
         self._order_no_cache: dict[str, tuple[str, Market]] = {}
+        # cids the venue ACCEPTED but for which the ack carried no orderNo. Distinct from
+        # "unknown order": these are LIVE and must never be resubmitted. Cleared once the
+        # reconciler supplies the handle. See the block in `place`.
+        self._awaiting_order_no: set[str] = set()
         self.last_heartbeat_ok: bool | None = None
 
     # ------------------------------------------------------------------ place
@@ -181,8 +184,34 @@ class LiberatorAdapter(BrokerAdapter):
             return PlaceAck(rejected=True, reject_reason=envelope.reject_reason())
         order_no = envelope.order_no()
         if order_no is None:
-            raise AdapterError("liberator ack carried no orderNo (data.result.orderNo)")
+            # 🔴 NEVER RAISE HERE. The venue has ALREADY ACCEPTED this order.
+            #
+            # This used to `raise AdapterError(...)`, which turned a landed order into an
+            # HTTP 500 with an empty body and skipped the `_order_no_cache` write below —
+            # so the engine held `broker_order_id=NULL` while the venue held a real number.
+            # Observed live on 2026-08-25: the bridge returned 200, the venue numbered the
+            # order 10993, and the caller got a 500. A 500 on a path that can retry is a
+            # DUPLICATE-ORDER shape, which is far worse than a missing handle.
+            #
+            # ⚠️ The ordering was the defect, not the missing field: any raise placed after
+            # a successful venue write loses the handle to an order that exists. So this
+            # returns a TRUTHFUL ack instead — accepted, handle pending — and lets the
+            # reconciler's ADR §B lost-ack `fuzzy_match` supply the number on its next pass
+            # (it joins on account/symbol/side/qty + entry-time skew, needing no client id).
+            #
+            # `broker_order_id=None` is the schema's DESIGNED pre-ack state, not a sentinel:
+            # `12_schema_execution.sql:83` — "venue-assigned and NULL until ack (ADR §B)".
+            self._awaiting_order_no.add(order.client_order_id)
+            logger.error(
+                "liberator ack carried no orderNo (data.result.orderNo) for %s — the order IS "
+                "LIVE at the venue and is reported accepted with broker_order_id=None. The "
+                "handle must come from the next reconcile pass; until then it cannot be "
+                "cancelled by client_order_id. NOT raising: the venue already accepted it.",
+                order.client_order_id,
+            )
+            return PlaceAck(broker_order_id=None, fills=())
         self._order_no_cache[order.client_order_id] = (order_no, order.market)
+        self._awaiting_order_no.discard(order.client_order_id)
         # Fills arrive via the reconciliation loop in v1 (no per-fill ack data).
         return PlaceAck(broker_order_id=order_no, fills=())
 
@@ -192,6 +221,18 @@ class LiberatorAdapter(BrokerAdapter):
         if resolved is None and self._resolve_order is not None:
             resolved = await self._resolve_order(client_order_id)
         if resolved is None:
+            if client_order_id in self._awaiting_order_no:
+                # A materially different situation from "unknown order", and the caller must
+                # be able to tell them apart: this one IS live at the venue. Reporting both
+                # as "no mapping" is the same class of defect as the ack that caused it.
+                return CancelAck(
+                    ok=False,
+                    reason=(
+                        "order is LIVE at the venue but its broker_order_id has not been "
+                        "reconciled yet (the place-ack carried no orderNo) — retry after the "
+                        "next reconcile pass; do NOT resubmit"
+                    ),
+                )
             return CancelAck(ok=False, reason="no broker_order_id mapping for client_order_id")
         order_no, market = resolved
         payload = mapping.to_cancel_payload(order_no, pin=self._pin.get_secret_value())
