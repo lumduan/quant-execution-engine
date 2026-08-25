@@ -220,3 +220,62 @@ exists (the §H deferral stands; the durable store remains truth, the stream adv
    real-broker native amend — expected. Liberator + Streaming Pro use `cancel_replace`; only the
    `sim` simulator retains native amend. The `PATCH /orders` route + the cancel_replace path are
    intact.
+
+## Post-placement handle recovery + the `resolution` contract (DECISION, 2026-08-25)
+
+Realises [[TK-0423]]; fixes [[TK-0424]]. Shipped `ea11127` (PR #42), deployed to AWS `micro_live`
+2026-08-25 12:41 BKK and verified live the same day.
+
+1. **THE FACT THAT FORCED IT.** The Liberator place-ack carries **no `orderNo` at all** — measured on
+   both order classes (9 FOKs terminal on arrival; 1 DAY LIMIT that rested), so it is unconditional,
+   not a terminal-on-arrival quirk. `.claude/knowledge/broker-research-liberator.md` had asserted the
+   opposite since it was written; nothing had checked it against a real placement.
+
+2. **THE DEFECT.** `core/router.py` raised `AdapterError` when the ack carried no handle, under a
+   `# pragma: no cover - adapter contract`. That surfaced as **HTTP 500 for an order the venue had
+   ACCEPTED** — a caller cannot distinguish *"it failed"* from *"it is live and I lost the handle"*,
+   which for a legging strategy means neither sending leg 2 nor unwinding leg 1. ⚠️ **The pragma is
+   how it survived:** it asserted the branch was unreachable, which was true when written and was
+   falsified by PR #41's adapter-side change — while the pragma kept the ≥90 % coverage gate silent.
+   **A change that relaxes a contract must re-read the `pragma: no cover` lines that cite it.**
+
+3. **DECISION — the raise becomes the read, not a deletion.** Deleting the raise would persist
+   `PENDING_NEW` with a null handle and leave the caller equally uninformed, just with a 200. The
+   router reaches that line **exactly** when it lacks the handle, which is **exactly** what a
+   venue-truth read recovers, so the burst is placed there. One change, both defects.
+
+4. **THE TWO FLOORS, both measured — neither is a preference.**
+   - cadence **250 ms** ≈ the bridge read itself (200–244 ms). Faster cannot be fresher; it queues
+     reads on a venue session **shared with the capture plane**, whose data is not backfillable.
+   - budget **1500 ms**, anchored on the **persisted submit timestamp, not the ack** — the venue
+     reaches terminal at 567–752 ms while our placement round-trip is 959–1,175 ms, so an
+     ack-anchored clock starts ~400 ms late and no cadence recovers that.
+
+5. **STOPS ON HANDLE RECOVERED, NEVER ON TERMINAL.** A resting order has no terminal state; waiting
+   for one would hang the POST until the close. Resting-vs-terminal is reported, never waited on.
+
+6. **SHARED CODE, NOT A PARALLEL COPY.** The reconciler's per-row body was **extracted** so the burst
+   and the steady loop use one matcher and one executor. Copy-paste between exactly these two
+   produced the TK-0036/37/90 back-ports. `resolve_order_now()` bypasses the 5 s lost-ack gate, which
+   is sound **only there**: the gate exists so the steady loop cannot fuzzy-match an order whose ack
+   is still in flight, and this path runs only *after* an ack that already returned empty. It
+   **raises** on an unreadable venue rather than returning `False`.
+
+7. **CALLER CONTRACT — `resolution: confirmed | pending | unknown`** on the `POST /orders` body only.
+   🔴 `pending` (venue **was** read; order working) and `unknown` (venue **not** read; order may be
+   LIVE with its handle unrecovered) must never share a field, a code path, or a default — only
+   `unknown` is dangerous, and a resubmit on it double-fills. `GET /orders/{cid}` deliberately omits
+   the field: a later read is not evidence about what was known at submit time.
+
+8. **THE GUARANTEE IS STRUCTURAL, NOT STATISTICAL.** `POST /orders` cannot return before the venue has
+   been read at least once, so submit-to-known is bounded by the call's own latency rather than by the
+   12 s reconcile interval. Measured live: **1,205 ms**, against 8,865 ms before — inside the
+   operator's stated 2 s bar with 40 % margin.
+
+9. **NOT BUILT, deliberately: per-account burst coalescing.** `orders/{account}` returns the whole
+   list, so one burst could serve every in-flight order on that account. Deferred because the only
+   consumer legs **sequentially** and SET/TFEX are **different accounts** — no concurrency to
+   coalesce — and this is a real-money path where the smaller change is the better one. Recorded on
+   [[TK-0423]]; revisit if concurrent same-account submits appear.
+
+Wire facts (venue side): [`docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) (umbrella).

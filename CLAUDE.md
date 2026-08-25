@@ -341,6 +341,17 @@ Tear down in reverse; only `quant-infra-db` down removes `quant-network`.
    loop repairs submit/ack drift against broker truth.
 6. **Order-submission endpoints are private/owner-mode** — public mode answers only health,
    capabilities, and reads. Raw broker payloads never cross the public boundary.
+7. 🔴 **A venue ack may carry NO order handle, and that is not an error.** The Liberator place-ack
+   carries no `orderNo` at all (measured 2026-08-25 across both order classes), so `POST /orders`
+   recovers it from venue truth inline and reports `resolution: confirmed | pending | unknown`.
+   **`pending` (venue read, order working) and `unknown` (venue NOT read, order may be LIVE) must
+   never be collapsed** — only `unknown` means the handle was not recovered, and a resubmit on it
+   double-fills. Never re-raise on a missing handle: that returned HTTP 500 for a live order
+   ([[TK-0424]]). Wire facts:
+   [`../docs/reference/liberator-order-wire.md`](../docs/reference/liberator-order-wire.md).
+   *(Appended as 7 rather than inserted: `hard rule 3` / `hard rule 5` are cited by number in
+   `kill_switch.py`, `router.py`, `settings.py`, both transports and `repositories.py` — renumbering
+   would silently falsify all of them.)*
 
 ## Hard rules — inherited from the umbrella
 

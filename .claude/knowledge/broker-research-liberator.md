@@ -65,9 +65,31 @@ pre-place. Models are Pydantic with `errorCode`/`errMsg`/`result` envelopes.
 
 ## Idempotency
 
-- **None.** Orders are identified by the broker-assigned `orderNo` returned on ack; there is no
-  client idempotency key. The **engine** owns the `client_order_id ↔ orderNo` mapping and
-  dedupes before routing (D5).
+> 🔴 **CORRECTED 2026-08-25 — the original text below was WRONG about where `orderNo` comes from,
+> and it was load-bearing.** It is retained as a period record rather than deleted, because a
+> superseded claim with no pointer to its correction is how the claim keeps being believed.
+>
+> ~~"Orders are identified by the broker-assigned `orderNo` **returned on ack**"~~ — **false.**
+> **The place-ack carries no `orderNo` at all.** Measured on both order classes, so this is not a
+> terminal-on-arrival quirk:
+>
+> | order class | sample | ack carried `orderNo`? |
+> |---|---|---|
+> | FOK, terminal on arrival | 9 (VGI, `session:cash-carry`) | ❌ |
+> | DAY LIMIT, **rested** at the venue | 1 (KTB `19186`) | ❌ |
+>
+> The research was written from the venue's documented shape; nothing had ever checked it against a
+> real placement. The engine assumed a handle would arrive and **raised** when it did not, which
+> surfaced as HTTP 500 for an order the venue had accepted ([[TK-0424]]).
+
+- **None.** The venue assigns an `orderNo`, but it is **not returned on the ack** — it exists only in
+  `GET orders/{account}`, so the engine recovers it with a bounded post-placement burst ([[TK-0423]])
+  and reports how much it knows via `resolution` on the submit response. There is no client
+  idempotency key: the venue's order record carries **no client reference field of any kind**, which
+  is why the ADR §B `fuzzy_match` (`account, symbol, side, qty` + `entryTime` skew) exists at all.
+  The **engine** owns the `client_order_id ↔ orderNo` mapping and dedupes before routing (D5).
+- Full wire detail — status vocabulary, the field list, the measured latencies:
+  [`docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) (umbrella).
 
 ## Status / error taxonomy
 

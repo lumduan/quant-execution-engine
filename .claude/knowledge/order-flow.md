@@ -35,11 +35,26 @@ NormalizedOrderResult  (201 new / 200 duplicate)   — built from the durable ro
 
 ```
 ack = adapter.place(order)
-  rejected            → update_status(REJECTED) + set_reject_reason
+  rejected            → update_status(REJECTED) + set_reject_reason        → resolution=confirmed
+  broker_order_id is None
+                      → _recover_handle(order)                             → resolution=confirmed|pending|unknown
+                        # TK-0423/TK-0424. NOT an error path: the Liberator ack carries no orderNo
+                        # AT ALL, so this is that venue's NORMAL branch. Bursts against venue truth
+                        # (250 ms cadence, 1500 ms budget anchored on the persisted submit ts) and
+                        # resolves through the SAME reconciler matcher + executor as the steady loop.
+                        # It used to `raise AdapterError` here → HTTP 500 for a LIVE order.
   else                → ack_order(cid, broker_order_id)        # PENDING_NEW→NEW, id stamped ATOMICALLY (§B)
                         for fill in ack.fills: apply_fill(...)  # NEW→PARTIALLY_FILLED / →FILLED; fills deduped
                         if ack.remainder_cancelled (IOC):       # PENDING_CANCEL → cancel() → CANCELLED
+                                                                → resolution=confirmed
 ```
+
+`resolution` rides on `SubmitOutcome` (transient per-submit knowledge, **not** persisted order state)
+and is merged onto the `POST /orders` body only — `GET /orders/{cid}` deliberately omits it, because a
+later read is not evidence about what was known at submit time. 🔴 `pending` (venue read, order
+working) and `unknown` (venue **not** read, order may be live) never share a code path: only `unknown`
+means the handle was not recovered, and a resubmit on it double-fills. Wire facts:
+[`docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) (umbrella).
 
 ## Cancel path (not kill-switch-gated)
 

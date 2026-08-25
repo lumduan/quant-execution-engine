@@ -95,6 +95,7 @@ canonical. Phase 7 (this docs work) is [`plans/phase7-documentation.md`](plans/p
 | Umbrella feature roadmap | [`../../plans/feature-execution-engine/ROADMAP.md`](../../plans/feature-execution-engine/ROADMAP.md) |
 | ADR (D1–D13, frozen contracts) | [`../../.claude/knowledge/feature-execution-engine.md`](../../.claude/knowledge/feature-execution-engine.md) |
 | Broker research (cited) | [`../.claude/knowledge/broker-research-liberator.md`](../.claude/knowledge/broker-research-liberator.md) (the Settrade research note was removed with broker-023 on 2026-07-18) |
+| **Liberator ORDER wire format (captured)** | [`../../docs/reference/liberator-order-wire.md`](../../docs/reference/liberator-order-wire.md) — the place-ack carries no `orderNo`, status vocabulary, measured latencies. Sibling: [`liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md) |
 | Capability matrix / contract / state machine | [`../.claude/knowledge/capability-matrix.md`](../.claude/knowledge/capability-matrix.md), [`../.claude/knowledge/normalized-order-contract.md`](../.claude/knowledge/normalized-order-contract.md), [`../.claude/knowledge/order-state-machine.md`](../.claude/knowledge/order-state-machine.md) |
 | Decision log | [`../.claude/knowledge/decision-log.md`](../.claude/knowledge/decision-log.md) |
 | Order-update stream / order book | [`../.claude/knowledge/order-update-stream.md`](../.claude/knowledge/order-update-stream.md), [`../.claude/knowledge/order-book-service.md`](../.claude/knowledge/order-book-service.md) |
