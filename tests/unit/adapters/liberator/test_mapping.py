@@ -212,8 +212,18 @@ def _item(**overrides: Any) -> VenueOrderItem:
         ({"status": "CANCELLED"}, mapping.VenueOrderState.CANCELLED),
         ({"status": "Canceled"}, mapping.VenueOrderState.CANCELLED),
         ({"statusShow": "C"}, mapping.VenueOrderState.CANCELLED),
+        # 🔴 TK-0428: `X` used to assert EXPIRED here. The venue's own dictionary says
+        # X = Cancelled, and it has NO expiry code at all — so this row was pinning
+        # the bug in place. All THREE of the venue's cancel codes now assert CANCELLED.
+        ({"statusShow": "X"}, mapping.VenueOrderState.CANCELLED),
+        ({"statusShow": "XC"}, mapping.VenueOrderState.CANCELLED),
+        # XA: terminal per the venue's own cancel-exclusion set, unnamed in its
+        # dictionary. Mapped by inference; leaving it RESTING would strand a
+        # venue-terminal order open forever.
+        ({"statusShow": "XA"}, mapping.VenueOrderState.CANCELLED),
+        # The status WORD branch survives as an instrument — the venue is not believed
+        # to emit it, and if it ever does we want to know rather than silently cope.
         ({"status": "EXPIRED"}, mapping.VenueOrderState.EXPIRED),
-        ({"statusShow": "X"}, mapping.VenueOrderState.EXPIRED),
         (
             {"cancelled": 100, "balance": 0, "matched": 0, "status": "whatever"},
             mapping.VenueOrderState.CANCELLED,

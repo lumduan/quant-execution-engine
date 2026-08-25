@@ -15,6 +15,7 @@ Wire payloads contain JSON-safe primitives only: prices are Decimal-as-string
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from decimal import Decimal
 from enum import StrEnum
@@ -31,6 +32,8 @@ from src.quant_execution_engine.contracts.enums import (
     Tif,
 )
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
+
+logger = logging.getLogger(__name__)
 
 # Write-side vocabulary (verified against the pinned submodule's Pydantic models).
 _SET_PRICE_TYPES: dict[OrderType, str] = {
@@ -267,25 +270,72 @@ _CANCELLED_STATUS = frozenset({"CANCELLED", "CANCELED", "CXL"})
 _REJECTED_STATUS = frozenset({"REJECTED", "REJECT"})
 _EXPIRED_STATUS = frozenset({"EXPIRED", "EXPIRE"})
 
+# ── statusShow codes, from the VENUE'S OWN code→label dictionary ──────────────────
+# Decoded 2026-08-25 from the public client bundle by ``session:lib-research``
+# (positive control 6/6) — see the umbrella `docs/reference/liberator-order-plane.md`.
+#
+# 🔴 THREE DISTINCT CODES ALL MEAN *CANCELLED*: C, X, XC. Until 2026-08-25 this module
+# mapped ``show == "X"`` to EXPIRED, which was simply wrong — and it is in production
+# data: order 18439 was cancelled and is recorded EXPIRED ([[TK-0428]]).
+_CANCELLED_SHOW = frozenset({"C", "X", "XC"})
+_REJECTED_SHOW = frozenset({"R"})
+
+# ⚠️ XA — TERMINAL, and the venue cannot name it either. It appears in both of the
+# venue client's terminal sets (excluded from bulk cancel alongside Matched/Rejected/
+# the three Cancelled codes) yet has NO entry in its label dictionary; rendered in the
+# app's own Status column it would come out blank. So: terminal is CAPTURED, the
+# flavour is INFERRED.
+_TERMINAL_UNNAMED_SHOW = frozenset({"XA"})
+
 
 def classify_venue_state(item: VenueOrderItem) -> VenueOrderState:
     """Map venue status/rejectCode/counters onto the coarse classification.
 
     Conservative by design: a non-empty ``rejectCode`` always wins; explicit
-    status words match next (full words on ``status``, single letters on
-    ``statusShow``); a fully-cancelled counter triple is the numeric fallback;
-    anything unrecognized is treated as RESTING (the reconciler then only acts
-    on the ``matched`` counter — never guesses a terminal state).
+    status words match next (full words on ``status``, codes on ``statusShow``);
+    a fully-cancelled counter triple is the numeric fallback; anything
+    unrecognized is treated as RESTING (the reconciler then only acts on the
+    ``matched`` counter — never guesses a terminal state).
+
+    🔑 That conservative default is deliberately preserved. It is why the codes this
+    venue emits but we had never mapped (``XC``, ``XA``) failed *safe* — reading as
+    still-working rather than inventing a fill. The defect it could not catch was the
+    one code that looked handled and was mapped **wrongly** (``X``).
     """
     if item.reject_code.strip():
         return VenueOrderState.REJECTED
     status = item.status.strip().upper()
     show = item.status_show.strip().upper()
-    if status in _CANCELLED_STATUS or show == "C":
+    if status in _CANCELLED_STATUS or show in _CANCELLED_SHOW:
         return VenueOrderState.CANCELLED
-    if status in _REJECTED_STATUS or show == "R":
+    if status in _REJECTED_STATUS or show in _REJECTED_SHOW:
         return VenueOrderState.REJECTED
-    if status in _EXPIRED_STATUS or show == "X":
+    if show in _TERMINAL_UNNAMED_SHOW:
+        # Treated as CANCELLED on inference, and said out loud every time because the
+        # inference is not evidence. It CANNOT cost a fill: ``plan_actions`` emits the
+        # ``matched``-delta fill action BEFORE appending any terminal action, so the
+        # label never gates fill capture. The alternative — leaving it RESTING — is
+        # strictly worse: a venue-terminal order open forever, and any caller waiting
+        # on terminality waits forever with it.
+        logger.warning(
+            "liberator venue status %r is TERMINAL but unnamed in the venue's own "
+            "dictionary — treating as CANCELLED by inference (order_no=%s). If you are "
+            "reading this, that inference now has evidence: record it.",
+            show,
+            item.order_no,
+        )
+        return VenueOrderState.CANCELLED
+    if status in _EXPIRED_STATUS:
+        # ⚠️ Retained as an INSTRUMENT, not as a live mapping. The venue's dictionary
+        # contains no expiry code at all, so this should never fire; if it ever does,
+        # the dictionary is incomplete and that is worth knowing. ``show == "X"`` was
+        # removed from this branch — that was the bug.
+        logger.warning(
+            "liberator emitted an EXPIRY status word (%r) — the venue's decoded "
+            "dictionary has no expiry code, so this contradicts it (order_no=%s)",
+            status,
+            item.order_no,
+        )
         return VenueOrderState.EXPIRED
     if item.cancelled > 0 and item.balance == 0 and item.matched < item.volume:
         return VenueOrderState.CANCELLED

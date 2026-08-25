@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from src.quant_execution_engine.adapters.liberator.errors import LiberatorTransportError
 from src.quant_execution_engine.adapters.liberator.models import (
     LiberatorEnvelope,
     parse_order_items,
@@ -94,9 +96,39 @@ def test_parse_order_items_happy_path_and_tolerance() -> None:
     assert item.entry_time is not None and item.entry_time.tzinfo is not None
 
 
-def test_parse_order_items_missing_levels_yield_empty() -> None:
-    assert parse_order_items({}) == []
-    assert parse_order_items({"data": None}) == []
-    assert parse_order_items({"data": {"result": None}}) == []
+def test_parse_order_items_empty_book_is_empty_UNPARSEABLE_RAISES() -> None:
+    """🔴 TK-0428 — the discriminator. These two must NOT produce the same answer.
+
+    This test used to assert that EVERY missing level yields ``[]``, which pinned the
+    defect: an envelope we cannot read looked exactly like a venue with no open orders.
+    They drive opposite actions — on an empty book the reconciler resolves a stuck
+    ``PENDING_NEW`` to REJECTED at 60 s and confirms a ``PENDING_CANCEL`` as CANCELLED,
+    so an unreadable shape would mark LIVE orders terminal, silently.
+
+    A test asserting only "returns []" passes with the bug fully intact. This asserts
+    the two cases DIVERGE.
+    """
+    # A result object with no rows: the venue genuinely has nothing open.
+    assert parse_order_items({"data": {"result": {"list": []}}}) == []
     assert parse_order_items({"data": {"result": {"list": None}}}) == []
     assert parse_order_items({"data": {"result": {}}}) == []
+    assert parse_order_items({"raw_response": {"result": {}}}) == []
+
+    # No result object anywhere: we could not read the venue. Never [].
+    for unreadable in ({}, {"data": None}, {"data": {"result": None}}, {"nonsense": 1}):
+        with pytest.raises(LiberatorTransportError):
+            parse_order_items(unreadable)
+
+
+def test_parse_order_items_accepts_EITHER_envelope_key() -> None:
+    """Back-compat plus forward-compat, so the bridge (GH #208) can change either way.
+
+    ``data`` is what the bridge sends on this route today; ``raw_response`` is what the
+    balance routes already use and what the bridge may standardise on. Both must parse,
+    or the bridge change becomes a flag day on a real-money path.
+    """
+    row = {"orderNo": "18439", "symbol": "KTB", "side": "B", "volume": 100}
+    via_data = parse_order_items({"data": {"result": {"list": [row]}}})
+    via_raw = parse_order_items({"raw_response": {"result": {"list": [row]}}})
+    assert [i.order_no for i in via_data] == ["18439"]
+    assert [i.order_no for i in via_raw] == ["18439"]

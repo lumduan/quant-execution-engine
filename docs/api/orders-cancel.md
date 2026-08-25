@@ -32,20 +32,21 @@ The cancel walks the frozen two-step edge — `NEW` / `PARTIALLY_FILLED → PEND
 **Measured (Liberator, 2026-08-25, a genuinely resting SET order):** `DELETE` returned **200 in
 1,027 ms**, engine terminal **`CANCELLED` at +1,032 ms**.
 
-### ⚠️ `CANCELLED` vs `EXPIRED` — it depends on WHO cancelled
+### A cancel records `CANCELLED` — whoever issued it
 
-The Liberator venue reports a resting order that was cancelled as `status=X`, and the reconciler's
-`classify_venue_state` maps `X` → **`EXPIRED`**. That mapping does **not** reach a cancel you issued
-here:
+The Liberator venue reports a cancelled order as `statusShow` `C`, `X` **or** `XC` — its own
+dictionary gives all three the label *Cancelled*, and the venue has **no expiry code at all**. The
+engine maps all three to `CANCELLED`, so an unwind path asking *"did my cancel work?"* gets the same
+answer whether the cancel came from this endpoint, from the bridge, or from the venue.
 
-| who cancelled | engine records |
-|---|---|
-| **this endpoint** (`DELETE /orders/{cid}`) | **`CANCELLED`** — the engine drives its own frozen `PENDING_CANCEL → CANCELLED` path, and the venue's `X` is never re-interpreted (the row is terminal by then, and the reconciler's working set excludes terminal rows) |
-| venue-side, or issued directly at the bridge | **`EXPIRED`** — discovered by the reconciler, which only has the venue's `X` to go on |
+⚠️ **This was wrong until 2026-08-25 ([[TK-0428]]).** `classify_venue_state` mapped `X` → `EXPIRED`,
+so a cancel discovered by the reconciler was recorded as *expired*. One historical row
+(order `18439`) still carries the misclassification and is deliberately left — `EXPIRED → CANCELLED`
+is not one of the frozen 13 edges.
 
-⇒ if you are writing an unwind path that asks *"did my cancel work?"*, cancel **through the engine**
-and expect `CANCELLED`. Venue wire detail:
-[`../../../docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) §3.
+Venue wire detail: [`../../../docs/reference/liberator-order-wire.md`](../../../docs/reference/liberator-order-wire.md) §3
+and the authoritative dictionary in
+[`../../../docs/reference/liberator-order-plane.md`](../../../docs/reference/liberator-order-plane.md).
 
 At the venue: Liberator cancels by orderNo list (bulk ≤ 50) + PIN. (Settrade's `PATCH .../cancel` left
 with broker-023 on 2026-07-18.)

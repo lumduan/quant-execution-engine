@@ -3,9 +3,13 @@
 Shapes verified against ``broker-api/liberator-trading-api`` (umbrella submodule):
 every endpoint answers ``{success, message, data: {errorCode, errMsg, result}}``;
 ``errorCode == 0`` with no ``errMsg`` is success; a successful place carries the
-venue order number at ``data.result.orderNo``; the orders query nests its items
-at ``data.result.list``. Models are tolerant (``extra="ignore"``) — the engine
-consumes a subset and must not break when upstream adds fields.
+venue order number at ``data.result.orderNo``.
+
+⚠️ **The orders query is NOT consistently under ``data``.** The bridge populates
+``data`` on some routes and ``raw_response`` on others (GH #208 Defect 2, still open),
+so :func:`parse_order_items` accepts either — and RAISES rather than reporting an
+unreadable envelope as an empty order book. Models are tolerant (``extra="ignore"``)
+about *fields*; the envelope is deliberately not tolerant about *shape*.
 """
 
 from __future__ import annotations
@@ -15,6 +19,8 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.quant_execution_engine.adapters.liberator.errors import LiberatorTransportError
 
 
 class LiberatorData(BaseModel):
@@ -104,18 +110,49 @@ class VenueOrderItem(BaseModel):
 
 
 def parse_order_items(payload: dict[str, Any]) -> list[VenueOrderItem]:
-    """Extract ``data.result.list`` items from an orders-query response.
+    """Extract the venue order rows from an orders-query response.
 
-    Tolerant: any missing level yields ``[]`` (an empty book is not an error;
-    transport-level failures raise before reaching here).
+    Accepts **either** envelope key — ``raw_response.result.list`` or
+    ``data.result.list`` — because the bridge is inconsistent between them and the
+    decision on which to standardise is still open (GH #208 Defect 2). Accepting both
+    is what lets that bridge change land in either order without a flag day.
+
+    🔴 **AN UNPARSEABLE ENVELOPE RAISES; IT DOES NOT RETURN ``[]``.**
+
+    This function used to be "tolerant: any missing level yields ``[]``", which made an
+    envelope it could not read **indistinguishable from a venue with no open orders** —
+    and the two drive opposite actions. On an empty book the reconciler resolves a stuck
+    ``PENDING_NEW`` to ``REJECTED ("ack_lost_unmatched")`` at 60 s and confirms a
+    ``PENDING_CANCEL`` as ``CANCELLED``. So a shape change it could not parse would have
+    **marked live orders terminal**, silently, one poll at a time.
+
+    That was not hypothetical: this function reads ``data`` while
+    ``adapter._venue_result`` reads ``raw_response`` for the balance routes, so
+    standardising the bridge on ``raw_response`` — the obvious tidy-up — would have done
+    exactly that.
+
+    :class:`LiberatorTransportError` is reused deliberately rather than inventing an
+    error type: the plumbing for it is already the fail-safe one. ``reconcile_once``
+    catches it and **skips the account** untouched, and ``resolve_order_now`` lets it
+    propagate so the submit path reports ``UNKNOWN`` — "we could not read the venue",
+    which is exactly what has happened.
+
+    An envelope that *does* carry a ``result`` object with no ``list`` is a genuinely
+    empty book and correctly returns ``[]``.
     """
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return []
-    result = data.get("result")
-    if not isinstance(result, dict):
-        return []
+    result: Any = None
+    for envelope_key in ("raw_response", "data"):
+        envelope = payload.get(envelope_key)
+        if isinstance(envelope, dict) and isinstance(envelope.get("result"), dict):
+            result = envelope["result"]
+            break
+    if result is None:
+        raise LiberatorTransportError(
+            "liberator orders: no result object under 'raw_response' or 'data' — "
+            "refusing to report this as an empty order book, because an empty book "
+            "resolves live orders to REJECTED/CANCELLED (GH #208, [[TK-0428]])"
+        )
     raw_items = result.get("list")
     if not isinstance(raw_items, list):
-        return []
+        return []  # result present, no list => the venue really has no open orders
     return [VenueOrderItem.model_validate(item) for item in raw_items if isinstance(item, dict)]
