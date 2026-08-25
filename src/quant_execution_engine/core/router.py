@@ -291,6 +291,7 @@ class OrderRouter:
             submitted_at=submitted_at,
             cadence_seconds=self._settings.handle_recovery_cadence_ms / 1000.0,
             deadline_seconds=self._settings.handle_recovery_deadline_ms / 1000.0,
+            min_polls=self._settings.handle_recovery_min_polls,
         )
 
     async def _await_concurrent(self, client_order_id: str) -> SubmitOutcome:

@@ -108,16 +108,29 @@ class Settings(BaseSettings):
     # orderNo, so without this the handle only appears at the next reconcile pass —
     # ~6 s on average at the 12 s default, against dislocations that live 0.58-2.6 s.
     #
-    # Both numbers are floors read off measurement, not preferences:
     #   * cadence 250 ms ~= the bridge read itself (200-244 ms). Polling faster cannot
     #     produce a fresher answer — it queues reads and loads a venue session SHARED
     #     with the capture plane, whose data is not backfillable.
-    #   * deadline 1500 ms is measured from the SUBMIT timestamp, and the venue holds
-    #     the answer at 567-752 ms while our own placement round-trip is 959-1175 ms,
-    #     so the first attempt normally succeeds. The budget is for the tail.
-    # Raising the deadline trades caller latency for a slightly better hit rate; it
-    # never makes the answer arrive sooner. Lowering the cadence buys nothing.
+    #
+    #   * MIN_POLLS is the RETRY FLOOR and it exists to break a coupling ([[TK-0426]]).
+    #     `deadline` is anchored on the SUBMIT timestamp, so the placement round-trip
+    #     (measured 896-1175 ms, mean 1197 ms including recovery) sits INSIDE the budget
+    #     and leaves only ~300 ms — about one retry. That made the retry budget a
+    #     function of placement latency, which we do not control: a slow placement could
+    #     drive the answer to UNKNOWN, and UNKNOWN means "the venue could not be read".
+    #     🔴 An alarm that fires because OUR OWN call was slow is firing for a cause
+    #     unrelated to what it detects. The floor guarantees N attempts from whenever
+    #     recovery starts, so placement latency can no longer produce that reading.
+    #
+    #   * deadline 1500 ms is now purely the SUBMIT-ANCHORED CEILING, and it may only
+    #     cut the burst short AFTER the floor is satisfied. It keeps total
+    #     submit-to-known inside the operator's 2 s bar: 3 polls x 250 ms = 750 ms on
+    #     top of the worst observed placement (1175 ms) = 1925 ms.
+    #
+    # ⚠️ A pure ack-anchored budget (the obvious fix) decouples correctly but drops the
+    # ceiling: 1175 + 1500 = 2675 ms, past the bar. Floor + ceiling keeps both.
     handle_recovery_cadence_ms: int = 250
+    handle_recovery_min_polls: int = 3
     handle_recovery_deadline_ms: int = 1500
 
     # Broker: Streaming Pro (Phase 8 / feature-streaming-pro-adapter Phase 4) — the

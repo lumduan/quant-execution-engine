@@ -66,7 +66,9 @@ Body is a `NormalizedOrderResult`:
 It answers what the order state cannot: *did we read the venue, or are we guessing?*
 Some venues (Liberator) return **no order handle on the place-ack at all**, so after placing,
 the engine bursts against venue truth — cadence `HANDLE_RECOVERY_CADENCE_MS` (250 ms, ≈ the read
-latency), budget `HANDLE_RECOVERY_DEADLINE_MS` (1500 ms, measured from **submit**, not from the ack).
+latency), at least `HANDLE_RECOVERY_MIN_POLLS` (3) attempts, bounded by
+`HANDLE_RECOVERY_DEADLINE_MS` (1500 ms from **submit**) — which may only end the burst *after*
+the floor is met, so a slow placement can never starve the retries into a false `unknown`.
 
 | value | meaning | may the caller resubmit? |
 |---|---|---|

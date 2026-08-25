@@ -64,15 +64,28 @@ async def recover_handle(
     submitted_at: datetime,
     cadence_seconds: float,
     deadline_seconds: float,
+    min_polls: int = 1,
     now: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> HandleResolution:
     """Burst against venue truth until this order resolves, or the budget runs out.
 
-    ``deadline_seconds`` is measured from ``submitted_at`` (the persisted submit
-    timestamp), NOT from entry — see the module docstring. **At least one attempt
-    always runs**, even when the placement round-trip already consumed the budget,
-    because that is precisely the case where the venue has had longest to answer.
+    Two bounds, and the ORDER between them is the whole fix ([[TK-0426]]):
+
+    * ``min_polls`` — the **retry floor**. At least this many attempts run, counted from
+      whenever recovery starts. It exists because ``deadline_seconds`` is anchored on the
+      *submit* timestamp, so the placement round-trip sits INSIDE the budget: at the
+      measured mean (1197 ms against 1500 ms) only ~300 ms survived — about one retry —
+      and a slow placement could leave none. 🔴 That made ``UNKNOWN`` (*"the venue could
+      not be read"*) reachable because **our own call was slow**, firing the expensive
+      signal for a cause unrelated to what it detects.
+    * ``deadline_seconds`` — the **submit-anchored ceiling**, which may only cut the burst
+      short **after** the floor is satisfied. It bounds total submit-to-known: 3 × 250 ms
+      on top of the worst observed placement (1175 ms) = 1925 ms, inside the operator's
+      2 s bar.
+
+    ⚠️ A pure ack-anchored budget — the obvious fix — decouples correctly but drops the
+    ceiling (1175 + 1500 = 2675 ms, past the bar). Floor-then-ceiling keeps both.
 
     Returns, and the distinction is the whole point:
 
@@ -102,8 +115,12 @@ async def recover_handle(
             # venue*, and every way of failing to read means the same thing here.
             logger.warning("handle_recovery: %s venue read failed: %s", client_order_id, exc)
 
+        # 🔴 FLOOR BEFORE CEILING. `attempts >= min_polls` is checked FIRST and is
+        # ANDed, so a placement that already ate the submit-anchored budget cannot
+        # reduce the retry count to zero — which is exactly how UNKNOWN became
+        # reachable for a healthy order ([[TK-0426]]).
         elapsed = _elapsed_ms(now(), submitted_at) / 1000.0
-        if elapsed + cadence_seconds > deadline_seconds:
+        if attempts >= min_polls and elapsed + cadence_seconds > deadline_seconds:
             break
         await sleep(cadence_seconds)
 
