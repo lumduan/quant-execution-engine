@@ -18,7 +18,7 @@ from typing import Any
 
 import asyncpg
 
-from src.quant_execution_engine.adapters.base import AmendAck, BrokerAdapter
+from src.quant_execution_engine.adapters.base import AccountInfo, AmendAck, BrokerAdapter
 from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.market_data import MarketDataClient
 from src.quant_execution_engine.adapters.sim import FillPriceSource, SimAdapter
@@ -533,6 +533,50 @@ class OrderRouter:
         if row is None:
             raise OrderNotFound("unknown client_order_id", client_order_id=client_order_id)
         return self._to_result(row)
+
+    # ------------------------------------------------------------- broker reads
+    # These exist so a strategy never has to know WHICH broker it is talking to.
+    # Liberator and Streaming Pro have nothing in common at the wire — different
+    # URLs, different payloads, different money-field names — and a strategy that
+    # reads them directly learns both dialects and grows a third when a third
+    # broker lands. That is an abstraction leak which COMPOUNDS per broker rather
+    # than staying constant, which is why it is worth a route even though the
+    # direct read is safe (GH #234, operator ruling 2026-08-27).
+    #
+    # ⚠️ Both resolve through ``_resolve_adapter``, so the stage ladder AND EH6
+    # apply. EH6 refusing a READ is arguably over-broad — it exists to stop two
+    # nodes routing one account into double fills, and a read cannot double-fill —
+    # but it fails CLOSED and does not block the actual consumer (AWS declares both
+    # accounts it reads). Decoupling reads from EH6 would be a new decision; it is
+    # recorded here rather than taken quietly.
+    #
+    # ⚠️ Deliberately NO ``breaker.guard()``. A tripped breaker refuses placements;
+    # a read is exactly what an operator wants DURING a trip, to see venue state.
+    # Guarding would remove visibility at the moment it is most needed. A genuinely
+    # dead session still surfaces as a transport error -> 503.
+
+    async def get_account(self, broker: Broker, account: str) -> AccountInfo:
+        """Normalized balance/buying-power for one account, from venue truth.
+
+        🔴 Every optional field on :class:`AccountInfo` means *"this broker did not
+        report it"*, **never zero** — see [[TK-0396]], where a ``0`` invented for an
+        unreported field was returned for accounts holding real five-figure balances.
+        Callers must not re-collapse ``None`` into ``0``.
+        """
+        adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        return await adapter.get_account(account)
+
+    async def get_open_orders(self, broker: Broker, account: str) -> list[NormalizedOrder]:
+        """VENUE-TRUTH resting orders for one account — not the durable store.
+
+        ⚠️ This answers *"what is live at the venue right now"*, which is a different
+        question from *"what happened to my orders"*. It is RESTING-only, carries the
+        venue's view rather than ours, and for Liberator the venue list is TODAY-only.
+        The durable store — which carries the caller's own ``client_order_id`` and all
+        history — is read through ``get``/``GET /orders/{client_order_id}``.
+        """
+        adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        return await adapter.get_open_orders(account)
 
     def _to_result(self, row: OrderResultRow) -> NormalizedOrderResult:
         return NormalizedOrderResult(

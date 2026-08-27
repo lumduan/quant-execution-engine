@@ -42,6 +42,7 @@ This page is the **documentation hub** — start here and follow the links.
 | [`api/orders-submit.md`](api/orders-submit.md) | `POST /orders` — submit a `NormalizedOrder` (owner mode) |
 | [`api/orders-get.md`](api/orders-get.md) | `GET /orders/{client_order_id}` — order status |
 | [`api/orders-cancel.md`](api/orders-cancel.md) | `DELETE /orders/{client_order_id}` — cancel (owner mode; not kill-switch-gated) |
+| [`api/accounts.md`](api/accounts.md) | `GET /accounts/{account}` + `/open-orders` — broker-agnostic balance and venue-truth resting orders (owner mode) |
 | [`api/orders-amend.md`](api/orders-amend.md) | `PATCH /orders/{client_order_id}` — native or cancel+replace amend (owner mode) |
 | [`api/orders-stream.md`](api/orders-stream.md) | `GET /orders/stream` — SSE order-update stream (`Last-Event-ID` replay, filters) |
 | [`api/capabilities.md`](api/capabilities.md) | `GET /capabilities` — the capability matrix + broker runtime health |

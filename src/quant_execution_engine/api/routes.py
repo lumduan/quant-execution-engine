@@ -203,6 +203,62 @@ async def get_order(client_order_id: str, order_router: RouterDep) -> JSONRespon
     return JSONResponse(status_code=status.HTTP_200_OK, content=result.wire_dump())
 
 
+@router.get(
+    "/accounts/{account}",
+    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    summary="Normalized account balance / buying power (venue truth)",
+)
+async def get_account(
+    account: str,
+    broker: Broker,
+    order_router: RouterDep,
+) -> JSONResponse:
+    """One shape for every broker, so a strategy never learns two dialects.
+
+    ``broker`` is a required query parameter: an account number does not name a
+    broker, and guessing one would be the same class of invention that produced
+    [[TK-0396]].
+
+    🔴 **Every optional field means "this broker did not report it", NEVER zero.**
+    ``None`` serialises as ``null`` and must not be re-collapsed to ``0`` by a
+    caller — that collapse IS the bug this endpoint's adapter was fixed for, where
+    a fabricated ``0`` was returned for accounts holding real five-figure balances.
+
+    Coverage is deliberately asymmetric (the venues are): the margin block is
+    DERIVATIVE-only and is *forbidden* on a cash account, not merely absent.
+    """
+    info = await order_router.get_account(broker, account)
+    return JSONResponse(status_code=status.HTTP_200_OK, content=info.model_dump(mode="json"))
+
+
+@router.get(
+    "/accounts/{account}/open-orders",
+    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    summary="VENUE-TRUTH resting orders for one account (not the durable store)",
+)
+async def get_open_orders(
+    account: str,
+    broker: Broker,
+    order_router: RouterDep,
+) -> JSONResponse:
+    """What is LIVE at the venue right now — a different question from order history.
+
+    ⚠️ Named ``open-orders`` rather than ``orders`` on purpose. This is RESTING-only,
+    it is the venue's view rather than ours, and for Liberator the venue list is
+    **today-only**. It cannot answer *"what happened to my order"*, and it carries no
+    ``client_order_id`` — the venue echoes nothing the client sent, which is why the
+    reconciler has to fuzzy-match at all.
+
+    For history, joinable by your own ``client_order_id`` and spanning every stage,
+    read the durable store via ``GET /orders/{client_order_id}``.
+    """
+    orders = await order_router.get_open_orders(broker, account)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"orders": [o.model_dump(mode="json") for o in orders]},
+    )
+
+
 @router.delete(
     "/orders/{client_order_id}",
     dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
