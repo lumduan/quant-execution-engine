@@ -45,13 +45,13 @@ Legal values: **`liberator`** · **`streaming_pro`** · **`sim`**.
 Every cell is **LIVE** (callable now) or **DESIGNED-ONLY** (the adapter implements it; no route
 exists, so you cannot reach it).
 
-> 🟡 **A FOURTH STATE, added 2026-08-27: MERGED-NOT-DEPLOYED.** `GET /accounts/{account}` and
-> `GET /accounts/{account}/open-orders` exist on `main` (PR #46, `21d1a58`) but the **running
-> container is still the `8579896` build**, under an operator deploy-freeze while `session:cash-carry`
-> trades. **They are NOT callable now**, so they are deliberately not marked LIVE — "LIVE" in this
-> table means *callable now*, and blurring a merged-but-unserved route into it would make this table
-> lie about the running service. Verified 2026-08-27: the running process's route table contains no
-> `/accounts` path.
+> ✅ **DEPLOYED 2026-08-27 10:23 UTC.** The fourth state (`MERGED-NOT-DEPLOYED`, added earlier the
+> same day) has been **retired** — `GET /accounts/{account}` and `/open-orders` now serve from the
+> `c2b8962` build and are **callable now**, so they are LIVE by this table's own definition.
+> Verified through the real deployed route on real accounts, not from the merge:
+> `70173292` → **50,885.83** · `70173297` → **13,506.72** · `0532097` → **38,275.42**, all HTTP 200.
+> The state itself is kept in the history below because the distinction it drew — *merged is not
+> callable* — is the one this table exists to hold.
 
 | Command | liberator | streaming_pro | sim | How you call it |
 |---|---|---|---|---|
@@ -61,9 +61,9 @@ exists, so you cannot reach it).
 | **Order status** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/{client_order_id}` |
 | **Order updates (stream)** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/stream` (SSE) |
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
-| **Open orders** | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}/open-orders?broker=` |
+| **Open orders** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /accounts/{account}/open-orders?broker=` |
 | **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
-| **Account balance** | 🟡 MERGED-NOT-DEPLOYED³ **(SET + TFEX ✅)** | 🟡 MERGED-NOT-DEPLOYED **(SET only)**⁴ | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}?broker=` |
+| **Account balance** | 🟢 **LIVE** — SET **+ TFEX**³ | 🟢 **LIVE (SET only)**⁴ | 🟢 LIVE | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
@@ -96,7 +96,13 @@ hardcodes `Market.SET` and its docstring says *"TFEX is a follow-up"* (`:188-204
 operator requirement *"all four capabilities for BOTH brokers"* is **not** met by deploying #46
 alone — SP's TFEX half is unbuilt.
 
-⁵ 🔴 **EH6 blocks Streaming Pro entirely on the AWS node**, independent of any of the above.
+⁵ ✅ **RESOLVED for SP-SET 2026-08-27** — `0532097` was added to the AWS declaration after verifying
+it is AWS's own SBITO/033 account (the bridge's `account-info` reports `brokerId 33`, `accountNo
+0532097`), so the SP balance read returns 200 rather than 409. ⚠️ The underlying property is unchanged
+and [[TK-0443]] stays open: the guard is broker-agnostic, so **any SP account that is NOT declared is
+still refused**. What follows is the original finding.
+
+🔴 **EH6 blocked Streaming Pro entirely on the AWS node**, independent of any of the above.
 `EXECUTION_ENGINE_REAL_ROUTING_ACCOUNTS` lists two **Liberator** accounts, and
 `assert_may_route_real` is broker-agnostic — so any real SP routing, **order or read**, returns
 409 `real_routing_not_authorized`. A config gap, not a code gap. See [[TK-0443]].
