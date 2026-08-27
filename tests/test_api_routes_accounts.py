@@ -287,3 +287,201 @@ def test_reads_are_OWNER_MODE_only(monkeypatch: pytest.MonkeyPatch) -> None:
         r = client.get(f"{path}?broker=liberator")
         assert r.status_code == 403, f"{path} must be owner-mode only"
         assert r.json()["error"]["code"] == "public_mode"
+
+
+# ---------------------------------------------- Liberator SET *and* TFEX, one path
+
+
+class _ProfileTransport:
+    """Stands in for the HTTP hop only — the REAL `_venue_result` / `_account_info` run.
+
+    Every other test in this file injects a pre-built ``AccountInfo``, which cannot
+    catch a mapping bug. This one replays the venue's actual ``/va/profile`` body so
+    the adapter's own parse is what is under test.
+    """
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self._body = body
+        self.paths: list[str] = []
+
+    async def get_json(self, path: str, **_: Any) -> dict[str, Any]:
+        self.paths.append(path)
+        return self._body
+
+
+# Captured live from the AWS node's bridge, 2026-08-27. Field sets are verbatim: the
+# CASH entry genuinely OMITS equity/totalMr/totalMm; the DERIVATIVE entry REPORTS them.
+_LIVE_PROFILE: dict[str, Any] = {
+    "raw_response": {
+        "errorCode": 0,
+        "errMsg": "",
+        "result": {
+            "accounts": [
+                {
+                    "accountNo": "70173292",
+                    "type": "CASH BALANCE",
+                    "lineAvailable": 50885.83,
+                    "cashBalance": 50885.83,
+                    "creditLimit": 500000,
+                    "withdrawAvailable": 50885.83,
+                },
+                {
+                    "accountNo": "70173297",
+                    "type": "DERIVATIVE",
+                    "lineAvailable": 13506.72,
+                    "cashBalance": 13506.72,
+                    "creditLimit": 1000000,
+                    "withdrawAvailable": 13506.72,
+                    "equity": 13506.72,
+                    "excessEquity": 13506.72,
+                    "totalMr": 0,
+                    "totalMm": 0,
+                },
+            ]
+        },
+    }
+}
+
+
+def _live_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _ProfileTransport]:
+    from pydantic import SecretStr
+    from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
+    from src.quant_execution_engine.api import deps
+    from src.quant_execution_engine.core.router import OrderRouter
+
+    patch_repositories(monkeypatch, MemStore())
+    transport = _ProfileTransport(_LIVE_PROFILE)
+    adapter = LiberatorAdapter(transport=transport, pin=SecretStr("000000"))  # type: ignore[arg-type]
+    settings = make_settings(
+        public_mode=False,
+        stage="micro_live",
+        real_routing_accounts=["70173292", "70173297"],
+    )
+    order_router = OrderRouter(
+        settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
+    )
+    app = create_app()
+    app.dependency_overrides[deps.get_settings_dep] = lambda: settings
+    app.dependency_overrides[deps.get_pool_dep] = lambda: object()
+    app.dependency_overrides[deps.get_redis_dep] = lambda: FakeRedis()
+    app.dependency_overrides[deps.get_router_dep] = lambda: order_router
+    return TestClient(app), transport
+
+
+def test_liberator_SET_and_TFEX_balance_come_from_ONE_call_and_ONE_code_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔑 TFEX is not a separate branch — asserted, not argued.
+
+    ``get_account`` issues ONE request to a constant path and selects the account by
+    string equality inside a single ``accounts[]`` array. There is no market parameter
+    and no per-market request, so a TFEX balance cannot be "an untested branch" at the
+    request level. This asserts that structurally: **both accounts, same route, and the
+    transport sees the SAME path both times.**
+    """
+    client, transport = _live_client(monkeypatch)
+
+    set_body = client.get("/accounts/70173292?broker=liberator").json()
+    tfex_body = client.get("/accounts/70173297?broker=liberator").json()
+
+    assert set_body["buying_power"] == "50885.83"
+    assert tfex_body["buying_power"] == "13506.72"
+    assert set_body["account_type"] == "cash"
+    assert tfex_body["account_type"] == "derivative"
+    # One constant venue path for both — no market-specific endpoint.
+    assert transport.paths == ["profile", "profile"], transport.paths
+
+
+def test_the_TFEX_margin_block_distinguishes_ABSENT_from_ZERO_on_real_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 The one genuinely market-dependent branch, on the venue's real field sets.
+
+    This is the strongest available evidence that `None` and `0` are not conflated,
+    because the live payload contains BOTH cases at once:
+
+      * the CASH entry OMITS `totalMr`/`totalMm` entirely  -> must be `null`
+      * the DERIVATIVE entry REPORTS them with value 0     -> must be `0`, NOT null
+
+    Same function, same request, real bytes. A mapping that collapsed either direction
+    would fail here — and collapsing them is [[TK-0396]].
+    """
+    client, _ = _live_client(monkeypatch)
+
+    set_body = client.get("/accounts/70173292?broker=liberator").json()
+    tfex_body = client.get("/accounts/70173297?broker=liberator").json()
+
+    # CASH: the venue never sent these -> null, and the model FORBIDS them here.
+    assert set_body["initial_margin"] is None
+    assert set_body["maintenance_margin"] is None
+    assert set_body["equity"] is None
+
+    # DERIVATIVE: the venue sent them, and their value is genuinely zero.
+    assert tfex_body["equity"] == "13506.72"
+    assert tfex_body["excess_equity"] == "13506.72"
+    assert tfex_body["initial_margin"] == "0", "a REPORTED zero must not become null"
+    assert tfex_body["maintenance_margin"] == "0"
+    assert tfex_body["initial_margin"] is not None
+
+
+def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `if account_type is DERIVATIVE` guard, on the only data that can prove it.
+
+    ⚠️ Found by mutation: replacing that guard with `if True` left every other test
+    GREEN, because the live CASH payload simply omits equity/totalMr/totalMm, so
+    reading them unconditionally is a no-op on real data. The guard was therefore
+    UNTESTED — the mutation surviving is the finding, not a false alarm.
+
+    The guard exists for the case the venue does not currently produce: a CASH entry
+    that carries a margin field anyway. Without the guard those values reach
+    `AccountInfo`, whose validator FORBIDS them on a non-derivative account, and the
+    read 500s instead of returning a balance. With it, they are ignored.
+    """
+    from pydantic import SecretStr
+    from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
+    from src.quant_execution_engine.api import deps
+    from src.quant_execution_engine.core.router import OrderRouter
+
+    patch_repositories(monkeypatch, MemStore())
+    hostile = {
+        "raw_response": {
+            "errorCode": 0,
+            "errMsg": "",
+            "result": {
+                "accounts": [
+                    {
+                        "accountNo": "70173292",
+                        "type": "CASH BALANCE",
+                        "lineAvailable": 50885.83,
+                        # the venue does not send these on a cash account — but if it
+                        # ever did, they must not reach the model.
+                        "equity": 999,
+                        "totalMr": 888,
+                    }
+                ]
+            },
+        }
+    }
+    adapter = LiberatorAdapter(
+        transport=_ProfileTransport(hostile),  # type: ignore[arg-type]
+        pin=SecretStr("000000"),
+    )
+    settings = make_settings(
+        public_mode=False, stage="micro_live", real_routing_accounts=["70173292"]
+    )
+    app = create_app()
+    app.dependency_overrides[deps.get_settings_dep] = lambda: settings
+    app.dependency_overrides[deps.get_pool_dep] = lambda: object()
+    app.dependency_overrides[deps.get_redis_dep] = lambda: FakeRedis()
+    app.dependency_overrides[deps.get_router_dep] = lambda: OrderRouter(
+        settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
+    )
+
+    r = TestClient(app).get("/accounts/70173292?broker=liberator")
+
+    assert r.status_code == 200, "the guard must absorb this, not 500 on a validator error"
+    assert r.json()["buying_power"] == "50885.83"
+    assert r.json()["equity"] is None, "a margin field on a CASH account must be dropped"
+    assert r.json()["initial_margin"] is None

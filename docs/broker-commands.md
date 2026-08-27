@@ -45,6 +45,14 @@ Legal values: **`liberator`** · **`streaming_pro`** · **`sim`**.
 Every cell is **LIVE** (callable now) or **DESIGNED-ONLY** (the adapter implements it; no route
 exists, so you cannot reach it).
 
+> 🟡 **A FOURTH STATE, added 2026-08-27: MERGED-NOT-DEPLOYED.** `GET /accounts/{account}` and
+> `GET /accounts/{account}/open-orders` exist on `main` (PR #46, `21d1a58`) but the **running
+> container is still the `8579896` build**, under an operator deploy-freeze while `session:cash-carry`
+> trades. **They are NOT callable now**, so they are deliberately not marked LIVE — "LIVE" in this
+> table means *callable now*, and blurring a merged-but-unserved route into it would make this table
+> lie about the running service. Verified 2026-08-27: the running process's route table contains no
+> `/accounts` path.
+
 | Command | liberator | streaming_pro | sim | How you call it |
 |---|---|---|---|---|
 | **Place order** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `POST /orders` |
@@ -53,9 +61,9 @@ exists, so you cannot reach it).
 | **Order status** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/{client_order_id}` |
 | **Order updates (stream)** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/stream` (SSE) |
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
-| **Open orders** | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | 🔴 DESIGNED-ONLY | — no route |
+| **Open orders** | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}/open-orders?broker=` |
 | **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
-| **Account balance** | 🔴 DESIGNED-ONLY³ | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
+| **Account balance** | 🟡 MERGED-NOT-DEPLOYED³ **(SET + TFEX ✅)** | 🟡 MERGED-NOT-DEPLOYED **(SET only)**⁴ | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
@@ -64,8 +72,34 @@ adapter works; only the route is missing* — build the route and you get the da
 **NOT IMPLEMENTED means the adapter does not work either.** `LiberatorAdapter.get_positions` now
 **raises `LiberatorPositionsUncaptured` (501)**. **Adding a route would not fix it** — see §7.
 
-³ Liberator balance **does** work now (proven live against two funded accounts), it simply has no
-route. This row moved from broken to merely unexposed on 2026-08-24 — see §5.
+³ ✅ **Liberator balance covers SET *and* TFEX, and TFEX is NOT a separate branch — confirmed
+2026-08-27.** `get_account` issues **one** request to a constant path (`_PROFILE_PATH`), receives
+**both** accounts in a single `accounts[]` array, and selects by string equality on `accountNo`
+(`liberator/adapter.py:330-337`). There is **no market parameter and no per-market request**, so a
+TFEX balance cannot be an untested request-level branch. Asserted, not argued: a route-level test
+drives both accounts and checks the transport saw the **same path both times**.
+
+The one genuinely market-dependent line is the margin block (`_account_info`, DERIVATIVE-only), and
+the live payload proves both readings at once — the CASH entry **omits** `totalMr`/`totalMm` (→
+`null`) while the DERIVATIVE entry **reports** them as `0` (→ `0`). Same function, real bytes,
+`None` and `0` not conflated. Live values 2026-08-27: `70173292` → 50,885.83 (cash),
+`70173297` → 13,506.72 (derivative, equity 13,506.72, IM/MM 0).
+
+⚠️ Still **MERGED-NOT-DEPLOYED**: the end-to-end hop *through the deployed route* cannot be run
+under the freeze, and doing it from HOME would mean using an AWS account across nodes — which the
+one-account-per-node rule explicitly declines to depend on. It is the last unproven link.
+
+⁴ ⚠️ **Streaming Pro balance and positions are SET-ONLY, and that is an ADAPTER limit the route
+does not fix.** `account_service.py` hardcodes the `fis` segment, so a TFEX account reaches the
+equity front and comes back unknown (`streaming_pro/adapter.py:206-217`); `get_positions`
+hardcodes `Market.SET` and its docstring says *"TFEX is a follow-up"* (`:188-204`). ⇒ the
+operator requirement *"all four capabilities for BOTH brokers"* is **not** met by deploying #46
+alone — SP's TFEX half is unbuilt.
+
+⁵ 🔴 **EH6 blocks Streaming Pro entirely on the AWS node**, independent of any of the above.
+`EXECUTION_ENGINE_REAL_ROUTING_ACCOUNTS` lists two **Liberator** accounts, and
+`assert_may_route_real` is broker-agnostic — so any real SP routing, **order or read**, returns
+409 `real_routing_not_authorized`. A config gap, not a code gap. See [[TK-0443]].
 
 **Why the bottom three are not simply "missing":** `get_open_orders`, `get_positions` and
 `get_account` exist on all three adapters, and they have **no HTTP route and no caller** anywhere in
