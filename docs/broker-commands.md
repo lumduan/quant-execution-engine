@@ -45,12 +45,20 @@ Legal values: **`liberator`** · **`streaming_pro`** · **`sim`**.
 Every cell is **LIVE** (callable now) or **DESIGNED-ONLY** (the adapter implements it; no route
 exists, so you cannot reach it).
 
-> ✅ **DEPLOYED 2026-08-27 10:23 UTC.** The fourth state (`MERGED-NOT-DEPLOYED`, added earlier the
-> same day) has been **retired** — `GET /accounts/{account}` and `/open-orders` now serve from the
-> `c2b8962` build and are **callable now**, so they are LIVE by this table's own definition.
-> Verified through the real deployed route on real accounts, not from the merge:
-> `70173292` → **50,885.83** · `70173297` → **13,506.72** · `0532097` → **38,275.42**, all HTTP 200.
-> The state itself is kept in the history below because the distinction it drew — *merged is not
+> ✅ **DEPLOYED TWICE on 2026-08-27** — `10:23 UTC` (`c2b8962`, the balance + open-orders routes)
+> and `15:45 UTC` (`5d7ab86`, the SP **TFEX** balance front). The fourth state
+> (`MERGED-NOT-DEPLOYED`, added earlier the same day) is **retired**: every cell below is callable
+> now. Verified through the real deployed route on real accounts, **not** from the merge — all four,
+> all HTTP 200:
+>
+> | account | broker | type | buying_power |
+> |---|---|---|---|
+> | `70173292` | liberator | cash (SET) | **50,885.83** |
+> | `70173297` | liberator | derivative (TFEX) | **13,506.72** |
+> | `0532097` | streaming_pro | cash (SET) | **38,275.42** |
+> | `0532099` | streaming_pro | derivative (TFEX) | **10,567.77** |
+>
+> The retired state is kept in the history below because the distinction it drew — *merged is not
 > callable* — is the one this table exists to hold.
 
 | Command | liberator | streaming_pro | sim | How you call it |
@@ -63,7 +71,7 @@ exists, so you cannot reach it).
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
 | **Open orders** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /accounts/{account}/open-orders?broker=` |
 | **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
-| **Account balance** | 🟢 **LIVE** — SET **+ TFEX**³ | 🟢 **LIVE (SET only)**⁴ | 🟢 LIVE | `GET /accounts/{account}?broker=` |
+| **Account balance** | 🟢 **LIVE** — SET **+ TFEX**³ | 🟢 **LIVE** — SET **+ TFEX**⁴ | 🟢 LIVE | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
@@ -85,16 +93,34 @@ the live payload proves both readings at once — the CASH entry **omits** `tota
 `None` and `0` not conflated. Live values 2026-08-27: `70173292` → 50,885.83 (cash),
 `70173297` → 13,506.72 (derivative, equity 13,506.72, IM/MM 0).
 
-⚠️ Still **MERGED-NOT-DEPLOYED**: the end-to-end hop *through the deployed route* cannot be run
-under the freeze, and doing it from HOME would mean using an AWS account across nodes — which the
-one-account-per-node rule explicitly declines to depend on. It is the last unproven link.
+✅ **The end-to-end hop is now proven** (2026-08-27 15:47 UTC): both Liberator accounts were read
+*through the deployed route, on the AWS node*, which is where those accounts live — so the
+one-account-per-node rule is respected rather than worked around. This paragraph previously said the
+hop *"cannot be run under the freeze"*; the freeze lifted, and it was run.
 
-⁴ ⚠️ **Streaming Pro balance and positions are SET-ONLY, and that is an ADAPTER limit the route
-does not fix.** `account_service.py` hardcodes the `fis` segment, so a TFEX account reaches the
-equity front and comes back unknown (`streaming_pro/adapter.py:206-217`); `get_positions`
-hardcodes `Market.SET` and its docstring says *"TFEX is a follow-up"* (`:188-204`). ⇒ the
-operator requirement *"all four capabilities for BOTH brokers"* is **not** met by deploying #46
-alone — SP's TFEX half is unbuilt.
+⁴ ✅ **SP balance now covers TFEX too (2026-08-27, PR #49) — and it resolves the market by ASKING
+THE VENUE, never by reading the account number.** The two SP fronts are mutually exclusive: SET
+answers on `fis`/`account-info`, TFEX on `seosd`/`tfex/account-info`. `get_account` tries SET, and
+**only** if SET does not return a balance does it try TFEX; if neither front answers it **raises**
+`StreamingProAccountUnavailable` rather than reporting a number.
+
+🔴 **Why "ask the venue" is not pedantry here: `0532097` (SET) and `0532099` (TFEX) differ by ONE
+DIGIT.** Any rule that infers the market from the number is one typo away from answering a request
+with the wrong market's book. And the refusal cannot be detected from the status line — **the venue
+returns HTTP 200 with the error in the body** (`{"code": "GWD-03", "message": "UserAccount not
+found…"}`), so an adapter keyed on `status_code == 200` would read a refusal as a success and, if it
+defaulted the missing balance, report a **confident zero for an account it could not read**. Both
+behaviours are pinned by tests built on the **verbatim captured bodies**, including a positive
+control asserting a SET account never falls through to the TFEX front.
+
+Live TFEX values 2026-08-27 (`0532099`): buying_power/equity **10,567.77** (`excessEquity`),
+credit_line 50,000, IM/MM **`0.0` — reported, not absent.** This is the mirror of Liberator's case
+in ³: there the CASH entry *omits* the margin fields (→ `null`) while the DERIVATIVE entry *reports*
+them as `0`; here TFEX reports `0`. **Collapsing either direction is the bug**, and a test asserts a
+reported zero never becomes `null`.
+
+⚠️ **`get_positions` is still SET-only** — it hardcodes `Market.SET` and its docstring still says
+*"TFEX is a follow-up"*. The positions row above stays DESIGNED-ONLY for that reason.
 
 ⁵ ✅ **RESOLVED for SP-SET 2026-08-27** — `0532097` was added to the AWS declaration after verifying
 it is AWS's own SBITO/033 account (the bridge's `account-info` reports `brokerId 33`, `accountNo
@@ -263,14 +289,26 @@ a new one placed. You **lose queue priority**, and there is a **window with no r
 `cancel_replace` amend returns the **replacement** `client_order_id`, so supply
 `new_client_order_id`; a `native` (`sim`) amend keeps the same id and forbids that field.
 
-### 🔴 streaming_pro: positions AND balance are **SET-only**
+### ➡️ streaming_pro: balance is now SET **+ TFEX**; positions are still SET-only
 
-The bridge's account service has **zero** references to `seosd` (the TFEX segment). There is no TFEX
-route — not one returning empty, it does not exist.
+> 🕐 **This section's original claim is kept as history because it was TRUE when written, and
+> because the reasoning it records still applies to positions.** It said: *"The bridge's account
+> service has **zero** references to `seosd` (the TFEX segment). There is no TFEX route — not one
+> returning empty, it does not exist,"* and that the limit covered balance as well as positions.
+>
+> ➡️ **SUPERSEDED FOR BALANCE on 2026-08-27** by `session:sp-research`, who added the `seosd` front
+> to the bridge (`efdb6c5`, bridge PR #24 / issue #236). `GET /api/v1/tfex/account-info` exists now
+> and returns a real body. This engine consumes it as of PR #49 — see footnote ⁴ in §2.
 
-⚠️ Wider than previously recorded: it is **not only positions**. `account-info` (balance /
-buying-power) is equally SET-only. Any future `/positions` or `/account` response must mark this
-per-broker rather than implying symmetric coverage.
+**Standing today.** The two fronts are real and mutually exclusive — `fis`/`seos` serve equity,
+`seosd` serves derivatives — so *which front answers* is the market discriminator, and the account
+number is not. Balance uses both fronts. **Positions still use only `fis`**: the adapter hardcodes
+`Market.SET`, so the SET-only limit below is unchanged for that call.
+
+⚠️ The original warning survives its own supersession and is worth restating: a `/positions` or
+`/account` response must mark coverage **per-broker and per-market**, never imply symmetry. Balance
+and positions now differ *within a single broker* — which is exactly the asymmetry that sentence was
+written to stop anyone assuming away.
 
 ### liberator: portfolio and profile are **two different endpoints with two different jobs**
 
@@ -374,8 +412,9 @@ Where each stands, as of 2026-08-24:
 * ⛔ **liberator POSITIONS DO NOT WORK AT ALL, and a route would not help** — see the block below.
 * ❌ no cost basis, no market value, no unrealised P&L — **`net_qty` only**, and **no marks anywhere
   in the contract**
-* ❌ **streaming_pro is SET-only for BOTH positions and balance**, per §5 — its TFEX side is not a
-  route gap either; the bridge hardcodes the SET (`fis`) segment
+* ⚠️ **streaming_pro: balance covers SET + TFEX; POSITIONS are still SET-only**, per §5. Corrected
+  2026-08-27 — this line previously read *"SET-only for BOTH"*, which the bridge's new `seosd` front
+  superseded on the balance half the same day. Positions remain SET-only in the adapter.
 
 > ⛔ **Why liberator positions are NOT a "just add the route" item — read this before planning around
 > one.**
