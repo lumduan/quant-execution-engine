@@ -47,7 +47,21 @@ def portfolio_path(account: str) -> str:
 
 
 def account_path(account: str) -> str:
+    """SET/equity balance — the bridge hardcodes the ``fis`` (equity) front."""
     return "account-info?" + urlencode({"account": account})
+
+
+def tfex_account_path(account: str) -> str:
+    """TFEX/derivatives balance — a DIFFERENT venue front, not a parameter of the SET one.
+
+    🔑 The two fronts are **mutually exclusive**, measured 2026-08-27 on the live venue:
+    the SET route answers ``FISGW-00 UserAccount not found`` for a TFEX account, and this
+    route answers ``GWD-03 UserAccount not found`` for a SET account. **So the VENUE
+    decides which market an account belongs to — the adapter never infers it from the
+    account number**, which matters because SET ``0532097`` and TFEX ``0532099`` differ by
+    one digit and guessing from the pattern is exactly how the wrong market gets queried.
+    """
+    return "tfex/account-info?" + urlencode({"account": account})
 
 
 # ---------------------------------------------------------------- write side

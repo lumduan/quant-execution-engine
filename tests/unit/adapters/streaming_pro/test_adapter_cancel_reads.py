@@ -152,11 +152,16 @@ async def test_get_account_raises_rather_than_returning_zero_on_empty() -> None:
 
     That was the last surviving instance of the silent degrade TK-0396 removed everywhere
     else: an empty body meant an UNREADABLE account, and a zero made it look like a flat one.
-    SP's balance read is SET-only, so a TFEX account produces exactly this empty body.
+
+    ⚠️ Updated 2026-08-27: the read is no longer SET-only, so "unreadable" now means
+    **neither front answered**. Both are mocked empty here — that is the whole point. A
+    single-front mock would leave the TFEX call unmocked and the test would fail for the
+    wrong reason (an unmocked request), not because the adapter refused.
     """
     respx.get(f"{_BASE}/account-info", params={"account": "ACC"}).respond(json={})
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "ACC"}).respond(json={})
     adapter = make_adapter()
-    with pytest.raises(StreamingProAccountUnavailable, match="no lineAvailable"):
+    with pytest.raises(StreamingProAccountUnavailable, match="neither front"):
         await adapter.get_account("ACC")
     await adapter.aclose()
 
@@ -167,4 +172,114 @@ async def test_amend_is_declared_cancel_replace() -> None:
     assert not ack.ok
     assert ack.semantics == "cancel_replace"
     assert ack.reason is not None and "cancel+replace" in ack.reason
+    await adapter.aclose()
+
+
+# ---------------------------------------------- SP TFEX balance (captured 2026-08-27)
+
+# VERBATIM from the live venue via the AWS bridge, account 0532099, 2026-08-27 22:40 BKK.
+# Not hand-written: this is the first real TFEX account body anyone here has had.
+_TFEX_0532099 = {
+    "creditLine": 50000.0,
+    "excessEquity": 10567.77,
+    "cashBalance": 10567.77,
+    "equity": 10567.77,
+    "totalMR": 0.0,
+    "totalMM": 0.0,
+    "totalFM": 0.0,
+    "callForceFlag": "No",
+    "callForceMargin": 0.0,
+    "liquidationValue": 10567.77,
+    "depositWithdrawal": 0.0,
+    "callForceMarginMM": 0.0,
+    "initialMargin": 0.0,
+    "closingMethod": "Auto Net",
+}
+# Also verbatim: what BOTH fronts return for an account they do not hold. Note HTTP 200.
+_NOT_FOUND_TFEX = {"code": "GWD-03", "message": "UserAccount not found of request account:X"}
+_NOT_FOUND_SET = {"code": "FISGW-00", "message": "UserAccount not found of request account:X"}
+
+
+@respx.mock
+async def test_tfex_account_resolves_via_the_VENUE_not_the_account_number() -> None:
+    """🔑 Market is decided by asking both fronts, never by pattern-matching the number.
+
+    SET `0532097` and TFEX `0532099` differ by ONE DIGIT. Inferring market from that is
+    exactly how a request gets silently answered by the wrong market — the hazard the
+    bridge's own shape guard exists for. Here the SET front refuses and the TFEX front
+    answers, and the adapter follows the venue.
+    """
+    respx.get(f"{_BASE}/account-info", params={"account": "0532099"}).respond(json=_NOT_FOUND_SET)
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532099"}).respond(
+        json=_TFEX_0532099
+    )
+    adapter = make_adapter()
+    info = await adapter.get_account("0532099")
+
+    assert info.account_type is AccountType.DERIVATIVE
+    assert info.buying_power == Decimal("10567.77")  # excessEquity — the tradable figure
+    assert info.equity == Decimal("10567.77")
+    assert info.credit_limit == Decimal("50000.0")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_REFUSAL_arrives_as_HTTP_200_and_must_not_read_as_a_zero_balance() -> None:
+    """🔴 The venue answers 200 for an account it does not hold — refusal is in the BODY.
+
+    An adapter keyed on `status_code == 200` would treat `GWD-03` as success and, if it
+    then defaulted a missing balance, report a confident zero for an account it could not
+    read. That is TK-0396 exactly. Both fronts refuse here; the adapter must RAISE.
+    """
+    respx.get(f"{_BASE}/account-info", params={"account": "9999999"}).respond(
+        status_code=200, json=_NOT_FOUND_SET
+    )
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "9999999"}).respond(
+        status_code=200, json=_NOT_FOUND_TFEX
+    )
+    adapter = make_adapter()
+    with pytest.raises(StreamingProAccountUnavailable, match="neither front"):
+        await adapter.get_account("9999999")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_SET_account_never_reaches_the_TFEX_front() -> None:
+    """Positive control: SET short-circuits, so the fallback is not always-on.
+
+    Without this, the two tests above pass for a router that queries TFEX unconditionally
+    — doubling venue reads on every SET balance for no reason.
+    """
+    set_route = respx.get(f"{_BASE}/account-info", params={"account": "0532097"}).respond(
+        json={"lineAvailable": "38275.42", "cashBalance": "38275.42"}
+    )
+    tfex_route = respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532097"}).respond(
+        json=_NOT_FOUND_TFEX
+    )
+    adapter = make_adapter()
+    info = await adapter.get_account("0532097")
+
+    assert info.account_type is AccountType.CASH
+    assert info.buying_power == Decimal("38275.42")
+    assert set_route.called and not tfex_route.called, "SET must not fall through"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_REPORTED_zero_margin_stays_zero_and_never_becomes_null() -> None:
+    """The captured TFEX body reports totalMR/totalMM as 0.0 — genuinely zero, not absent.
+
+    The mirror of the Liberator case: there the CASH entry OMITS the fields (-> null) while
+    the DERIVATIVE entry REPORTS them as 0 (-> 0). Collapsing either direction is the bug.
+    """
+    respx.get(f"{_BASE}/account-info", params={"account": "0532099"}).respond(json=_NOT_FOUND_SET)
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532099"}).respond(
+        json=_TFEX_0532099
+    )
+    adapter = make_adapter()
+    info = await adapter.get_account("0532099")
+
+    assert info.initial_margin == Decimal("0.0")
+    assert info.initial_margin is not None, "a REPORTED zero must not become null"
+    assert info.maintenance_margin == Decimal("0.0")
     await adapter.aclose()

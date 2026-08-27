@@ -77,3 +77,47 @@ def test_money_serialises_as_a_STRING_on_the_wire() -> None:
 def test_buying_power_is_still_required_so_existing_callers_are_unaffected() -> None:
     with pytest.raises(ValidationError):
         AccountInfo(account="X")  # type: ignore[call-arg]
+
+
+def test_two_legs_on_ONE_symbol_stay_DISTINCT_rows() -> None:
+    """🔑 The composite-key property, asserted so it cannot regress silently.
+
+    `session:lib-research` (TK-0444/#237): a venue position row is keyed by
+    ``(symbolDisplay, sideShow)`` — the venue's own client merges on the pair, so one
+    symbol can legitimately be two rows. Before ``side`` existed, `Position` was keyed on
+    symbol alone and these two legs were **indistinguishable**: any set/dict keyed by
+    symbol collapsed them, and a netting consumer destroyed the information outright.
+
+    This is decidable without ever observing a populated venue response, which is why it
+    is fixed now rather than waiting for one.
+    """
+    from src.quant_execution_engine.adapters.base import Position
+    from src.quant_execution_engine.contracts.enums import Market, Side
+
+    # ⚠️ Everything EXCEPT side is identical, deliberately. An earlier version gave the
+    # legs different net_qty — so they stayed distinct even with `side` removed, and the
+    # test passed for a reason unrelated to what it claims. A mutation removing the field
+    # SURVIVED it. Side must be the only difference or this asserts nothing.
+    long_leg = Position(account="A", market=Market.TFEX, symbol="S50Z26", net_qty=3, side=Side.BUY)
+    short_leg = Position(
+        account="A", market=Market.TFEX, symbol="S50Z26", net_qty=3, side=Side.SELL
+    )
+
+    assert long_leg != short_leg
+    assert len({long_leg, short_leg}) == 2, "two legs on one symbol must not collapse"
+    # And the pre-fix failure, spelled out: symbol alone is NOT a key.
+    assert long_leg.symbol == short_leg.symbol
+
+
+def test_side_None_means_THE_VENUE_DID_NOT_SAY_not_flat_and_not_long() -> None:
+    """``None`` is an absence of information, not a value — the TK-0396 discipline again.
+
+    A SET equity row legitimately carries ``None`` (cannot be short). A derivatives row
+    carrying ``None`` is an adapter gap. Either way it must never be read as a side.
+    """
+    from src.quant_execution_engine.adapters.base import Position
+    from src.quant_execution_engine.contracts.enums import Market, Side
+
+    set_row = Position(account="A", market=Market.SET, symbol="PTT", net_qty=100)
+    assert set_row.side is None
+    assert set_row.side is not Side.BUY
