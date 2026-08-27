@@ -63,7 +63,7 @@ exists, so you cannot reach it).
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
 | **Open orders** | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}/open-orders?broker=` |
 | **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
-| **Account balance** | 🟡 MERGED-NOT-DEPLOYED³ | 🟡 MERGED-NOT-DEPLOYED **(SET only)**⁴ | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}?broker=` |
+| **Account balance** | 🟡 MERGED-NOT-DEPLOYED³ **(SET + TFEX ✅)** | 🟡 MERGED-NOT-DEPLOYED **(SET only)**⁴ | 🟡 MERGED-NOT-DEPLOYED | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
@@ -72,8 +72,22 @@ adapter works; only the route is missing* — build the route and you get the da
 **NOT IMPLEMENTED means the adapter does not work either.** `LiberatorAdapter.get_positions` now
 **raises `LiberatorPositionsUncaptured` (501)**. **Adding a route would not fix it** — see §7.
 
-³ Liberator balance **does** work (proven live against two funded accounts). It gained a route on
-2026-08-27 (PR #46) which is **merged but not deployed** — see the callout above.
+³ ✅ **Liberator balance covers SET *and* TFEX, and TFEX is NOT a separate branch — confirmed
+2026-08-27.** `get_account` issues **one** request to a constant path (`_PROFILE_PATH`), receives
+**both** accounts in a single `accounts[]` array, and selects by string equality on `accountNo`
+(`liberator/adapter.py:330-337`). There is **no market parameter and no per-market request**, so a
+TFEX balance cannot be an untested request-level branch. Asserted, not argued: a route-level test
+drives both accounts and checks the transport saw the **same path both times**.
+
+The one genuinely market-dependent line is the margin block (`_account_info`, DERIVATIVE-only), and
+the live payload proves both readings at once — the CASH entry **omits** `totalMr`/`totalMm` (→
+`null`) while the DERIVATIVE entry **reports** them as `0` (→ `0`). Same function, real bytes,
+`None` and `0` not conflated. Live values 2026-08-27: `70173292` → 50,885.83 (cash),
+`70173297` → 13,506.72 (derivative, equity 13,506.72, IM/MM 0).
+
+⚠️ Still **MERGED-NOT-DEPLOYED**: the end-to-end hop *through the deployed route* cannot be run
+under the freeze, and doing it from HOME would mean using an AWS account across nodes — which the
+one-account-per-node rule explicitly declines to depend on. It is the last unproven link.
 
 ⁴ ⚠️ **Streaming Pro balance and positions are SET-ONLY, and that is an ADAPTER limit the route
 does not fix.** `account_service.py` hardcodes the `fis` segment, so a TFEX account reaches the
