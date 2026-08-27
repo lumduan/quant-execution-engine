@@ -204,35 +204,62 @@ class StreamingProAdapter(BrokerAdapter):
         return positions
 
     async def get_account(self, account: str) -> AccountInfo:
-        """Balance from ``account-info``.
+        """Balance for a SET **or** TFEX account — the VENUE decides which, not us.
 
-        ⚠️ **SET-only.** ``account_service.py`` hardcodes the ``fis`` segment, so a TFEX
-        account reaches the equity front and comes back unknown. There is no margin block:
-        SP reports none, which is why those fields stay ``None`` and ``account_type`` is CASH.
+        🔑 **Market is resolved by asking, never by inferring.** The two venue fronts are
+        mutually exclusive (measured live 2026-08-27): the SET/``fis`` front answers
+        ``FISGW-00 UserAccount not found`` for a TFEX account, and the TFEX/``seosd`` front
+        answers ``GWD-03`` for a SET account. So this tries SET, and on a not-found falls
+        through to TFEX. It never guesses from the account number — SET ``0532097`` and
+        TFEX ``0532099`` differ by one digit, and guessing is precisely how a request ends
+        up silently answered by the wrong market.
 
-        Raises :class:`StreamingProAccountUnavailable` when the body carries no balance.
-        ⚠️ It previously returned ``Decimal("0")`` here — the last surviving instance of the
-        silent-degrade [[TK-0396]] removed everywhere else. A zero for an unreadable account
-        is indistinguishable from a real zero.
+        🔴 **The venue returns HTTP 200 for a REFUSED account**, with the refusal only in the
+        body (``{"code": "GWD-03", "message": "UserAccount not found..."}``). An adapter that
+        keyed on the status code would read a refusal as success — the [[TK-0396]] shape.
+        Absence of the balance field is therefore the discriminator, and it is why this
+        raises rather than returning a zero: a zero for an unreadable account is
+        indistinguishable from a real zero.
+
+        ⚠️ ``account_type`` follows the front that answered — CASH for SET (SP reports no
+        margin block there), DERIVATIVE for TFEX (which does).
         """
-        body = await self._transport.get_json(mapping.account_path(account))
-        if not isinstance(body, dict):
-            raise StreamingProAccountUnavailable(
-                f"streaming_pro account-info for {account!r} returned no object"
+        set_body = await self._transport.get_json(mapping.account_path(account))
+        set_bp = _opt_decimal(set_body, "lineAvailable") if isinstance(set_body, dict) else None
+        if set_bp is not None:
+            return AccountInfo(
+                account=account,
+                account_type=AccountType.CASH,
+                buying_power=set_bp,
+                cash_balance=_opt_decimal(set_body, "cashBalance"),
+                credit_limit=_opt_decimal(set_body, "creditLimit"),
             )
-        buying_power = _opt_decimal(body, "lineAvailable")
-        if buying_power is None:
-            raise StreamingProAccountUnavailable(
-                f"streaming_pro account-info for {account!r} carried no lineAvailable "
-                f"(keys: {sorted(body)[:8]}) — the venue reports this account as unknown "
-                "when the account is not on the SET/`fis` front"
-            )
-        return AccountInfo(
-            account=account,
-            account_type=AccountType.CASH,
-            buying_power=buying_power,
-            cash_balance=_opt_decimal(body, "cashBalance"),
-            credit_limit=_opt_decimal(body, "creditLimit"),
+
+        tfex_body = await self._transport.get_json(mapping.tfex_account_path(account))
+        if isinstance(tfex_body, dict):
+            # The derivatives front reports no ``lineAvailable``; ``excessEquity`` is the
+            # tradable figure and ``equity`` the balance-sheet one. Captured live from
+            # 0532099: creditLine/excessEquity/cashBalance/equity/totalMR/totalMM/totalFM/
+            # callForceFlag/callForceMargin/liquidationValue/initialMargin/closingMethod.
+            buying_power = _opt_decimal(tfex_body, "excessEquity")
+            if buying_power is not None:
+                return AccountInfo(
+                    account=account,
+                    account_type=AccountType.DERIVATIVE,
+                    buying_power=buying_power,
+                    cash_balance=_opt_decimal(tfex_body, "cashBalance"),
+                    credit_limit=_opt_decimal(tfex_body, "creditLine"),
+                    equity=_opt_decimal(tfex_body, "equity"),
+                    excess_equity=_opt_decimal(tfex_body, "excessEquity"),
+                    initial_margin=_opt_decimal(tfex_body, "totalMR"),
+                    maintenance_margin=_opt_decimal(tfex_body, "totalMM"),
+                )
+
+        raise StreamingProAccountUnavailable(
+            f"streaming_pro: {account!r} is on neither front — the SET route carried no "
+            f"lineAvailable and the TFEX route carried no excessEquity. Both fronts answer "
+            f"HTTP 200 with a code/message body for an unknown account, so this is a "
+            f"REFUSAL, not a zero balance."
         )
 
     # ------------------------------------------------------------- liveness

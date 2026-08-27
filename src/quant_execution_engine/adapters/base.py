@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.quant_execution_engine.adapters.session import SessionCircuitBreaker
 from src.quant_execution_engine.contracts.capabilities import CapabilitySet
-from src.quant_execution_engine.contracts.enums import Broker, Market, WireDecimal
+from src.quant_execution_engine.contracts.enums import Broker, Market, Side, WireDecimal
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 
@@ -63,12 +63,32 @@ class AmendAck(BaseModel):
 
 
 class Position(BaseModel):
+    """One venue position row.
+
+    🔑 **Keyed by (symbol, side) — NOT symbol alone**, and that is a venue fact rather than
+    a modelling preference. `session:lib-research` established (TK-0444/#237) that a
+    Liberator position row is matched by the composite ``(symbolDisplay, sideShow)``: the
+    venue's own client merges on the pair, so **one symbol can legitimately appear as two
+    rows**. A model keyed on symbol alone cannot represent that — a long and a short leg
+    either collide or get netted, and netting silently destroys the information.
+
+    ⚠️ ``side`` is deliberately **optional**, and ``None`` means *"the venue did not
+    distinguish"* — never *"flat"* and never *"long"*. SET equities cannot be short, so a
+    SET row legitimately carries ``None``; a derivatives row that carries ``None`` is a gap
+    in the adapter, not a fact about the position.
+
+    This was recorded before positions are implemented anywhere, precisely because it is
+    decidable without ever observing a populated response — which is the whole value of
+    lib-research's finding.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     account: str
     market: Market
     symbol: str
     net_qty: int
+    side: Side | None = None
 
 
 class AccountType(StrEnum):
