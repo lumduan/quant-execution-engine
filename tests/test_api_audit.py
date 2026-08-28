@@ -29,12 +29,18 @@ from tests.conftest import build_client, make_settings, order_payload
 
 
 def _owner_client(
-    monkeypatch: pytest.MonkeyPatch, *, redis: Any | None = None, **overrides: Any
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    redis: Any | None = None,
+    send_api_key: bool = True,
+    **overrides: Any,
 ) -> tuple[TestClient, MemStore]:
     store = MemStore()
     patch_repositories(monkeypatch, store)
     settings: Settings = make_settings(public_mode=False, **overrides)
-    client, _ = build_client(settings=settings, pool=object(), redis=redis)
+    client, _ = build_client(
+        settings=settings, pool=object(), redis=redis, send_api_key=send_api_key
+    )
     return client, store
 
 
@@ -143,7 +149,9 @@ def test_audit_read_403_in_public_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_audit_read_api_key_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _ = _owner_client(monkeypatch, api_key="sekret")
+    # send_api_key=False makes the first assertion a genuine NEGATIVE test — the shared
+    # client presents the configured key by default ([[TK-0462]]).
+    client, _ = _owner_client(monkeypatch, api_key="sekret", send_api_key=False)
     assert client.get(f"/admin/orders/{uuid4()}/audit").status_code == 401
     ok = client.get(f"/admin/orders/{uuid4()}/audit", headers={"X-API-Key": "sekret"})
     assert ok.status_code == 404  # auth passed; cid simply unknown

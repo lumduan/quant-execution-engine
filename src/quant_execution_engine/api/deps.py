@@ -84,10 +84,34 @@ async def require_api_key(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> None:
-    """hmac-compare ``X-API-Key`` when a key is configured; warn-and-allow otherwise."""
+    """hmac-compare ``X-API-Key``; **fail CLOSED when no key is configured** ([[TK-0462]]).
+
+    🔴 This used to warn-and-allow on a missing ``EXECUTION_ENGINE_API_KEY``, which meant
+    *unconfigured* silently equalled *unauthenticated*. Combined with owner mode, every
+    guarded route was open to anything that could reach the container — and that is not
+    hypothetical: HOME ran that way for weeks because its compose declares no ``env_file``,
+    so ``.env`` never reached the process while the guard still *looked* present in the
+    code ([[TK-0408]]).
+
+    A misconfiguration must fail **loudly and immediately**, not serve traffic that looks
+    healthy. This now matches the platform's own Liberator bridge, which already answered
+    the identical question with 503 — two services, one platform, previously opposite
+    answers.
+
+    ⚠️ Deliberately **503, not a startup crash.** Requiring the key at settings-load would
+    turn the same misconfiguration into crash-on-boot, which is a *larger* blast radius:
+    ``/health`` and ``/capabilities`` stay answerable here, so a node that lost its key is
+    diagnosable rather than dark.
+    """
     if settings.api_key is None:
-        logger.warning("EXECUTION_ENGINE_API_KEY unset; requests are not authenticated")
-        return
+        logger.error(
+            "EXECUTION_ENGINE_API_KEY is not configured — refusing every guarded request "
+            "(fail-closed, TK-0462). Set it in the environment this process actually reads."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API key authentication is not configured on the server",
+        )
     provided = request.headers.get("X-API-Key", "")
     if not hmac.compare_digest(provided, settings.api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")

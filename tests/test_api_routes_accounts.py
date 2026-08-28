@@ -123,7 +123,11 @@ def _client(monkeypatch: pytest.MonkeyPatch, adapter: _ReadAdapter, **overrides:
     app.dependency_overrides[deps.get_pool_dep] = lambda: object()
     app.dependency_overrides[deps.get_redis_dep] = lambda: FakeRedis()
     app.dependency_overrides[deps.get_router_dep] = lambda: order_router
-    return TestClient(app)
+    # This file constructs the client DIRECTLY rather than via `build_client`, so it must
+    # supply the api-key itself — the guard fails closed without one ([[TK-0462]]) and a
+    # configured app rejects an unauthenticated request with 401.
+    headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
+    return TestClient(app, headers=headers)
 
 
 # ------------------------------------------------------------------ the contract
@@ -389,7 +393,10 @@ def _live_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _ProfileT
     app.dependency_overrides[deps.get_pool_dep] = lambda: object()
     app.dependency_overrides[deps.get_redis_dep] = lambda: FakeRedis()
     app.dependency_overrides[deps.get_router_dep] = lambda: order_router
-    return TestClient(app), transport
+    # Direct TestClient: must supply the api-key itself, since the guard now fails
+    # closed without one ([[TK-0462]]).
+    headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
+    return TestClient(app, headers=headers), transport
 
 
 def test_liberator_SET_and_TFEX_balance_come_from_ONE_call_and_ONE_code_path(
@@ -503,7 +510,8 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
         settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
     )
 
-    r = TestClient(app).get("/accounts/70000002?broker=liberator")
+    _hdr = {"X-API-Key": settings.api_key} if settings.api_key else {}
+    r = TestClient(app, headers=_hdr).get("/accounts/70000002?broker=liberator")
 
     assert r.status_code == 200, "the guard must absorb this, not 500 on a validator error"
     assert r.json()["buying_power"] == "50000.11"
