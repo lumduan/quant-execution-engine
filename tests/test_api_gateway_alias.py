@@ -121,7 +121,9 @@ def test_alias_preserves_the_owner_mode_guard() -> None:
 def test_alias_preserves_the_api_key_guard() -> None:
     """A configured API key is enforced on the alias exactly as natively."""
     settings = make_settings(public_mode=False, api_key="s3cret")
-    client, _ = build_client(settings=settings, pool=object(), redis=None)
+    # send_api_key=False so the requests genuinely omit the header; the shared client
+    # supplies the configured key otherwise ([[TK-0462]]).
+    client, _ = build_client(settings=settings, pool=object(), redis=None, send_api_key=False)
 
     assert client.get(f"{GATEWAY_PROXY_PREFIX}/capabilities").status_code == 401
     assert client.get("/capabilities").status_code == 401

@@ -143,7 +143,18 @@ async def test_market_data_client_unconfigured_without_base_url() -> None:
 
 
 def test_settings_defaults_are_safe() -> None:
-    settings = make_settings()
+    """🔴 Constructs Settings DIRECTLY, deliberately bypassing ``make_settings``.
+
+    ``make_settings`` now injects a test api-key, because the guard fails closed without
+    one ([[TK-0462]]). That helper default must NEVER be what this test measures — the
+    property here is that the SHIPPED default carries no key, so a deployment cannot
+    inherit a baked-in secret from the code.
+
+    This test caught exactly that when the helper default was added: it failed with
+    ``assert 'test-api-key' is None``. That failure was correct, and the fix is to assert
+    against the real class rather than to relax the assertion.
+    """
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.public_mode is True
     assert settings.stage is Stage.SIM
     assert settings.kill_switch_engaged is False

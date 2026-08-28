@@ -20,13 +20,16 @@ def _owner_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
     redis: Any | None = None,
+    send_api_key: bool = True,
     **overrides: Any,
 ) -> tuple[TestClient, MemStore, Any]:
     store = MemStore()
     patch_repositories(monkeypatch, store)
     redis = FakeRedis() if redis is None else redis
     settings: Settings = make_settings(public_mode=False, **overrides)
-    client, _ = build_client(settings=settings, pool=object(), redis=redis)
+    client, _ = build_client(
+        settings=settings, pool=object(), redis=redis, send_api_key=send_api_key
+    )
     return client, store, redis
 
 
@@ -63,7 +66,12 @@ def test_public_mode_blocks_writes_allows_reads(
 
 
 def test_api_key_enforced_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, _ = _owner_client(monkeypatch, api_key="sekret")
+    """send_api_key=False is what makes the first assertion a NEGATIVE test.
+
+    The shared client presents the configured key by default, so without this the
+    "no header" case would silently become an authenticated one and assert 200 == 401.
+    """
+    client, _, _ = _owner_client(monkeypatch, api_key="sekret", send_api_key=False)
     assert client.get("/capabilities").status_code == 401
     assert client.get("/capabilities", headers={"X-API-Key": "wrong"}).status_code == 401
     ok = client.get("/capabilities", headers={"X-API-Key": "sekret"})
@@ -163,8 +171,9 @@ def test_amend_owner_mode_and_api_key_guards(monkeypatch: pytest.MonkeyPatch) ->
     assert blocked.status_code == 403
     assert blocked.json()["error"]["code"] == "public_mode"
 
-    # API key enforced when configured.
-    keyed, _, _ = _owner_client(monkeypatch, api_key="sekret")
+    # API key enforced when configured. send_api_key=False so the request genuinely
+    # omits the header — the shared client would otherwise supply it ([[TK-0462]]).
+    keyed, _, _ = _owner_client(monkeypatch, api_key="sekret", send_api_key=False)
     no_key = keyed.patch(f"/orders/{uuid4()}", json={"new_price": "1"})
     assert no_key.status_code == 401
 
@@ -429,3 +438,55 @@ def test_kill_switch_disengage_without_redis_is_409_not_engaged(
     response = client.post("/admin/kill-switch/disengage")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "kill_switch_not_engaged"
+
+
+# ------------------------------------------------- TK-0462: fail CLOSED without a key
+
+
+def test_an_UNCONFIGURED_api_key_REFUSES_every_guarded_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 The property this change exists for.
+
+    ``api_key=None`` means the operator did not configure one. That must refuse, not
+    allow: *unconfigured* silently equalling *unauthenticated* is how HOME served
+    unauthenticated orders for weeks ([[TK-0408]]) — the guard looked present in the code
+    the whole time.
+
+    Asserted with AND without a header, because "no key configured" must refuse both: a
+    caller cannot talk its way past a server that has nothing to compare against.
+    """
+    client, _, _ = _owner_client(monkeypatch, api_key=None, send_api_key=False)
+
+    no_header = client.get("/capabilities")
+    assert no_header.status_code == 503, "unconfigured must refuse, not warn-and-allow"
+
+    with_header = client.get("/capabilities", headers={"X-API-Key": "anything"})
+    assert with_header.status_code == 503, "no key to compare against — still refused"
+
+
+def test_the_UNCONFIGURED_refusal_is_503_not_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The status distinguishes SERVER misconfiguration from CLIENT error.
+
+    401 would tell an operator "your key is wrong" when the truth is "this server has no
+    key". That misdirects the person who can actually fix it — and it is the same
+    distinction the platform's Liberator bridge already draws.
+    """
+    client, _, _ = _owner_client(monkeypatch, api_key=None, send_api_key=False)
+    assert client.get("/capabilities").status_code == 503
+
+    configured, _, _ = _owner_client(monkeypatch, api_key="sekret", send_api_key=False)
+    assert configured.get("/capabilities").status_code == 401, "a wrong/absent key is 401"
+
+
+def test_health_stays_ANSWERABLE_when_the_key_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔑 Why 503-on-guarded-routes rather than crash-on-boot.
+
+    A node that lost its key must stay DIAGNOSABLE. If the key were required at settings
+    load the process would not start, `/health` would be unreachable, and the operator
+    would see a dead container rather than a specific, self-describing refusal.
+    """
+    client, _, _ = _owner_client(monkeypatch, api_key=None, send_api_key=False)
+    assert client.get("/health").status_code == 200

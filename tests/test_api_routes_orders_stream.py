@@ -50,9 +50,11 @@ def _frame_data(frame: str) -> dict[str, Any]:
     raise AssertionError(f"no data line in frame: {frame!r}")
 
 
-def _client(**setting_overrides: Any) -> TestClient:
+def _client(*, send_api_key: bool = True, **setting_overrides: Any) -> TestClient:
     settings = make_settings(**setting_overrides)
-    client, _ = build_client(settings=settings, pool=object(), redis=None)
+    client, _ = build_client(
+        settings=settings, pool=object(), redis=None, send_api_key=send_api_key
+    )
     return client
 
 
@@ -69,7 +71,10 @@ def test_stream_503_when_hub_not_running() -> None:
 
 def test_stream_api_key_enforced_when_configured() -> None:
     _hub()
-    client = _client(api_key="sekret")
+    # send_api_key=False is what makes this a NEGATIVE test. Without it the shared client
+    # supplies the configured key, the stream OPENS instead of being refused, and the test
+    # hangs forever rather than failing — which is how this was found.
+    client = _client(api_key="sekret", send_api_key=False)
     assert client.get("/orders/stream").status_code == 401
 
 
