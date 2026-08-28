@@ -16,7 +16,7 @@ from src.quant_execution_engine.adapters.liberator.transport import (
 
 _BASE = "http://liberator-trading-api:8200/api/v1"
 _PIN = "987654"
-_ACCOUNT = "70173292"
+_ACCOUNT = "70000002"
 
 
 def _transport() -> LiberatorTransport:

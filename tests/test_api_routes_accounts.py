@@ -38,9 +38,9 @@ from tests.conftest import make_order, make_settings
 # session:cash-carry's verification control, read live from the bridge 2026-08-27.
 # They supplied these precisely so "is it right?" is a one-command check rather than a
 # judgement — a 0 for either is the OLD FAILURE, not a flat account.
-_CONTROL_CASH = Decimal("50885.83")  # 70173292, CASH BALANCE
-_CONTROL_DERIV = Decimal("13506.72")  # 70173297, DERIVATIVE
-_ACCOUNT = "70173292"
+_CONTROL_CASH = Decimal("50000.11")  # 70000002, CASH BALANCE
+_CONTROL_DERIV = Decimal("13000.22")  # 70000007, DERIVATIVE
+_ACCOUNT = "70000002"
 
 
 class _ReadAdapter(BrokerAdapter):
@@ -101,7 +101,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, adapter: _ReadAdapter, **overrides:
     base: dict[str, Any] = {
         "public_mode": False,
         "stage": "micro_live",
-        "real_routing_accounts": [_ACCOUNT, "70173297"],
+        "real_routing_accounts": [_ACCOUNT, "70000007"],
     }
     settings = make_settings(**{**base, **overrides})  # overrides win
     order_router = OrderRouter(
@@ -164,7 +164,7 @@ def test_money_crosses_the_wire_as_a_STRING_matching_the_control_value(
 
     body = client.get(f"/accounts/{_ACCOUNT}?broker=liberator").json()
 
-    assert body["buying_power"] == "50885.83", "must equal the live control value"
+    assert body["buying_power"] == "50000.11", "must equal the live control value"
     assert isinstance(body["buying_power"], str), "money is Decimal-as-string, never a float"
 
 
@@ -175,7 +175,7 @@ def test_derivative_account_carries_the_margin_block(monkeypatch: pytest.MonkeyP
     null for everything.
     """
     info = AccountInfo(
-        account="70173297",
+        account="70000007",
         account_type=AccountType.DERIVATIVE,
         buying_power=_CONTROL_DERIV,
         equity=_CONTROL_DERIV,
@@ -184,9 +184,9 @@ def test_derivative_account_carries_the_margin_block(monkeypatch: pytest.MonkeyP
     )
     client = _client(monkeypatch, _ReadAdapter(info=info))
 
-    body = client.get("/accounts/70173297?broker=liberator").json()
+    body = client.get("/accounts/70000007?broker=liberator").json()
 
-    assert body["equity"] == "13506.72"
+    assert body["equity"] == "13000.22"
     assert body["initial_margin"] == "1000"
     assert body["account_type"] == "derivative"
 
@@ -309,8 +309,17 @@ class _ProfileTransport:
         return self._body
 
 
-# Captured live from the AWS node's bridge, 2026-08-27. Field sets are verbatim: the
-# CASH entry genuinely OMITS equity/totalMr/totalMm; the DERIVATIVE entry REPORTS them.
+# SHAPE captured live from the AWS node's bridge 2026-08-27; VALUES redacted 2026-08-28.
+#
+# ⚠️ The FIELD SETS are still verbatim and that is the load-bearing part: the CASH entry
+# genuinely OMITS equity/totalMr/totalMm while the DERIVATIVE entry REPORTS them as 0 —
+# absent and zero are different facts, which is the whole of TK-0396.
+#
+# The account numbers and balances are SYNTHETIC. This repo is PUBLIC; real broker
+# account numbers and balances live only in the private umbrella's
+# docs/reference/liberator-account-reads.md. The synthetic accounts keep the venue's
+# 8-digit <investorId><suffix> grammar (2 = CASH BALANCE, 7 = DERIVATIVE) because code
+# reads market from that suffix.
 _LIVE_PROFILE: dict[str, Any] = {
     "raw_response": {
         "errorCode": 0,
@@ -318,22 +327,22 @@ _LIVE_PROFILE: dict[str, Any] = {
         "result": {
             "accounts": [
                 {
-                    "accountNo": "70173292",
+                    "accountNo": "70000002",
                     "type": "CASH BALANCE",
-                    "lineAvailable": 50885.83,
-                    "cashBalance": 50885.83,
+                    "lineAvailable": 50000.11,
+                    "cashBalance": 50000.11,
                     "creditLimit": 500000,
-                    "withdrawAvailable": 50885.83,
+                    "withdrawAvailable": 50000.11,
                 },
                 {
-                    "accountNo": "70173297",
+                    "accountNo": "70000007",
                     "type": "DERIVATIVE",
-                    "lineAvailable": 13506.72,
-                    "cashBalance": 13506.72,
+                    "lineAvailable": 13000.22,
+                    "cashBalance": 13000.22,
                     "creditLimit": 1000000,
-                    "withdrawAvailable": 13506.72,
-                    "equity": 13506.72,
-                    "excessEquity": 13506.72,
+                    "withdrawAvailable": 13000.22,
+                    "equity": 13000.22,
+                    "excessEquity": 13000.22,
                     "totalMr": 0,
                     "totalMm": 0,
                 },
@@ -355,7 +364,7 @@ def _live_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _ProfileT
     settings = make_settings(
         public_mode=False,
         stage="micro_live",
-        real_routing_accounts=["70173292", "70173297"],
+        real_routing_accounts=["70000002", "70000007"],
     )
     order_router = OrderRouter(
         settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
@@ -381,11 +390,11 @@ def test_liberator_SET_and_TFEX_balance_come_from_ONE_call_and_ONE_code_path(
     """
     client, transport = _live_client(monkeypatch)
 
-    set_body = client.get("/accounts/70173292?broker=liberator").json()
-    tfex_body = client.get("/accounts/70173297?broker=liberator").json()
+    set_body = client.get("/accounts/70000002?broker=liberator").json()
+    tfex_body = client.get("/accounts/70000007?broker=liberator").json()
 
-    assert set_body["buying_power"] == "50885.83"
-    assert tfex_body["buying_power"] == "13506.72"
+    assert set_body["buying_power"] == "50000.11"
+    assert tfex_body["buying_power"] == "13000.22"
     assert set_body["account_type"] == "cash"
     assert tfex_body["account_type"] == "derivative"
     # One constant venue path for both — no market-specific endpoint.
@@ -408,8 +417,8 @@ def test_the_TFEX_margin_block_distinguishes_ABSENT_from_ZERO_on_real_data(
     """
     client, _ = _live_client(monkeypatch)
 
-    set_body = client.get("/accounts/70173292?broker=liberator").json()
-    tfex_body = client.get("/accounts/70173297?broker=liberator").json()
+    set_body = client.get("/accounts/70000002?broker=liberator").json()
+    tfex_body = client.get("/accounts/70000007?broker=liberator").json()
 
     # CASH: the venue never sent these -> null, and the model FORBIDS them here.
     assert set_body["initial_margin"] is None
@@ -417,8 +426,8 @@ def test_the_TFEX_margin_block_distinguishes_ABSENT_from_ZERO_on_real_data(
     assert set_body["equity"] is None
 
     # DERIVATIVE: the venue sent them, and their value is genuinely zero.
-    assert tfex_body["equity"] == "13506.72"
-    assert tfex_body["excess_equity"] == "13506.72"
+    assert tfex_body["equity"] == "13000.22"
+    assert tfex_body["excess_equity"] == "13000.22"
     assert tfex_body["initial_margin"] == "0", "a REPORTED zero must not become null"
     assert tfex_body["maintenance_margin"] == "0"
     assert tfex_body["initial_margin"] is not None
@@ -452,9 +461,9 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
             "result": {
                 "accounts": [
                     {
-                        "accountNo": "70173292",
+                        "accountNo": "70000002",
                         "type": "CASH BALANCE",
-                        "lineAvailable": 50885.83,
+                        "lineAvailable": 50000.11,
                         # the venue does not send these on a cash account — but if it
                         # ever did, they must not reach the model.
                         "equity": 999,
@@ -469,7 +478,7 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
         pin=SecretStr("000000"),
     )
     settings = make_settings(
-        public_mode=False, stage="micro_live", real_routing_accounts=["70173292"]
+        public_mode=False, stage="micro_live", real_routing_accounts=["70000002"]
     )
     app = create_app()
     app.dependency_overrides[deps.get_settings_dep] = lambda: settings
@@ -479,9 +488,9 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
         settings=settings, pool=object(), redis=FakeRedis(), liberator_adapter=adapter
     )
 
-    r = TestClient(app).get("/accounts/70173292?broker=liberator")
+    r = TestClient(app).get("/accounts/70000002?broker=liberator")
 
     assert r.status_code == 200, "the guard must absorb this, not 500 on a validator error"
-    assert r.json()["buying_power"] == "50885.83"
+    assert r.json()["buying_power"] == "50000.11"
     assert r.json()["equity"] is None, "a margin field on a CASH account must be dropped"
     assert r.json()["initial_margin"] is None

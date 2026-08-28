@@ -161,7 +161,7 @@ def test_paths_are_relative_without_leading_slash() -> None:
     assert mapping.place_path(Market.TFEX) == "order/place/tfex"
     assert mapping.cancel_path(Market.SET) == "order/cancelled/set"
     assert mapping.cancel_path(Market.TFEX) == "order/cancelled/tfex"
-    assert mapping.orders_path("70173292") == "orders/70173292"
+    assert mapping.orders_path("70000002") == "orders/70000002"
 
 
 def test_cancel_payload_is_single_element_order_no_list() -> None:
@@ -186,7 +186,7 @@ def test_venue_side_round_trip() -> None:
 def _item(**overrides: Any) -> VenueOrderItem:
     payload: dict[str, Any] = {
         "orderNo": "3064",
-        "accountNo": "70173292",
+        "accountNo": "70000002",
         "symbol": "PTT",
         "side": "B",
         "volume": 100,

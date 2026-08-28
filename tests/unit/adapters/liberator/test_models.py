@@ -68,7 +68,7 @@ def test_parse_order_items_happy_path_and_tolerance() -> None:
                 "list": [
                     {
                         "orderNo": "3064",
-                        "accountNo": "70173292",
+                        "accountNo": "70000002",
                         "symbol": "S50U25",
                         "side": "S",
                         "volume": 2,

@@ -177,19 +177,26 @@ async def test_amend_is_declared_cancel_replace() -> None:
 
 # ---------------------------------------------- SP TFEX balance (captured 2026-08-27)
 
-# VERBATIM from the live venue via the AWS bridge, account 0532099, 2026-08-27 22:40 BKK.
-# Not hand-written: this is the first real TFEX account body anyone here has had.
-_TFEX_0532099 = {
+# SHAPE from the live venue via the AWS bridge, 2026-08-27 22:40 BKK — the first real SP
+# TFEX account body anyone here had. VALUES redacted 2026-08-28.
+#
+# ⚠️ It previously said "VERBATIM ... Not hand-written". After redaction that would have
+# been FALSE, and a fixture that falsely claims to be verbatim is worse than one that
+# admits it is synthetic — it invites the next reader to trust a number nobody measured.
+#
+# What IS still real and is why this fixture is worth having: the KEY SET, the TYPES, and
+# which fields the TFEX front reports as a genuine 0 rather than omitting.
+_TFEX_0500009 = {
     "creditLine": 50000.0,
-    "excessEquity": 10567.77,
-    "cashBalance": 10567.77,
-    "equity": 10567.77,
+    "excessEquity": 10000.44,
+    "cashBalance": 10000.44,
+    "equity": 10000.44,
     "totalMR": 0.0,
     "totalMM": 0.0,
     "totalFM": 0.0,
     "callForceFlag": "No",
     "callForceMargin": 0.0,
-    "liquidationValue": 10567.77,
+    "liquidationValue": 10000.44,
     "depositWithdrawal": 0.0,
     "callForceMarginMM": 0.0,
     "initialMargin": 0.0,
@@ -204,21 +211,21 @@ _NOT_FOUND_SET = {"code": "FISGW-00", "message": "UserAccount not found of reque
 async def test_tfex_account_resolves_via_the_VENUE_not_the_account_number() -> None:
     """🔑 Market is decided by asking both fronts, never by pattern-matching the number.
 
-    SET `0532097` and TFEX `0532099` differ by ONE DIGIT. Inferring market from that is
+    SET `0500007` and TFEX `0500009` differ by ONE DIGIT. Inferring market from that is
     exactly how a request gets silently answered by the wrong market — the hazard the
     bridge's own shape guard exists for. Here the SET front refuses and the TFEX front
     answers, and the adapter follows the venue.
     """
-    respx.get(f"{_BASE}/account-info", params={"account": "0532099"}).respond(json=_NOT_FOUND_SET)
-    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532099"}).respond(
-        json=_TFEX_0532099
+    respx.get(f"{_BASE}/account-info", params={"account": "0500009"}).respond(json=_NOT_FOUND_SET)
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0500009"}).respond(
+        json=_TFEX_0500009
     )
     adapter = make_adapter()
-    info = await adapter.get_account("0532099")
+    info = await adapter.get_account("0500009")
 
     assert info.account_type is AccountType.DERIVATIVE
-    assert info.buying_power == Decimal("10567.77")  # excessEquity — the tradable figure
-    assert info.equity == Decimal("10567.77")
+    assert info.buying_power == Decimal("10000.44")  # excessEquity — the tradable figure
+    assert info.equity == Decimal("10000.44")
     assert info.credit_limit == Decimal("50000.0")
     await adapter.aclose()
 
@@ -250,17 +257,17 @@ async def test_a_SET_account_never_reaches_the_TFEX_front() -> None:
     Without this, the two tests above pass for a router that queries TFEX unconditionally
     — doubling venue reads on every SET balance for no reason.
     """
-    set_route = respx.get(f"{_BASE}/account-info", params={"account": "0532097"}).respond(
-        json={"lineAvailable": "38275.42", "cashBalance": "38275.42"}
+    set_route = respx.get(f"{_BASE}/account-info", params={"account": "0500007"}).respond(
+        json={"lineAvailable": "38000.33", "cashBalance": "38000.33"}
     )
-    tfex_route = respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532097"}).respond(
+    tfex_route = respx.get(f"{_BASE}/tfex/account-info", params={"account": "0500007"}).respond(
         json=_NOT_FOUND_TFEX
     )
     adapter = make_adapter()
-    info = await adapter.get_account("0532097")
+    info = await adapter.get_account("0500007")
 
     assert info.account_type is AccountType.CASH
-    assert info.buying_power == Decimal("38275.42")
+    assert info.buying_power == Decimal("38000.33")
     assert set_route.called and not tfex_route.called, "SET must not fall through"
     await adapter.aclose()
 
@@ -272,12 +279,12 @@ async def test_a_REPORTED_zero_margin_stays_zero_and_never_becomes_null() -> Non
     The mirror of the Liberator case: there the CASH entry OMITS the fields (-> null) while
     the DERIVATIVE entry REPORTS them as 0 (-> 0). Collapsing either direction is the bug.
     """
-    respx.get(f"{_BASE}/account-info", params={"account": "0532099"}).respond(json=_NOT_FOUND_SET)
-    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0532099"}).respond(
-        json=_TFEX_0532099
+    respx.get(f"{_BASE}/account-info", params={"account": "0500009"}).respond(json=_NOT_FOUND_SET)
+    respx.get(f"{_BASE}/tfex/account-info", params={"account": "0500009"}).respond(
+        json=_TFEX_0500009
     )
     adapter = make_adapter()
-    info = await adapter.get_account("0532099")
+    info = await adapter.get_account("0500009")
 
     assert info.initial_margin == Decimal("0.0")
     assert info.initial_margin is not None, "a REPORTED zero must not become null"

@@ -210,8 +210,8 @@ class StreamingProAdapter(BrokerAdapter):
         mutually exclusive (measured live 2026-08-27): the SET/``fis`` front answers
         ``FISGW-00 UserAccount not found`` for a TFEX account, and the TFEX/``seosd`` front
         answers ``GWD-03`` for a SET account. So this tries SET, and on a not-found falls
-        through to TFEX. It never guesses from the account number — SET ``0532097`` and
-        TFEX ``0532099`` differ by one digit, and guessing is precisely how a request ends
+        through to TFEX. It never guesses from the account number — SET ``0500007`` and
+        TFEX ``0500009`` differ by one digit, and guessing is precisely how a request ends
         up silently answered by the wrong market.
 
         🔴 **The venue returns HTTP 200 for a REFUSED account**, with the refusal only in the
@@ -239,7 +239,7 @@ class StreamingProAdapter(BrokerAdapter):
         if isinstance(tfex_body, dict):
             # The derivatives front reports no ``lineAvailable``; ``excessEquity`` is the
             # tradable figure and ``equity`` the balance-sheet one. Captured live from
-            # 0532099: creditLine/excessEquity/cashBalance/equity/totalMR/totalMM/totalFM/
+            # 0500009: creditLine/excessEquity/cashBalance/equity/totalMR/totalMM/totalFM/
             # callForceFlag/callForceMargin/liquidationValue/initialMargin/closingMethod.
             buying_power = _opt_decimal(tfex_body, "excessEquity")
             if buying_power is not None:

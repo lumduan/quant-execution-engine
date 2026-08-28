@@ -53,10 +53,10 @@ exists, so you cannot reach it).
 >
 > | account | broker | type | buying_power |
 > |---|---|---|---|
-> | `70173292` | liberator | cash (SET) | **50,885.83** |
-> | `70173297` | liberator | derivative (TFEX) | **13,506.72** |
-> | `0532097` | streaming_pro | cash (SET) | **38,275.42** |
-> | `0532099` | streaming_pro | derivative (TFEX) | **10,567.77** |
+> | `70000002` | liberator | cash (SET) | **50,000.11** |
+> | `70000007` | liberator | derivative (TFEX) | **13,000.22** |
+> | `0500007` | streaming_pro | cash (SET) | **38,000.33** |
+> | `0500009` | streaming_pro | derivative (TFEX) | **10,000.44** |
 >
 > The retired state is kept in the history below because the distinction it drew — *merged is not
 > callable* — is the one this table exists to hold.
@@ -90,8 +90,8 @@ drives both accounts and checks the transport saw the **same path both times**.
 The one genuinely market-dependent line is the margin block (`_account_info`, DERIVATIVE-only), and
 the live payload proves both readings at once — the CASH entry **omits** `totalMr`/`totalMm` (→
 `null`) while the DERIVATIVE entry **reports** them as `0` (→ `0`). Same function, real bytes,
-`None` and `0` not conflated. Live values 2026-08-27: `70173292` → 50,885.83 (cash),
-`70173297` → 13,506.72 (derivative, equity 13,506.72, IM/MM 0).
+`None` and `0` not conflated. Live values 2026-08-27: `70000002` → 50,000.11 (cash),
+`70000007` → 13,000.22 (derivative, equity 13,000.22, IM/MM 0).
 
 ✅ **The end-to-end hop is now proven** (2026-08-27 15:47 UTC): both Liberator accounts were read
 *through the deployed route, on the AWS node*, which is where those accounts live — so the
@@ -104,7 +104,7 @@ answers on `fis`/`account-info`, TFEX on `seosd`/`tfex/account-info`. `get_accou
 **only** if SET does not return a balance does it try TFEX; if neither front answers it **raises**
 `StreamingProAccountUnavailable` rather than reporting a number.
 
-🔴 **Why "ask the venue" is not pedantry here: `0532097` (SET) and `0532099` (TFEX) differ by ONE
+🔴 **Why "ask the venue" is not pedantry here: `0500007` (SET) and `0500009` (TFEX) differ by ONE
 DIGIT.** Any rule that infers the market from the number is one typo away from answering a request
 with the wrong market's book. And the refusal cannot be detected from the status line — **the venue
 returns HTTP 200 with the error in the body** (`{"code": "GWD-03", "message": "UserAccount not
@@ -113,7 +113,7 @@ defaulted the missing balance, report a **confident zero for an account it could
 behaviours are pinned by tests built on the **verbatim captured bodies**, including a positive
 control asserting a SET account never falls through to the TFEX front.
 
-Live TFEX values 2026-08-27 (`0532099`): buying_power/equity **10,567.77** (`excessEquity`),
+Live TFEX values 2026-08-27 (`0500009`): buying_power/equity **10,000.44** (`excessEquity`),
 credit_line 50,000, IM/MM **`0.0` — reported, not absent.** This is the mirror of Liberator's case
 in ³: there the CASH entry *omits* the margin fields (→ `null`) while the DERIVATIVE entry *reports*
 them as `0`; here TFEX reports `0`. **Collapsing either direction is the bug**, and a test asserts a
@@ -122,9 +122,9 @@ reported zero never becomes `null`.
 ⚠️ **`get_positions` is still SET-only** — it hardcodes `Market.SET` and its docstring still says
 *"TFEX is a follow-up"*. The positions row above stays DESIGNED-ONLY for that reason.
 
-⁵ ✅ **RESOLVED for SP-SET 2026-08-27** — `0532097` was added to the AWS declaration after verifying
+⁵ ✅ **RESOLVED for SP-SET 2026-08-27** — `0500007` was added to the AWS declaration after verifying
 it is AWS's own SBITO/033 account (the bridge's `account-info` reports `brokerId 33`, `accountNo
-0532097`), so the SP balance read returns 200 rather than 409. ⚠️ The underlying property is unchanged
+0500007`), so the SP balance read returns 200 rather than 409. ⚠️ The underlying property is unchanged
 and [[TK-0443]] stays open: the guard is broker-agnostic, so **any SP account that is NOT declared is
 still refused**. What follows is the original finding.
 
@@ -235,14 +235,14 @@ order.
 // call 1
 POST /orders
 { "client_order_id": "8f14e45f-…-a1", "broker": "liberator",
-  "account": "70412572", "market": "SET", "symbol": "PTT",   // 8 digits — see the note below
+  "account": "70000012", "market": "SET", "symbol": "PTT",   // 8 digits — see the note below
   "side": "BUY", "order_type": "LIMIT", "price": "35.50",
   "quantity": 100, "tif": "DAY" }
 
 // call 2 — same shape, different broker AND a different client_order_id
 POST /orders
 { "client_order_id": "c9f0f895-…-b2", "broker": "streaming_pro",
-  "account": "053209", "market": "SET", "symbol": "PTT",
+  "account": "050000", "market": "SET", "symbol": "PTT",
   "side": "BUY", "order_type": "LIMIT", "price": "35.50",
   "quantity": 1, "tif": "DAY" }
 ```

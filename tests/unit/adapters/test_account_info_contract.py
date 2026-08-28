@@ -11,7 +11,7 @@ from src.quant_execution_engine.adapters.base import AccountInfo, AccountType
 
 
 def _cash(**kw: object) -> AccountInfo:
-    return AccountInfo(account="70412572", buying_power=Decimal("1"), **kw)  # type: ignore[arg-type]
+    return AccountInfo(account="70000012", buying_power=Decimal("1"), **kw)  # type: ignore[arg-type]
 
 
 def test_absent_is_none_and_none_is_not_zero() -> None:
@@ -39,7 +39,7 @@ def test_margin_block_is_FORBIDDEN_on_a_non_derivative_account() -> None:
         # ...and the same value is accepted once the discriminator says DERIVATIVE
         assert (
             AccountInfo(
-                account="70173297",
+                account="70000007",
                 account_type=AccountType.DERIVATIVE,
                 buying_power=Decimal("1"),
                 **{field: Decimal("5")},
@@ -55,7 +55,7 @@ def test_a_derivative_account_may_still_report_no_margin() -> None:
     all-None. Requiring the fields would force such an adapter to invent them.
     """
     info = AccountInfo(
-        account="70173297", account_type=AccountType.DERIVATIVE, buying_power=Decimal("1")
+        account="70000007", account_type=AccountType.DERIVATIVE, buying_power=Decimal("1")
     )
     assert info.equity is None
 
@@ -64,13 +64,13 @@ def test_money_serialises_as_a_STRING_on_the_wire() -> None:
     """Decimal-at-the-boundary. Before this change AccountInfo used bare Decimal, so every
     money field would have gone out as a JSON *number* the moment /account shipped."""
     info = AccountInfo(
-        account="70173297",
+        account="70000007",
         account_type=AccountType.DERIVATIVE,
-        buying_power=Decimal("13506.72"),
-        equity=Decimal("13506.72"),
+        buying_power=Decimal("13000.22"),
+        equity=Decimal("13000.22"),
     )
     wire = json.loads(info.model_dump_json())
-    assert wire["buying_power"] == "13506.72", "money must not be a JSON number"
+    assert wire["buying_power"] == "13000.22", "money must not be a JSON number"
     assert isinstance(wire["equity"], str)
 
 

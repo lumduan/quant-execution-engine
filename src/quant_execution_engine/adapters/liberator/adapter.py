@@ -90,7 +90,7 @@ def _venue_decimal(value: Any, *, field: str) -> Decimal:
     """Money off this venue, without ever touching ``float`` arithmetic.
 
     ⚠️ The venue switches JSON type by value — ``lineAvailable`` is a float at
-    ``50885.83`` and an **int** at ``0`` — so both must be accepted, and the
+    ``50000.11`` and an **int** at ``0`` — so both must be accepted, and the
     ``str()`` round-trip is the boundary conversion.
     """
     if isinstance(value, bool) or not isinstance(value, int | float | str):

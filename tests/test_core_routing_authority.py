@@ -23,7 +23,7 @@ def _sim() -> SimAdapter:
     return SimAdapter(default_fill_price=Decimal("1"))
 
 
-def _call(*, adapter: object, account: str = "70173292", **overrides: object) -> None:
+def _call(*, adapter: object, account: str = "70000002", **overrides: object) -> None:
     sim = _sim()
     assert_may_route_real(
         settings=make_settings(**overrides),
@@ -51,12 +51,12 @@ def test_a_real_adapter_with_NO_declaration_is_refused() -> None:
 def test_a_real_adapter_for_an_UNDECLARED_account_is_refused() -> None:
     """A declaration is per-account, not a global on-switch."""
     with pytest.raises(RealRoutingNotAuthorized, match="not in this node's real-routing"):
-        _call(adapter=StubBrokerAdapter(), account="70412572", real_routing_accounts=["70173292"])
+        _call(adapter=StubBrokerAdapter(), account="70000012", real_routing_accounts=["70000002"])
 
 
 def test_a_declared_account_is_permitted() -> None:
     """The positive control. Without it, 'it refuses' is met by a guard that refuses everything."""
-    _call(adapter=StubBrokerAdapter(), account="70173292", real_routing_accounts=["70173292"])
+    _call(adapter=StubBrokerAdapter(), account="70000002", real_routing_accounts=["70000002"])
 
 
 def test_an_empty_string_declaration_does_not_authorize_anything() -> None:
@@ -77,7 +77,7 @@ def test_sim_routing_is_never_touched() -> None:
         # micro_live/live cannot even be constructed without a declaration (see the boot
         # tests), so give them a valid one -- the point here is that sim passes regardless.
         extra = (
-            {"real_routing_accounts": ["70173292"], "liberator_api_key": SecretStr("k")}
+            {"real_routing_accounts": ["70000002"], "liberator_api_key": SecretStr("k")}
             if stage in (Stage.MICRO_LIVE, Stage.LIVE)
             else {}
         )
@@ -117,7 +117,7 @@ def test_startup_REFUSES_a_declaration_that_disagrees_with_the_credentials_held(
     """
     with pytest.raises(ConfigError, match="disagree"):
         assert_startup_declaration(
-            make_settings(stage=Stage.MICRO_LIVE, real_routing_accounts=["70173292"])
+            make_settings(stage=Stage.MICRO_LIVE, real_routing_accounts=["70000002"])
         )
 
 
@@ -126,7 +126,7 @@ def test_startup_permits_a_declaration_backed_by_a_credential() -> None:
     assert_startup_declaration(
         make_settings(
             stage=Stage.MICRO_LIVE,
-            real_routing_accounts=["70173292"],
+            real_routing_accounts=["70000002"],
             liberator_api_key=SecretStr("k"),
         )
     )
