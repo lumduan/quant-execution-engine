@@ -38,7 +38,6 @@ from src.quant_execution_engine.adapters.liberator import mapping
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
     LiberatorMappingError,
-    LiberatorPositionsUncaptured,
     LiberatorTransportError,
 )
 from src.quant_execution_engine.adapters.liberator.models import (
@@ -52,7 +51,7 @@ from src.quant_execution_engine.contracts.capabilities import (
     CAPABILITY_MATRIX,
     CapabilitySet,
 )
-from src.quant_execution_engine.contracts.enums import Broker, Market
+from src.quant_execution_engine.contracts.enums import Broker, Market, Side
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 logger = logging.getLogger(__name__)
@@ -64,6 +63,93 @@ OrderIdResolver = Callable[[str], Awaitable[tuple[str, Market] | None]]
 _HEARTBEAT_PATH = "order/health/set"
 _PORTFOLIO_PATH = "portfolio/get"
 _PROFILE_PATH = "profile"
+
+# 🔑 sideShow -> Side, from the FIRST populated capture (2026-08-28, umbrella
+# `docs/reference/liberator-account-reads.md` §2.2). Every literal here was OBSERVED;
+# none is guessed.
+#
+# ⚠️ SET sends the EMPTY STRING — not a missing key, and not "Long". A SET equity
+# cannot be short and the venue declines to say, so `""` -> None is the faithful
+# reading. `Position.side is None` means *"the venue did not distinguish"*, never
+# *"flat"* and never *"long"*.
+#
+# Long->BUY / Short->SELL is a CONVENTION (a long position is one that was bought);
+# `Side` has only BUY/SELL, so this is the sole available mapping rather than a
+# claim that the venue said "BUY".
+_POSITION_SIDES: dict[str, Side | None] = {"Long": Side.BUY, "Short": Side.SELL, "": None}
+
+# The venue's own account grammar: 8 digits, `<investorId><suffix>`, suffix 2 = CASH
+# BALANCE (SET) and 7 = DERIVATIVE (TFEX). CAPTURED — reference doc §3.
+_ACCOUNT_SUFFIX_MARKETS = {"2": Market.SET, "7": Market.TFEX}
+
+
+def _position_market(account: str) -> Market:
+    """Market for a Liberator account, from the venue's documented account grammar.
+
+    🔴 **This is NOT the "infer the market from the account number" anti-pattern**, and
+    the difference is worth stating because the same file's sibling adapter does the
+    opposite. For **Streaming Pro** the account number carries no market — SET `…97` and
+    TFEX `…99` differ by one digit and mean different books — so that adapter must ASK
+    the venue which front answers. For **Liberator** the suffix *is* the venue's own
+    encoding, captured and documented (§3), and `/va/portfolio` takes **no market
+    parameter at all** (§4) — there is nothing to ask.
+
+    ⚠️ The grammar check also closes a false-absence trap: a bare 7-digit ``investorId``
+    is accepted by the venue, returns ``errMsg: ""`` and an **empty** result — which is
+    indistinguishable from a genuinely flat account. Refusing it here means "I cannot
+    read this" never renders as "there is nothing here".
+    """
+    if len(account) != 8 or not account.isdigit():
+        raise LiberatorAccountNotFound(
+            f"liberator portfolio: {account!r} is not an 8-digit trading account "
+            "(<investorId><suffix>); a bare investorId returns an empty result that "
+            "is indistinguishable from a flat account",
+            detail={"account": account},
+        )
+    market = _ACCOUNT_SUFFIX_MARKETS.get(account[-1])
+    if market is None:
+        raise LiberatorAccountNotFound(
+            f"liberator portfolio: account suffix {account[-1]!r} is neither 2 "
+            "(CASH BALANCE/SET) nor 7 (DERIVATIVE/TFEX)",
+            detail={"account": account},
+        )
+    return market
+
+
+def _position(account: str, market: Market, raw: dict[str, Any]) -> Position:
+    """One ``result.stock[]`` element -> ``Position``. Parses ONLY observed fields.
+
+    Unknown keys are ignored rather than rejected: the capture proves the element is
+    **market-dependent** (17 fields on TFEX, 14 on SET — `optVol`, `positionShow` and
+    `startVol` are TFEX-only), and it cannot prove what a *short SET* or an *expiring
+    TFEX* row carries. Rejecting an unrecognised key would turn a venue addition into
+    an outage.
+    """
+    symbol = raw.get("symbolDisplay") or raw.get("symbol")
+    if not isinstance(symbol, str) or not symbol:
+        raise LiberatorTransportError(
+            f"liberator portfolio: position row carries no symbol ({raw!r})"
+        )
+    qty = raw.get("actualVol")
+    if isinstance(qty, bool) or not isinstance(qty, int):
+        raise LiberatorTransportError(
+            f"liberator portfolio: {symbol} actualVol is not an integer ({qty!r})"
+        )
+    side_show = raw.get("sideShow")
+    if side_show is not None and side_show not in _POSITION_SIDES:
+        # Loud, not silent: an unmapped literal means the vocabulary grew, and guessing
+        # would put a long leg on the short side of a book.
+        raise LiberatorTransportError(
+            f"liberator portfolio: unmapped sideShow {side_show!r} for {symbol} "
+            f"(known: {sorted(_POSITION_SIDES)})"
+        )
+    return Position(
+        account=account,
+        market=market,
+        symbol=symbol,
+        net_qty=qty,
+        side=_POSITION_SIDES.get(side_show or ""),
+    )
 
 
 def _venue_result(body: Any, *, what: str) -> dict[str, Any]:
@@ -292,22 +378,41 @@ class LiberatorAdapter(BrokerAdapter):
         return normalized
 
     async def get_positions(self, account: str) -> list[Position]:
-        """🔴 Not implementable yet — raises :class:`LiberatorPositionsUncaptured`.
+        """Venue-truth positions for ``account``, from ``POST /va/portfolio``.
 
-        ``POST /va/portfolio`` answers with ``result.{list, stock}`` and **neither array
-        has ever been observed non-empty**: no Liberator account on this platform holds
-        a position, so the element schema has never been captured.
+        ✅ **Implemented 2026-08-28 against the first POPULATED capture** — every field
+        parsed here was OBSERVED on the wire, none is inferred. Full record and the
+        verbatim payloads: umbrella ``docs/reference/liberator-account-reads.md`` §2.2.
 
-        The previous implementation parsed ``data["positions"]`` — a key the bridge does
-        not emit — and returned ``[]`` for every account **without raising**. Replacing
-        one invented parse with another would repeat the defect, so this refuses loudly
-        instead. See ``docs/reference/liberator-account-reads.md`` (umbrella) §7.
+        This replaced a ``LiberatorPositionsUncaptured`` (501) that stood while the
+        element schema was unknown. The refusal was correct at the time and is the
+        reason there is no invented parse here now: the ten field names recoverable
+        from the venue's web client turned out to be a **lower bound** — the venue
+        sends **17** on a TFEX row — and one of the ten (``optVal``) does not exist at
+        all. Implementing against them would have shipped a schema known to be wrong.
+
+        🔴 **Refusal and emptiness are different, and only ``errMsg`` separates them.**
+        The bridge returns ``success: true`` and ``errorCode: 0`` for an account the
+        venue REFUSED, identical to an authorized-but-flat one ([[TK-0420]], confirmed
+        against a populated response). ``_venue_result`` reads ``errMsg`` and raises, so
+        an unreadable account can never render as ``[]``.
+
+        Reads ``result.stock[]`` and ignores ``result.list[]`` — the latter is a plain
+        list of symbol-name strings, carrying no independent position data.
         """
-        raise LiberatorPositionsUncaptured(
-            "liberator positions are not readable: the element schema of "
-            "raw_response.result.{list,stock} has never been captured (TK-0396)",
-            detail={"account": account, "endpoint": f"{_PORTFOLIO_PATH}/{account}"},
-        )
+        market = _position_market(account)
+        body = await self._transport.get_json(f"{_PORTFOLIO_PATH}/{account}")
+        result = _venue_result(body, what="portfolio")
+        rows = result.get("stock")
+        if rows is None:
+            raise LiberatorTransportError(
+                "liberator portfolio: raw_response.result carried no stock array"
+            )
+        if not isinstance(rows, list):
+            raise LiberatorTransportError(
+                f"liberator portfolio: result.stock is {type(rows).__name__}, not a list"
+            )
+        return [_position(account, market, raw) for raw in rows if isinstance(raw, dict)]
 
     async def get_account(self, account: str) -> AccountInfo:
         """Buying power for ``account``, from ``GET /va/profile``.

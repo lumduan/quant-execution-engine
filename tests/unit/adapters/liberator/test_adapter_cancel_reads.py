@@ -13,6 +13,7 @@ from src.quant_execution_engine.adapters.base import AccountType
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
     LiberatorPositionsUncaptured,
+    LiberatorTransportError,
 )
 from src.quant_execution_engine.contracts.enums import Market, OrderType, Side
 
@@ -306,17 +307,176 @@ async def test_get_account_refuses_on_venue_errmsg_even_though_success_is_true()
     await adapter.aclose()
 
 
-async def test_get_positions_refuses_loudly_instead_of_returning_empty() -> None:
-    """Positions stay unimplemented until a populated body is captured -- and say so.
+# --------------------------------------------------- positions (implemented 2026-08-28)
+#
+# 🔑 Schema below is VERBATIM-SHAPED from the first populated capture (umbrella
+# `docs/reference/liberator-account-reads.md` §2.2) — the field names, their types and
+# the `sideShow` literals are exactly what the venue sent. The ACCOUNT NUMBERS,
+# SYMBOLS and QUANTITIES are synthetic: real ones do not belong in a PUBLIC repo.
+# The synthetic accounts keep the venue's grammar (8 digits, suffix 2 = CASH/SET,
+# 7 = DERIVATIVE/TFEX) because the adapter reads market from that suffix.
 
-    Returning `[]` is what the broken implementation did for every account. An empty list
-    is a valid-looking answer; the refusal is the honest one while the element schema of
-    result.{list,stock} has never been observed.
+_ACCT_TFEX = "70000007"
+_ACCT_SET = "70000002"
+
+# 17 fields — the TFEX shape. optVol / positionShow / startVol are TFEX-ONLY.
+_TFEX_ROW = {
+    "symbol": "AAAZ26",
+    "symbolDisplay": "AAAZ26",
+    "sideShow": "Long",
+    "actualVol": 3,
+    "avaiVol": 3,
+    "startVol": 3,
+    "avg": 100.5,
+    "amount": 301.5,
+    "optVol": 0,
+    "positionShow": "Open",
+    "realizedPL": 0,
+    "marketPrice": 101.0,
+    "marketVal": 303,
+    "nameEN": "AAA Futures",
+    "nameTH": "AAA",
+    "unrealizedPL": 1.5,
+    "unrealizedPLPercent": 0.5,
+}
+# 14 fields — SET is a strict SUBSET, and sideShow is the EMPTY STRING.
+_SET_ROW = {
+    "symbol": "BBB",
+    "symbolDisplay": "BBB",
+    "sideShow": "",
+    "actualVol": 100,
+    "avaiVol": 100,
+    "avg": 10.0,
+    "amount": 1000,
+    "realizedPL": 0,
+    "marketPrice": 10.5,
+    "marketVal": 1050,
+    "nameEN": "BBB Public Co",
+    "nameTH": "BBB",
+    "unrealizedPL": 50,
+    "unrealizedPLPercent": 5.0,
+}
+
+
+def _portfolio(*rows: dict[str, object], err: str = "") -> dict[str, object]:
+    """The bridge envelope, exactly as captured — note `success` is true even on refusal."""
+    return {
+        "success": True,
+        "data": None,
+        "error_code": None,
+        "raw_response": {
+            "errorCode": 0,
+            "errMsg": err,
+            "result": {"list": [r["symbol"] for r in rows], "stock": list(rows)},
+        },
+    }
+
+
+@respx.mock
+async def test_get_positions_parses_the_TFEX_shape_with_a_real_side() -> None:
+    """17 fields, sideShow 'Long' -> Side.BUY, market from the suffix-7 grammar."""
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(json=_portfolio(_TFEX_ROW))
+    adapter = make_adapter()
+    positions = await adapter.get_positions(_ACCT_TFEX)
+    assert len(positions) == 1
+    p = positions[0]
+    assert p.symbol == "AAAZ26" and p.net_qty == 3
+    assert p.market is Market.TFEX
+    assert p.side is Side.BUY
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_SET_row_yields_side_None_because_the_venue_SENDS_AN_EMPTY_STRING() -> None:
+    """🔑 SET sends `sideShow: ""` — not a missing key, not "Long".
+
+    `None` here means *the venue did not distinguish*, never *flat* and never *long*.
+    A SET equity cannot be short, so the venue declines to say; inventing BUY would be
+    asserting something the venue withheld.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_SET}").respond(json=_portfolio(_SET_ROW))
+    adapter = make_adapter()
+    positions = await adapter.get_positions(_ACCT_SET)
+    assert positions[0].side is None
+    assert positions[0].market is Market.SET
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_sideShow_Short_maps_to_SELL() -> None:
+    """The other observed literal. Both directions matter: a mis-sided leg is a money bug."""
+    row = {**_TFEX_ROW, "sideShow": "Short", "symbol": "CCCZ26", "symbolDisplay": "CCCZ26"}
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(json=_portfolio(row))
+    adapter = make_adapter()
+    assert (await adapter.get_positions(_ACCT_TFEX))[0].side is Side.SELL
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_REFUSED_account_RAISES_and_never_renders_as_an_empty_portfolio() -> None:
+    """🔴 TK-0420, confirmed against a populated response, not inferred from two empty ones.
+
+    The bridge returns `success: true` AND `errorCode: 0` for an account the venue
+    refused — byte-identical to an authorized-but-flat one. Only `errMsg` differs. A
+    parser keyed on either of the first two reports a DENIED account as a FLAT one.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(
+        json=_portfolio(err="Error AccessAuthen: Account Not Authorized")
+    )
+    adapter = make_adapter()
+    with pytest.raises(LiberatorAccountNotFound):
+        await adapter.get_positions(_ACCT_TFEX)
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_an_authorized_but_FLAT_account_returns_an_empty_list() -> None:
+    """The positive control for the test above: empty must still be reachable.
+
+    Without this, `raise on empty` would pass the refusal test and be wrong.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_SET}").respond(json=_portfolio())
+    adapter = make_adapter()
+    assert await adapter.get_positions(_ACCT_SET) == []
+    await adapter.aclose()
+
+
+async def test_a_bare_investorId_is_REFUSED_rather_than_read_as_flat() -> None:
+    """🔴 The false-absence trap the account-grammar guard exists for.
+
+    The venue ACCEPTS a 7-digit investorId, answers `errMsg: ""` and returns an empty
+    result — indistinguishable from a genuinely flat account. Refusing here means
+    "I cannot read this" can never render as "there is nothing here".
     """
     adapter = make_adapter()
-    with pytest.raises(LiberatorPositionsUncaptured) as exc:
-        await adapter.get_positions("70000002")
-    assert exc.value.detail["account"] == "70000002"
+    with pytest.raises(LiberatorAccountNotFound, match="8-digit"):
+        await adapter.get_positions("7000000")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_an_UNMAPPED_sideShow_literal_raises_instead_of_guessing() -> None:
+    """If the venue's vocabulary grows, fail loudly — a guessed side is a money bug."""
+    row = {**_TFEX_ROW, "sideShow": "Hedged"}
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(json=_portfolio(row))
+    adapter = make_adapter()
+    with pytest.raises(LiberatorTransportError, match="unmapped sideShow"):
+        await adapter.get_positions(_ACCT_TFEX)
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_UNKNOWN_venue_fields_are_ignored_not_rejected() -> None:
+    """Forward-compatibility, and it is evidence-based rather than a habit.
+
+    The capture proved the element is market-dependent (17 TFEX / 14 SET) and CANNOT
+    prove what a short-SET or expiring-TFEX row carries. Rejecting an unrecognised key
+    would turn a venue addition into an outage.
+    """
+    row = {**_TFEX_ROW, "someFieldInventedNextYear": {"nested": True}}
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(json=_portfolio(row))
+    adapter = make_adapter()
+    assert (await adapter.get_positions(_ACCT_TFEX))[0].symbol == "AAAZ26"
     await adapter.aclose()
 
 

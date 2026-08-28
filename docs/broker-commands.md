@@ -70,15 +70,33 @@ exists, so you cannot reach it).
 | **Order updates (stream)** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/stream` (SSE) |
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
 | **Open orders** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /accounts/{account}/open-orders?broker=` |
-| **Positions** | ⛔ **NOT IMPLEMENTED**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
+| **Positions** | 🔴 **DESIGNED-ONLY**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
 | **Account balance** | 🟢 **LIVE** — SET **+ TFEX**³ | 🟢 **LIVE** — SET **+ TFEX**⁴ | 🟢 LIVE | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
-² ⛔ **A THIRD label, added 2026-08-24, and the distinction is the point.** DESIGNED-ONLY means *the
-adapter works; only the route is missing* — build the route and you get the data.
-**NOT IMPLEMENTED means the adapter does not work either.** `LiberatorAdapter.get_positions` now
-**raises `LiberatorPositionsUncaptured` (501)**. **Adding a route would not fix it** — see §7.
+² ➡️ **PROMOTED 2026-08-28: liberator positions moved NOT IMPLEMENTED → DESIGNED-ONLY.** The adapter
+now works; only the route is missing.
+
+The third label still exists and still matters — *NOT IMPLEMENTED* means the adapter does not work
+either, so building a route would expose a 501 rather than data. Liberator sat there from 2026-08-24
+because the `result.stock[]` element schema had never been observed on a populated response.
+
+**The operator opened real SET and TFEX positions and the capture was taken 2026-08-28.** The schema
+is recorded in the umbrella's private `docs/reference/liberator-account-reads.md` §2.2 (values live
+there and deliberately not here — this repo is public). `LiberatorAdapter.get_positions` parses it,
+every field tagged OBSERVED, seven guards mutation-proven.
+
+🔑 **The four-month refusal was vindicated, which is why it is worth recording rather than quietly
+overwriting.** The ten field names recoverable from the venue's web client were flagged as a *lower
+bound*; the venue actually sends **17** on a TFEX row, and one of the ten — `optVal` — **does not
+exist at all**. Implementing against them in August would have shipped a schema that was already
+known to be incomplete and was in fact also wrong.
+
+⚠️ **What remains is genuinely just the route** — and it is a deliberate non-decision, not an
+oversight: `StreamingProAdapter.get_positions` is still SET-only, so adding `GET
+/accounts/{account}/positions` today would publish a surface that answers correctly for one broker
+and partially for the other. That asymmetry wants its own call.
 
 ³ ✅ **Liberator balance covers SET *and* TFEX, and TFEX is NOT a separate branch — confirmed
 2026-08-27.** `get_account` issues **one** request to a constant path (`_PROFILE_PATH`), receives
@@ -410,8 +428,15 @@ Where each stands, as of 2026-08-24:
   🔑 **Absent means "this broker does not report it", NEVER zero.** Do not read a `None` as `0`.
 * ✅ **liberator balance WORKS** — proven live against two funded accounts. Not exposed; not broken.
 * ⛔ **liberator POSITIONS DO NOT WORK AT ALL, and a route would not help** — see the block below.
-* ❌ no cost basis, no market value, no unrealised P&L — **`net_qty` only**, and **no marks anywhere
-  in the contract**
+* ⚠️ **CORRECTED 2026-08-28 — this line conflated the CONTRACT with the VENUE.** It read: *"no cost
+  basis, no market value, no unrealised P&L — `net_qty` only, and no marks anywhere in the
+  contract"*. The **contract** part is true and unchanged: `adapters/base.Position` carries
+  `account/market/symbol/net_qty/side` and no marks. But it was written as though it described what
+  the **venue** has, and it reads that way — the first populated capture shows Liberator sends
+  **`avg`** (cost basis), **`marketPrice`**, **`marketVal`**, **`unrealizedPL`** and
+  **`unrealizedPLPercent`**. ⇒ the marks are **available and currently discarded**, which is a very
+  different statement from "they do not exist", and it makes enriching `Position` a real option
+  rather than a blocked one.
 * ⚠️ **streaming_pro: balance covers SET + TFEX; POSITIONS are still SET-only**, per §5. Corrected
   2026-08-27 — this line previously read *"SET-only for BOTH"*, which the bridge's new `seosd` front
   superseded on the balance half the same day. Positions remain SET-only in the adapter.
