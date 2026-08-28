@@ -171,6 +171,65 @@ async def test_required_case_7_amend_cancel_strictly_before_replacement_place(
     assert store.orders[new_cid]["quantity"] == 80
 
 
+class _FrozenClock:
+    """Pins ``core.risk``'s per-second rate bucket.
+
+    ``risk.py`` uses ``time`` in exactly ONE place — ``f"exe:rate:{int(time.time())}"`` —
+    so replacing the name in that module's namespace is precise. Patching the stdlib
+    ``time.time`` globally would also reach respx, asyncio timeouts and anything else in
+    the test, which is a much larger blast radius for the same effect.
+    """
+
+    @staticmethod
+    def time() -> float:
+        return 1_700_000_000.0
+
+
+@respx.mock
+async def test_the_rate_bucket_is_WALL_CLOCK_derived_which_is_why_it_needed_pinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 Asserts the CAUSE of [[TK-0456]], so the fix cannot be silently undone.
+
+    The per-second cap keys on ``int(time.time())``. Two orders in the SAME second share a
+    bucket and the second is rejected; two orders in DIFFERENT seconds do not. That is the
+    whole flake — and with the clock pinned it becomes a property rather than a coin flip.
+
+    Without this test, someone removing the ``_FrozenClock`` patch above would restore the
+    intermittent failure and every run would probably still be green.
+    """
+    from src.quant_execution_engine.contracts.errors import RiskRejected
+
+    respx.post(f"{_BASE}/order/place/set").respond(json=_ok_place("3064"))
+    router, _ = _router(
+        monkeypatch, adapter=make_adapter(), stage="micro_live", risk_max_orders_per_second=1
+    )
+
+    # ⚠️ Each order carries a DIFFERENT price. The duplicate-burst guard fingerprints on
+    # `account|symbol|side|quantity|order_type|price`, so economically identical orders
+    # trip THAT guard (409) before the rate cap (429) is ever reached — and the test would
+    # then pass on the wrong rejection. Varying price isolates the cap under test.
+    monkeypatch.setattr(risk_module_for_clock(), "time", _FrozenClock)
+    await router.submit(_order(price="101.00"))
+    with pytest.raises(RiskRejected, match="order rate"):
+        await router.submit(_order(price="102.00"))
+
+    # A LATER bucket -> the budget resets, and an equivalent call now succeeds.
+    class _LaterClock:
+        @staticmethod
+        def time() -> float:
+            return 1_700_000_099.0
+
+    monkeypatch.setattr(risk_module_for_clock(), "time", _LaterClock)
+    await router.submit(_order(price="103.00"))  # must NOT raise
+
+
+def risk_module_for_clock() -> object:
+    from src.quant_execution_engine.core import risk as risk_module
+
+    return risk_module
+
+
 @respx.mock
 async def test_amend_replacement_gets_no_ptrm_exemption(
     monkeypatch: pytest.MonkeyPatch,
@@ -183,8 +242,23 @@ async def test_amend_replacement_gets_no_ptrm_exemption(
     (Phase 6 / A3 note: the duplicate-burst fingerprint now includes price, so a
     legitimate re-price no longer self-collides on the burst guard; the
     "no exemption" property is shown here via the rate cap, which still binds.)
+
+    ⏱️ **The rate window is PINNED, not left to wall-clock luck ([[TK-0456]]).** The gate
+    buckets by ``exe:rate:{int(time.time())}`` — a wall-clock second — so if the submit and
+    the amend landed either side of a boundary, the budget reset and nothing was rejected.
+    This test then failed with ``DID NOT RAISE``, intermittently, while asserting a
+    **safety** property. A flaky safety test is worse than a missing one: it teaches the
+    reader that red means *re-run*.
+
+    Freezing the clock removes the dependency rather than shrinking it. It does **not**
+    weaken the assertion — with the bucket pinned the budget is definitively spent, so a
+    replacement that is not rejected can only mean the exemption came back. The mutation
+    that deletes ``self._risk.check(amended)`` from the amend path still turns this red.
     """
     from src.quant_execution_engine.contracts.errors import RiskRejected
+    from src.quant_execution_engine.core import risk as risk_module
+
+    monkeypatch.setattr(risk_module, "time", _FrozenClock)
 
     respx.post(f"{_BASE}/order/place/set").respond(json=_ok_place("3064"))
     respx.post(f"{_BASE}/order/cancelled/set").respond(
@@ -194,7 +268,11 @@ async def test_amend_replacement_gets_no_ptrm_exemption(
         monkeypatch, adapter=make_adapter(), stage="micro_live", risk_max_orders_per_second=1
     )
     original = _order()
-    await router.submit(original)  # consumes the 1/s budget for this second
+    await router.submit(original)  # consumes the 1/s budget for the PINNED bucket
+    # Positive control: the freeze must not be what does the rejecting. If the clock shim
+    # broke the gate outright, this first submit would not have landed either, and the
+    # assertion below would pass for entirely the wrong reason.
+    assert store.orders[original.client_order_id]["status"] is not OrderState.REJECTED
     new_cid = str(uuid4())
     with pytest.raises(RiskRejected, match="order rate"):
         await router.amend(
