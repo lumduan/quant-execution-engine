@@ -28,6 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -148,6 +149,51 @@ def _venue_terminal_actions(row: OrderRow, item: VenueOrderItem) -> list[Reconci
     return []
 
 
+# 🔴 TK-0446 — the venue book is CURRENT-DAY-ONLY, so absence stops being information
+# at the day boundary.
+#
+# ``orders/{account}`` returns **today's orders only** (``session:lib-research``: /va/order
+# is current-day, and no multi-day order endpoint exists — [[TK-0425]]). Within a day,
+# "absent after a cancel request" genuinely means gone. From the next day, **every** order
+# is absent whatever its true state, so the same inference confirms a CANCELLED for an
+# order that may still be live at the venue.
+#
+# ⚠️ The fix is in how absence is INTERPRETED, never in fetching more: there is nothing
+# wider to fetch.
+_VENUE_BOOK_IS_CURRENT_DAY_ONLY = True
+
+# The venue's day is a Bangkok calendar day; timestamps here are stored UTC. Comparing
+# UTC dates would be wrong by 7 hours — an order placed 18:00 UTC is already 01:00 the
+# NEXT day in Bangkok, and would be judged "today" when the venue has already rolled it.
+_VENUE_TZ = ZoneInfo("Asia/Bangkok")
+
+
+def _venue_day(ts: datetime) -> object:
+    """The Bangkok calendar date of ``ts``.
+
+    A naive timestamp is read as UTC — the platform's storage convention — rather than as
+    local time, which is what ``astimezone`` would assume and would silently shift the
+    boundary on any machine not running in UTC.
+    """
+    aware = ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+    return aware.astimezone(_VENUE_TZ).date()
+
+
+def absence_is_informative(row: OrderRow, now: datetime) -> bool:
+    """Whether "missing from the venue book" tells us anything about ``row``.
+
+    True only when the row belongs to the venue's CURRENT day. For anything older the
+    absence is guaranteed by the endpoint's scope and says nothing about the order.
+
+    🔑 Fails toward *no action*: when in doubt this returns False, because the failure it
+    exists to prevent is a **terminal CANCELLED reported on no evidence**. Leaving a row
+    unresolved is recoverable; wrongly declaring it dead is not.
+    """
+    if not _VENUE_BOOK_IS_CURRENT_DAY_ONLY:  # pragma: no cover - documents the coupling
+        return True
+    return _venue_day(row.created_at) == _venue_day(now)
+
+
 def plan_actions(
     row: OrderRow,
     filled_qty: int,
@@ -167,14 +213,40 @@ def plan_actions(
                 ]
             return []  # still inside the lost-ack window — wait, never re-send
         if row.status is OrderState.PENDING_CANCEL:
-            # Absent from the venue book after a cancel request = gone.
+            # Absent from the venue book after a cancel request = gone — but ONLY within
+            # the venue's current day. See TK-0446: from the next day every order is
+            # absent by construction, so confirming a cancel on absence alone would
+            # report a TERMINAL CANCELLED for an order that may still be live.
+            if not absence_is_informative(row, now):
+                logger.warning(
+                    "reconcile: %s is PENDING_CANCEL and absent, but was created on venue "
+                    "day %s (now %s) — the book is current-day-only, so absence carries NO "
+                    "information. NOT confirming the cancel; this row needs manual "
+                    "resolution (TK-0446)",
+                    cid,
+                    _venue_day(row.created_at),
+                    _venue_day(now),
+                )
+                return []
             return [ReconcileAction(kind="cancel_confirm", client_order_id=cid)]
         if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
-            logger.warning(
-                "reconcile: %s (%s) missing from the venue book — drift, no transition (v1)",
-                cid,
-                row.status,
-            )
+            if absence_is_informative(row, now):
+                logger.warning(
+                    "reconcile: %s (%s) missing from the venue book — drift, no transition (v1)",
+                    cid,
+                    row.status,
+                )
+            else:
+                # Distinct from drift: this row CANNOT appear in the book at all, so the
+                # daily re-poll can never resolve it. Said differently so the log does not
+                # read as a recurring anomaly when it is a structural one.
+                logger.warning(
+                    "reconcile: %s (%s) is older than the venue's current day — the "
+                    "current-day-only book structurally cannot contain it, so re-polling "
+                    "will never resolve it (TK-0446)",
+                    cid,
+                    row.status,
+                )
         return []
 
     actions: list[ReconcileAction] = []

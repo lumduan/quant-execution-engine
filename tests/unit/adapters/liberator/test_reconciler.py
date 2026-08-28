@@ -420,3 +420,108 @@ async def test_resolve_order_now_will_not_steal_a_handle_owned_by_another_order(
     assert await _reconciler(store).resolve_order_now(twin.client_order_id) is False
     assert store.orders[twin.client_order_id]["broker_order_id"] is None
     assert store.orders[owner.client_order_id]["broker_order_id"] == "18439"
+
+
+# ------------------------------------------------- TK-0446: absence is not information
+
+
+from datetime import UTC, datetime  # noqa: E402
+
+from src.quant_execution_engine.adapters.liberator.reconciler import (  # noqa: E402
+    absence_is_informative,
+)
+
+
+def _row_created(ts: datetime, status: OrderState = OrderState.PENDING_CANCEL) -> OrderRow:
+    """An order row pinned to an exact creation instant.
+
+    Mirrors this file's ``_row`` but sets ``created_at`` absolutely rather than as an
+    offset from ``_NOW`` — these tests are about a calendar boundary, so the instant has
+    to be stated, not derived.
+    """
+    store = MemStore()
+    order = make_order(broker="liberator", price="123.45")
+    store.seed(order, status)
+    raw = store.orders[order.client_order_id]
+    raw["created_at"] = ts
+    return OrderRow(**raw)
+
+
+class TestAbsenceAcrossTheVenueDayBoundary:
+    """🔴 The venue book is CURRENT-DAY-ONLY, so absence expires as evidence.
+
+    Within a day, "absent after a cancel request" means gone. From the next day EVERY
+    order is absent by construction — so the same inference would confirm a terminal
+    CANCELLED for an order that may still be resting at the venue.
+    """
+
+    def test_a_PENDING_CANCEL_absent_on_the_SAME_venue_day_still_confirms(self) -> None:
+        """The existing behaviour must survive: this is not a blanket disabling."""
+        now = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)  # 13:00 BKK
+        row = _row_created(datetime(2026, 8, 28, 3, 0, tzinfo=UTC))  # 10:00 BKK, same day
+        actions = plan_actions(row, 0, None, now=now)
+        assert [a.kind for a in actions] == ["cancel_confirm"]
+
+    def test_a_PENDING_CANCEL_absent_from_a_PREVIOUS_venue_day_confirms_NOTHING(self) -> None:
+        """🔴 The fix. A terminal CANCELLED on no evidence is the failure being prevented."""
+        now = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)  # 13:00 BKK, 28th
+        row = _row_created(datetime(2026, 8, 27, 6, 0, tzinfo=UTC))  # 13:00 BKK, 27th
+        assert plan_actions(row, 0, None, now=now) == []
+
+    def test_the_boundary_is_BANGKOK_not_UTC(self) -> None:
+        """🔑 The test that would fail a naive UTC-date comparison.
+
+        18:00 UTC on the 27th is **01:00 BKK on the 28th** — already the venue's next day.
+        A UTC-date check would call it "the 27th" and, against a `now` on the 28th, wrongly
+        treat the row as stale and skip a confirm that is legitimately available.
+
+        Both directions matter, so both are asserted: the venue day is what decides, and
+        it does not coincide with the UTC day.
+        """
+        now = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)  # 13:00 BKK on the 28th
+
+        # UTC 27th, but BKK 28th -> SAME venue day -> confirm is available.
+        row_same = _row_created(datetime(2026, 8, 27, 18, 0, tzinfo=UTC))
+        assert absence_is_informative(row_same, now) is True
+        assert [a.kind for a in plan_actions(row_same, 0, None, now=now)] == ["cancel_confirm"]
+
+        # UTC 28th 00:30, which is BKK 07:30 on the 28th -> also same day.
+        row_early = _row_created(datetime(2026, 8, 28, 0, 30, tzinfo=UTC))
+        assert absence_is_informative(row_early, now) is True
+
+        # UTC 27th 16:00 = BKK 23:00 on the 27th -> PREVIOUS venue day.
+        row_prev = _row_created(datetime(2026, 8, 27, 16, 0, tzinfo=UTC))
+        assert absence_is_informative(row_prev, now) is False
+
+    def test_a_NAIVE_created_at_is_read_as_UTC_not_as_local_time(self) -> None:
+        """A naive timestamp must not shift the boundary by the host's timezone.
+
+        ``astimezone()`` on a naive datetime assumes LOCAL time, which on this host (BKK)
+        would move the boundary by 7 hours and silently change which rows are actionable.
+
+        ⚠️ This exercises ``absence_is_informative`` **directly**, and that is deliberate:
+        a naive ``created_at`` cannot actually reach it through ``plan_actions``, because
+        the ``now - row.created_at`` age computation raises ``TypeError`` first. The
+        column is ``timestamptz`` so production rows are aware. The normalisation is
+        therefore belt-and-braces for direct callers, and this test says so rather than
+        implying a path that does not exist.
+        """
+        now = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
+        naive_same = _row_created(datetime(2026, 8, 27, 18, 0))  # UTC -> BKK 28th
+        assert absence_is_informative(naive_same, now) is True
+        naive_prev = _row_created(datetime(2026, 8, 27, 6, 0))  # UTC -> BKK 27th
+        assert absence_is_informative(naive_prev, now) is False
+
+    def test_PENDING_NEW_is_UNAFFECTED_because_it_resolves_same_day(self) -> None:
+        """Scope control: the guard must not silence the lost-ack path.
+
+        PENDING_NEW resolves inside a 60 s window, so it can never reach a day boundary —
+        and if this guard leaked into it, a genuinely lost ack would stop being rejected.
+        """
+        now = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
+        # Aware, because that is what production rows are (timestamptz) and what
+        # plan_actions requires — see the naive-timestamp note above.
+        row = _row_created(datetime(2026, 8, 27, 6, 0, tzinfo=UTC), status=OrderState.PENDING_NEW)
+        actions = plan_actions(row, 0, None, now=now)
+        assert [a.kind for a in actions] == ["reject"]
+        assert actions[0].reason == "ack_lost_unmatched"
