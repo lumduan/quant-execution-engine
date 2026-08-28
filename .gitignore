@@ -58,3 +58,10 @@ Thumbs.db
 # docker-compose.aws.yml ②). NEVER committed — infra-db is the sole schema
 # owner and a second copy in git is exactly the drift EH2 exists to prevent.
 aws-initdb/
+
+# Per-node LOCAL compose overrides. Untracked is not enough on a PUBLIC repo: an
+# untracked-but-unignored file is one `git add -A` from a public remote, and these
+# files exist precisely to hold per-node runtime config. `.env` is already ignored
+# below for the same reason — this closes the compose half of it. (2026-08-28)
+docker-compose.override.yml
+docker-compose.override.*.yml
