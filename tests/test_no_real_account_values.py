@@ -6,11 +6,17 @@ balances in order to search for them — putting back exactly what it exists to 
 a file that is public. It would also only ever catch the spellings whoever wrote it
 happened to think of.
 
-That is not hypothetical. The 2026-08-28 redaction pass substituted ``38275.42`` and
-missed ``38,275.42`` — the same number with a thousands separator — in seven places, and
-the *verification* grep used the same unformatted patterns, so it reported "zero matches"
-against text that plainly still contained them. A check that shares its blind spot with
-the edit it is checking proves nothing.
+That is not hypothetical. The 2026-08-28 redaction pass substituted a balance in its
+plain form (``NNNNN.NN``) and missed **the same number written with a thousands
+separator** (``NN,NNN.NN``) in seven places — and the *verification* grep used the same
+unformatted patterns, so it reported "zero matches" against text that plainly still
+contained them. A check that shares its blind spot with the edit it is checking proves
+nothing.
+
+⚠️ This paragraph originally illustrated that with the **actual balance**, which put a
+real value into the public file whose entire job is to keep real values out — and
+because the scan skips its own file, this guard would never have flagged it. The shape
+makes the point; the digits were never needed.
 
 Inverting it removes that failure mode by construction: an unrecognised account-shaped
 literal fails, whatever its formatting, and adding a real one cannot pass by being spelled
