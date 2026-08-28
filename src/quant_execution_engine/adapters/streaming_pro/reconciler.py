@@ -130,6 +130,28 @@ def plan_actions(
                 ]
             return []  # still inside the lost-ack window — wait, never re-send
         if row.status is OrderState.PENDING_CANCEL:
+            # ⚠️ [[TK-0459]] — this line makes an ASSUMPTION nobody has verified: that
+            # absence from the SP order book means the cancel landed.
+            #
+            # The Liberator reconciler carried the identical inference and it was WRONG
+            # across a day boundary — `/va/order` is current-day-only, so from the next
+            # day every order is absent by construction and this would confirm a terminal
+            # CANCELLED on no evidence ([[TK-0446]], fixed and deployed 2026-08-28).
+            #
+            # 🔴 The same guard is deliberately NOT applied here, because whether SP's
+            # `.../accounts/{account}/orders` is day-scoped is UNKNOWN. If it is not,
+            # adding the guard would stop confirming legitimate cancels and strand rows
+            # non-terminal — the guard would be the regression.
+            #
+            # Three routes were tried and all are exhausted (2026-08-28): the bridge
+            # source and reference docs say nothing about scope; there is no separate
+            # order-history endpoint whose existence would imply this one is current-only;
+            # and the empirical check is BLOCKED because no SP order has ever reached the
+            # venue — the two `broker=streaming_pro` rows in the store carry `SIM-` handles
+            # from paper-stage interception, so the empty book is uninterpretable.
+            #
+            # What would settle it: a real SP order that survives to a later day, read back
+            # with a positive control in the same request. Operator-only.
             return [ReconcileAction(kind="cancel_confirm", client_order_id=cid)]
         if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
             logger.warning(
