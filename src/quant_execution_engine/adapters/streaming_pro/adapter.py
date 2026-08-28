@@ -34,6 +34,7 @@ from src.quant_execution_engine.adapters.streaming_pro import mapping
 from src.quant_execution_engine.adapters.streaming_pro.errors import (
     StreamingProAccountUnavailable,
     StreamingProMappingError,
+    StreamingProPositionsUncaptured,
     StreamingProTransportError,
 )
 from src.quant_execution_engine.adapters.streaming_pro.models import (
@@ -186,20 +187,75 @@ class StreamingProAdapter(BrokerAdapter):
         return normalized
 
     async def get_positions(self, account: str) -> list[Position]:
-        """Portfolio positions (v1: the equities portfolio — market SET; TFEX is a follow-up)."""
+        """Positions for a SET **or** TFEX account — the VENUE decides which.
+
+        🔴 **The TFEX front is tried FIRST, which is the OPPOSITE order from
+        ``get_account``, and the reason is measured rather than stylistic.** On the
+        balance endpoints both fronts refuse an account they do not hold, so SET-first
+        works there. On the *holdings* endpoints they do not behave the same way
+        (measured 2026-08-28, umbrella ``docs/reference/streaming-pro-account-reads.md``):
+
+        =====================  =====================  ==========================
+        front                  a SET account          a TFEX account
+        =====================  =====================  ==========================
+        ``portfolio`` (SET)    answers its rows       **``{"positions": []}``**
+        ``tfex/portfolio``     **refuses ``GWD-03``**  answers its rows
+        =====================  =====================  ==========================
+
+        ⇒ **the SET front cannot discriminate.** Asking it about a TFEX account returns an
+        empty list that is byte-identical to a genuinely flat SET account, so SET-first
+        would silently report every TFEX account as holding nothing. Only the TFEX front
+        refuses, so only the TFEX front can decide.
+
+        ⚠️ Do not "make this consistent with ``get_account``" — the inconsistency is in
+        the venue, and this order is the one that survives it.
+        """
+        tfex_body = await self._transport.get_json(mapping.tfex_portfolio_path(account))
+        raw = tfex_body.get("raw") if isinstance(tfex_body, dict) else None
+        if isinstance(raw, dict) and "code" not in raw:
+            rows = raw.get("portfolioList")
+            if not isinstance(rows, list):
+                raise StreamingProTransportError(
+                    "streaming_pro tfex/portfolio: raw carried no portfolioList array"
+                )
+            if not rows:
+                # A genuinely flat derivatives account. Distinguishable from the SET
+                # front's empty answer precisely because THIS front refuses what it does
+                # not hold — reaching here means the account was accepted.
+                return []
+            raise StreamingProPositionsUncaptured(
+                "streaming_pro: TFEX positions exist but their element schema has never "
+                "been observed — refusing rather than inventing field names",
+                detail={"account": account, "rows": len(rows)},
+            )
+
+        # The TFEX front refused (or answered nothing recognisable) ⇒ treat as SET.
         body = await self._transport.get_json(mapping.portfolio_path(account))
         raw_positions = body.get("positions") if isinstance(body, dict) else None
         if not isinstance(raw_positions, list):
-            return []
+            # 🔴 Was `return []`. An unreadable body is not a flat account, and the
+            # difference is the whole of [[TK-0396]].
+            raise StreamingProTransportError(
+                "streaming_pro portfolio: response carried no positions array"
+            )
         positions: list[Position] = []
-        for raw in raw_positions:
-            if not isinstance(raw, dict):
+        for raw_row in raw_positions:
+            if not isinstance(raw_row, dict):
                 continue
-            symbol = raw.get("symbol")
-            qty = _coerce_int(raw.get("currentVolume", raw.get("actualVolume")))
+            symbol = raw_row.get("symbol")
+            qty = _coerce_int(raw_row.get("currentVolume", raw_row.get("actualVolume")))
             if isinstance(symbol, str) and qty is not None:
                 positions.append(
-                    Position(account=account, market=Market.SET, symbol=symbol, net_qty=qty)
+                    Position(
+                        account=account,
+                        market=Market.SET,
+                        symbol=symbol,
+                        net_qty=qty,
+                        # SET equities cannot be short and this front sends no side
+                        # field — None means "the venue did not distinguish", which is
+                        # exactly what it did.
+                        side=None,
+                    )
                 )
         return positions
 

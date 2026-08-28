@@ -10,6 +10,8 @@ import respx
 from src.quant_execution_engine.adapters.base import AccountType
 from src.quant_execution_engine.adapters.streaming_pro.errors import (
     StreamingProAccountUnavailable,
+    StreamingProPositionsUncaptured,
+    StreamingProTransportError,
 )
 from src.quant_execution_engine.contracts.enums import Market
 
@@ -118,6 +120,14 @@ async def test_get_open_orders_normalizes_resting_rows_both_markets() -> None:
 
 @respx.mock
 async def test_get_positions_maps_portfolio() -> None:
+    """A SET account: the TFEX front refuses, so the SET front answers.
+
+    ⚠️ Updated 2026-08-28. This used to mock only the SET front, which passed because
+    the adapter only ever called that one. It now consults the DERIVATIVES front first
+    — the only front that refuses an account it does not hold — so the refusal has to
+    be mocked or the test fails on an unmocked request rather than on behaviour.
+    """
+    respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=_TFEX_REFUSED)
     respx.get(f"{_BASE}/portfolio", params={"account": "ACC"}).respond(
         json={"account": "ACC", "positions": [{"symbol": "PTT", "currentVolume": "300"}]}
     )
@@ -126,6 +136,64 @@ async def test_get_positions_maps_portfolio() -> None:
     assert len(positions) == 1
     assert positions[0].symbol == "PTT" and positions[0].net_qty == 300
     assert positions[0].market is Market.SET
+    assert positions[0].side is None, "SET sends no side — None means the venue did not say"
+    await adapter.aclose()
+
+
+# Verbatim SHAPE from the live bridge 2026-08-28 (values synthetic — this repo is public).
+# The derivatives front refuses an account it does not hold, body-only, HTTP 200.
+_TFEX_REFUSED = {"account": "ACC", "raw": {"code": "GWD-03", "message": "UserAccount not found"}}
+# ...and answers with raw.portfolioList for one it does hold.
+_TFEX_FLAT = {
+    "account": "ACC",
+    "raw": {"portfolioList": [], "totalPortfolio": {"amount": 0, "marketValue": 0}},
+}
+
+
+@respx.mock
+async def test_a_TFEX_account_is_read_from_the_DERIVATIVES_front_not_reported_flat() -> None:
+    """🔴 The defect this ordering exists to prevent, asserted directly.
+
+    The SET front answers a TFEX account with ``{"positions": []}`` — it does NOT refuse.
+    So a SET-first adapter reports every TFEX account as holding nothing, and the caller
+    cannot tell that from a genuinely flat one. Here the SET front is mocked to return
+    that misleading empty list; the test passes only because the adapter never asks it.
+    """
+    tfex = respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=_TFEX_FLAT)
+    setf = respx.get(f"{_BASE}/portfolio", params={"account": "ACC"}).respond(
+        json={"account": "ACC", "positions": []}
+    )
+    adapter = make_adapter()
+    assert await adapter.get_positions("ACC") == []
+    assert tfex.called, "the derivatives front must be consulted"
+    assert not setf.called, "a TFEX account must never fall through to the SET front"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_TFEX_positions_that_EXIST_raise_rather_than_being_guessed() -> None:
+    """An element schema never observed non-empty is not one to invent field names for.
+
+    Same answer Liberator's positions gave for four months — and when a populated capture
+    finally arrived, the field names recovered from the venue's own client proved a LOWER
+    BOUND, with one that did not exist at all. The refusal was right then and is right here.
+    """
+    held = {"account": "ACC", "raw": {"portfolioList": [{"anything": 1}], "totalPortfolio": {}}}
+    respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=held)
+    adapter = make_adapter()
+    with pytest.raises(StreamingProPositionsUncaptured):
+        await adapter.get_positions("ACC")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_an_UNREADABLE_SET_body_raises_instead_of_looking_flat() -> None:
+    """🔴 Was ``return []``. An unreadable body is not a flat account — that is TK-0396."""
+    respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=_TFEX_REFUSED)
+    respx.get(f"{_BASE}/portfolio", params={"account": "ACC"}).respond(json={"unexpected": True})
+    adapter = make_adapter()
+    with pytest.raises(StreamingProTransportError):
+        await adapter.get_positions("ACC")
     await adapter.aclose()
 
 

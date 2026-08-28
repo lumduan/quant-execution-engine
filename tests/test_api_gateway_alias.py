@@ -47,8 +47,10 @@ def test_alias_mirrors_every_non_admin_native_route() -> None:
     # Positive control: the comparison above is vacuous if either side is empty.
     # Anti-vacuity control only — the REAL assertion is the set equality above, which
     # passed unchanged when /accounts/{account} and /accounts/{account}/open-orders were
-    # added (the alias is derived, so it mirrored them automatically). 9 -> 11 for those two.
-    assert len(aliased) == 11, f"expected the 11 gateway-proxied routes, got {len(aliased)}"
+    # added (the alias is derived, so it mirrored them automatically). 9 -> 11 for those two,
+    # and 11 -> 12 when GET /accounts/{account}/positions landed 2026-08-28 — again without
+    # touching this file's production code, which is the property being asserted.
+    assert len(aliased) == 12, f"expected the 12 gateway-proxied routes, got {len(aliased)}"
 
 
 def test_admin_is_absent_under_the_alias_but_present_natively() -> None:

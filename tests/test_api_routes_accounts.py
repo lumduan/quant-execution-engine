@@ -25,11 +25,10 @@ from src.quant_execution_engine.adapters.base import (
 )
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
-    LiberatorPositionsUncaptured,
 )
 from src.quant_execution_engine.api.main import create_app
 from src.quant_execution_engine.contracts.capabilities import CapabilitySet, lookup
-from src.quant_execution_engine.contracts.enums import Broker, Market
+from src.quant_execution_engine.contracts.enums import Broker, Market, Side
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 
 from tests._fakes import FakeRedis, MemStore, patch_repositories
@@ -52,6 +51,8 @@ class _ReadAdapter(BrokerAdapter):
         self._info = info
         self._raises = raises
         self.open_orders: list[NormalizedOrder] = []
+        self.positions: list[Position] = []
+        self.positions_raise: Exception | None = None
 
     async def place(self, order: NormalizedOrder) -> PlaceAck:
         return PlaceAck(broker_order_id="X-1")
@@ -70,7 +71,17 @@ class _ReadAdapter(BrokerAdapter):
         return self.open_orders
 
     async def get_positions(self, account: str) -> list[Position]:
-        raise LiberatorPositionsUncaptured("element schema never captured")
+        """Configurable now that the route exists.
+
+        ⚠️ Was an unconditional ``raise LiberatorPositionsUncaptured`` — correct while
+        `get_positions` was unimplemented, and it silently made every positions-route
+        test 501 the moment one was written. Kept raising BY DEFAULT only when a test
+        asks for it, so the refusal path is still exercised deliberately rather than
+        by accident.
+        """
+        if self.positions_raise is not None:
+            raise self.positions_raise
+        return self.positions
 
     async def get_account(self, account: str) -> AccountInfo:
         if self._raises is not None:
@@ -283,7 +294,11 @@ def test_reads_are_OWNER_MODE_only(monkeypatch: pytest.MonkeyPatch) -> None:
     info = AccountInfo(account=_ACCOUNT, account_type=AccountType.CASH, buying_power=_CONTROL_CASH)
     client = _client(monkeypatch, _ReadAdapter(info=info), public_mode=True)
 
-    for path in (f"/accounts/{_ACCOUNT}", f"/accounts/{_ACCOUNT}/open-orders"):
+    for path in (
+        f"/accounts/{_ACCOUNT}",
+        f"/accounts/{_ACCOUNT}/open-orders",
+        f"/accounts/{_ACCOUNT}/positions",  # added 2026-08-28 — holdings are financial data too
+    ):
         r = client.get(f"{path}?broker=liberator")
         assert r.status_code == 403, f"{path} must be owner-mode only"
         assert r.json()["error"]["code"] == "public_mode"
@@ -494,3 +509,66 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
     assert r.json()["buying_power"] == "50000.11"
     assert r.json()["equity"] is None, "a margin field on a CASH account must be dropped"
     assert r.json()["initial_margin"] is None
+
+
+# ------------------------------------------------------- GET /accounts/{account}/positions
+
+
+def test_positions_route_serialises_side_and_keeps_None_distinct_from_a_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``side`` must cross the wire as null when the venue did not distinguish.
+
+    Coercing it to a string — "BUY", or worse "" — would assert a direction the venue
+    withheld. A SET equity cannot be short and neither venue sends a side for one.
+    """
+    adapter = _ReadAdapter()
+    adapter.positions = [
+        Position(account=_ACCOUNT, market=Market.SET, symbol="AAA", net_qty=100, side=None),
+        Position(account=_ACCOUNT, market=Market.TFEX, symbol="BBBZ26", net_qty=3, side=Side.SELL),
+    ]
+    client = _client(monkeypatch, adapter)
+
+    r = client.get(f"/accounts/{_ACCOUNT}/positions?broker=liberator")
+
+    assert r.status_code == 200
+    rows = r.json()["positions"]
+    assert rows[0]["side"] is None
+    assert rows[1]["side"] == "SELL"
+    assert rows[0]["market"] == "SET" and rows[1]["market"] == "TFEX"
+
+
+def test_positions_route_is_refused_by_EH6_for_an_UNDECLARED_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positions route must not be a hole around EH6 either.
+
+    It resolves through the same ``_resolve_adapter`` seam as every other read, so a node
+    that is not the declared real router for an account cannot list its holdings.
+    """
+    client = _client(monkeypatch, _ReadAdapter())
+
+    r = client.get("/accounts/9999999/positions?broker=liberator")
+
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "real_routing_not_authorized"
+
+
+def test_an_UNREADABLE_account_does_NOT_come_back_as_an_empty_holding_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 The property this whole endpoint rests on.
+
+    ``[]`` from this route must mean *"this account holds nothing"*. If a failure to READ
+    could also produce ``[]``, the answer is worthless — "flat" is a plausible reading a
+    caller will act on. Every unreadable path raises, and the raise must reach the client
+    as an error status rather than an empty success.
+    """
+    adapter = _ReadAdapter()
+    adapter.positions_raise = LiberatorAccountNotFound("cannot read that account")
+    client = _client(monkeypatch, adapter)
+
+    r = client.get(f"/accounts/{_ACCOUNT}/positions?broker=liberator")
+
+    assert r.status_code == 404
+    assert "positions" not in r.json(), "an unreadable account must never yield a holdings list"
