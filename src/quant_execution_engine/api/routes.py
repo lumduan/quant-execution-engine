@@ -232,6 +232,45 @@ async def get_account(
 
 
 @router.get(
+    "/accounts/{account}/positions",
+    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    summary="VENUE-TRUTH holdings for one account",
+)
+async def get_positions(
+    account: str,
+    broker: Broker,
+    order_router: RouterDep,
+) -> JSONResponse:
+    """What the venue says this account HOLDS — not what our store thinks it filled.
+
+    🔴 **An empty list means "this account holds nothing", and it can only mean that
+    because every path that cannot answer RAISES instead.** That is the entire design
+    here and it is why the route was withheld until it was true: a positions endpoint
+    that returns ``[]`` when it failed to read is worse than no endpoint, because
+    "flat" is a plausible answer that a caller will act on.
+
+    ⚠️ **Coverage is asymmetric and the asymmetry is deliberate, not a gap being hidden:**
+
+    * ``liberator`` — SET **and** TFEX parse; schema observed 2026-08-28.
+    * ``streaming_pro`` — SET parses. A **TFEX** account that genuinely holds something
+      answers **501** ``streaming_pro_positions_uncaptured``: that element schema has
+      never been observed non-empty, and inventing field names is the defect this whole
+      endpoint family was rebuilt to remove. A flat TFEX account returns ``[]`` honestly,
+      because the derivatives front refuses accounts it does not hold — so reaching the
+      empty case proves the account was read, not skipped.
+
+    ``side`` is ``Side | None``, and ``None`` means *the venue did not distinguish* —
+    never *flat*, never *long*. SET equities cannot be short and neither venue sends a
+    side for them.
+    """
+    positions = await order_router.get_positions(broker, account)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"positions": [p.model_dump(mode="json") for p in positions]},
+    )
+
+
+@router.get(
     "/accounts/{account}/open-orders",
     dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
     summary="VENUE-TRUTH resting orders for one account (not the durable store)",

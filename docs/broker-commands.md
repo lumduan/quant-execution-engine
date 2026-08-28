@@ -70,13 +70,53 @@ exists, so you cannot reach it).
 | **Order updates (stream)** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /orders/stream` (SSE) |
 | **Capabilities** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /capabilities` |
 | **Open orders** | 🟢 LIVE | 🟢 LIVE | 🟢 LIVE | `GET /accounts/{account}/open-orders?broker=` |
-| **Positions** | 🔴 **DESIGNED-ONLY**² | 🔴 DESIGNED-ONLY (SET only) | 🔴 DESIGNED-ONLY | — no route |
+| **Positions** | 🟢 **LIVE** — SET + TFEX² | 🟢 **LIVE (SET)** · TFEX **501**² | 🟢 LIVE (always `[]`)² | `GET /accounts/{account}/positions?broker=` |
 | **Account balance** | 🟢 **LIVE** — SET **+ TFEX**³ | 🟢 **LIVE** — SET **+ TFEX**⁴ | 🟢 LIVE | `GET /accounts/{account}?broker=` |
 
 ¹ **Amend is emulated, not native — see §5.** No real broker supports in-place amend.
 
-² ➡️ **PROMOTED 2026-08-28: liberator positions moved NOT IMPLEMENTED → DESIGNED-ONLY.** The adapter
-now works; only the route is missing.
+² 🟢 **LIVE 2026-08-28 — the route exists and the four-state label finally reaches its last stop:**
+`NOT IMPLEMENTED` → `DESIGNED-ONLY` → **`LIVE`**, in three steps over five days, each gated on evidence
+rather than on wanting to be finished.
+
+🔑 **The one property this endpoint rests on: `[]` MEANS "this account holds nothing".** It can only
+mean that because **every path that cannot answer raises instead** — a positions route that returns
+`[]` when the read *failed* is worse than no route at all, because "flat" is a plausible answer a
+caller will act on. That is why it was withheld until it was true.
+
+**Coverage is asymmetric, and the asymmetry is published rather than smoothed over:**
+
+| broker | SET | TFEX |
+|---|---|---|
+| **liberator** | ✅ parses | ✅ parses — one call, market from the account suffix |
+| **streaming_pro** | ✅ parses | ⛔ **501** if the account genuinely holds something; `[]` if flat |
+| **sim** | ✅ always `[]` — it holds no book | ✅ same |
+
+SP's 501 (`streaming_pro_positions_uncaptured`) is the *same* answer liberator's positions gave for
+four months, for the same reason: the `seosd` front's `portfolioList` has never been observed
+non-empty, so parsing it would mean inventing field names. That refusal was **vindicated** when the
+liberator capture finally arrived — the ten field names recovered from the venue's web client proved
+a lower bound (17 real) and one of them did not exist. A flat SP TFEX account returns `[]` honestly,
+because the derivatives front **refuses accounts it does not hold** — so reaching the empty case
+proves the account was read, not skipped.
+
+🔴 **The front-resolution order for SP is INVERTED relative to `get_account`, and it is not a
+style choice.** Measured 2026-08-28:
+
+| front | a SET account | a TFEX account |
+|---|---|---|
+| `portfolio` (SET) | answers its rows | **`{"positions": []}`** — does **not** refuse |
+| `tfex/portfolio` | **refuses `GWD-03`** | answers its rows |
+
+The SET front **cannot discriminate** — asking it about a TFEX account returns an empty list
+byte-identical to a genuinely flat SET account. Only the derivatives front refuses, so only it can
+decide, so `get_positions` asks **TFEX first**. On the *balance* endpoints both fronts refuse, which
+is why `get_account` can and does ask SET first. **Two endpoint families, two different
+discrimination properties, on the same two fronts** — do not "make them consistent"; the
+inconsistency is in the venue and these orders are what survive it.
+
+`side` is `Side | None`, and `None` means *the venue did not distinguish* — never *flat*, never
+*long*. SET equities cannot be short and neither venue sends a side for one.
 
 The third label still exists and still matters — *NOT IMPLEMENTED* means the adapter does not work
 either, so building a route would expose a 501 rather than data. Liberator sat there from 2026-08-24

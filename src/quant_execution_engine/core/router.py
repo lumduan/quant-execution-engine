@@ -18,7 +18,12 @@ from typing import Any
 
 import asyncpg
 
-from src.quant_execution_engine.adapters.base import AccountInfo, AmendAck, BrokerAdapter
+from src.quant_execution_engine.adapters.base import (
+    AccountInfo,
+    AmendAck,
+    BrokerAdapter,
+    Position,
+)
 from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.market_data import MarketDataClient
 from src.quant_execution_engine.adapters.sim import FillPriceSource, SimAdapter
@@ -577,6 +582,26 @@ class OrderRouter:
         """
         adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
         return await adapter.get_open_orders(account)
+
+    async def get_positions(self, broker: Broker, account: str) -> list[Position]:
+        """VENUE-TRUTH holdings for one account.
+
+        Resolved through ``_resolve_adapter(intent=READ)`` like the other broker reads, so
+        EH6 applies: an account this node is not the router for is refused, read or write.
+
+        ⚠️ Coverage is **asymmetric by broker and by market**, and callers must not read an
+        empty list as "flat" without knowing which they asked:
+
+        * ``liberator`` — SET and TFEX both parse (schema observed 2026-08-28).
+        * ``streaming_pro`` — SET parses; a TFEX account that actually holds something
+          raises ``streaming_pro_positions_uncaptured`` rather than guessing, because that
+          element schema has never been seen non-empty.
+
+        No ``breaker.guard()``, matching the other reads: a read is what an operator wants
+        most when the breaker has tripped.
+        """
+        adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        return await adapter.get_positions(account)
 
     def _to_result(self, row: OrderResultRow) -> NormalizedOrderResult:
         return NormalizedOrderResult(

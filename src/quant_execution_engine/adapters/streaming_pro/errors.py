@@ -38,3 +38,23 @@ class StreamingProAccountUnavailable(OrderRejectedError):
     """
 
     code: ClassVar[str] = "streaming_pro_account_unavailable"
+
+
+class StreamingProPositionsUncaptured(OrderRejectedError):
+    """SP TFEX holds positions, but their element schema has never been observed.
+
+    The ``seosd`` front answers ``raw.portfolioList``, and on every capture to date that
+    array has been **empty** — the SP TFEX account is flat, so no element has ever been
+    seen. Parsing it would mean inventing field names.
+
+    🔑 This is deliberately the SAME answer Liberator's positions gave for four months,
+    and that refusal was vindicated: when a populated capture finally arrived, the ten
+    field names recovered from the venue's own web client turned out to be a **lower
+    bound** (17 real fields) and one of them did not exist at all. A loud refusal is the
+    honest answer until an element is observed.
+
+    ⚠️ Reached only when the TFEX front returns a NON-EMPTY ``portfolioList``. An empty
+    one is a genuine flat account and returns ``[]``.
+    """
+
+    code = "streaming_pro_positions_uncaptured"

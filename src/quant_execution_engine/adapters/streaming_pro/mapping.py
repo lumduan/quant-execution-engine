@@ -46,6 +46,18 @@ def portfolio_path(account: str) -> str:
     return "portfolio?" + urlencode({"account": account})
 
 
+def tfex_portfolio_path(account: str) -> str:
+    """The ``seosd`` (derivatives) holdings front.
+
+    🔴 **This one is the DISCRIMINATOR, and the SET front is not** — which is why
+    ``get_positions`` tries TFEX *first*, the opposite order from ``get_account``.
+    Measured 2026-08-28: ``tfex/portfolio`` REFUSES a SET account (``GWD-03``), while
+    ``portfolio`` answers a TFEX account with ``{"positions": []}`` — an empty list that
+    is indistinguishable from a genuinely flat SET account.
+    """
+    return "tfex/portfolio?" + urlencode({"account": account})
+
+
 def account_path(account: str) -> str:
     """SET/equity balance — the bridge hardcodes the ``fis`` (equity) front."""
     return "account-info?" + urlencode({"account": account})

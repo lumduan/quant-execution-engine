@@ -37,6 +37,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     # 501: the read is not implementable yet -- the venue's positions element schema has never
     # been captured. Deliberately NOT 200-with-[] , which is the defect TK-0396 replaced.
     "liberator_positions_uncaptured": status.HTTP_501_NOT_IMPLEMENTED,
+    # 501 for the same reason as the liberator entry above: the read is not implementable
+    # yet because the venue's element schema has never been observed non-empty. NOT 200
+    # with [], which would report a holding account as flat.
+    "streaming_pro_positions_uncaptured": status.HTTP_501_NOT_IMPLEMENTED,
     "order_stream_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
     "illegal_transition": status.HTTP_409_CONFLICT,
     # 23514 on INSERT: the row does not satisfy a column CHECK. 422 (not 500) because it is
