@@ -19,15 +19,15 @@ talking to.*
 one would be the same class of invention that produced [[TK-0396]].
 
 ```bash
-curl "http://localhost:8400/accounts/70173292?broker=liberator" -H "X-API-Key: <key>"
+curl "http://localhost:8400/accounts/70000002?broker=liberator" -H "X-API-Key: <key>"
 ```
 
 ```json
 {
-  "account": "70173292",
+  "account": "70000002",
   "account_type": "cash",
-  "buying_power": "50885.83",
-  "cash_balance": "50885.83",
+  "buying_power": "50000.11",
+  "cash_balance": "50000.11",
   "equity": null,
   "initial_margin": null
 }

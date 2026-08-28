@@ -103,7 +103,7 @@ async def test_fetch_venue_orders_and_get_open_orders_view() -> None:
     items = [
         {  # open SET limit buy — representable
             "orderNo": "3064",
-            "accountNo": "70173292",
+            "accountNo": "70000002",
             "symbol": "PTT",
             "side": "B",
             "priceType": "LIMIT",
@@ -145,11 +145,11 @@ async def test_fetch_venue_orders_and_get_open_orders_view() -> None:
             "rejectCode": "",
         },
     ]
-    respx.get(f"{_BASE}/orders/70173292").respond(json=_orders_body(items))
+    respx.get(f"{_BASE}/orders/70000002").respond(json=_orders_body(items))
     adapter = make_adapter()
-    raw = await adapter.fetch_venue_orders("70173292")
+    raw = await adapter.fetch_venue_orders("70000002")
     assert [item.order_no for item in raw] == ["3064", "3065", "3066"]
-    open_orders = await adapter.get_open_orders("70173292")
+    open_orders = await adapter.get_open_orders("70000002")
     assert len(open_orders) == 1
     view = open_orders[0]
     assert view.symbol == "PTT"
@@ -157,7 +157,7 @@ async def test_fetch_venue_orders_and_get_open_orders_view() -> None:
     assert view.order_type is OrderType.LIMIT
     assert view.price == Decimal("33.50")
     # Deterministic placeholder id: same venue row -> same view id.
-    again = (await adapter.get_open_orders("70173292"))[0]
+    again = (await adapter.get_open_orders("70000002"))[0]
     assert again.client_order_id == view.client_order_id
     await adapter.aclose()
 
@@ -220,24 +220,24 @@ def _deriv_account(acct: str, line: float) -> dict[str, Any]:
 async def test_get_account_maps_the_derivative_margin_block() -> None:
     """TFEX accounts carry equity + margin; the SET sibling in the same response must not."""
     respx.get(f"{_BASE}/profile").respond(
-        json=_profile(_cash_account("70173292", 50885.83), _deriv_account("70173297", 13506.72))
+        json=_profile(_cash_account("70000002", 50000.11), _deriv_account("70000007", 13000.22))
     )
     adapter = make_adapter()
 
-    deriv = await adapter.get_account("70173297")
+    deriv = await adapter.get_account("70000007")
     assert deriv.account_type is AccountType.DERIVATIVE
-    assert deriv.equity == Decimal("13506.72")
-    assert deriv.excess_equity == Decimal("13506.72")
+    assert deriv.equity == Decimal("13000.22")
+    assert deriv.excess_equity == Decimal("13000.22")
     assert deriv.initial_margin == Decimal("0")  # totalMr -> IM; a REAL zero, not an absence
     assert deriv.maintenance_margin == Decimal("0")
-    assert deriv.cash_balance == Decimal("13506.72")
+    assert deriv.cash_balance == Decimal("13000.22")
 
     # 🔑 the contrast is the test: same response, same call, and the cash account carries NO
     # margin block. If the mapper leaked it across, the model itself would refuse.
-    cash = await adapter.get_account("70173292")
+    cash = await adapter.get_account("70000002")
     assert cash.account_type is AccountType.CASH
     assert cash.equity is None and cash.initial_margin is None
-    assert cash.withdrawable == Decimal("50885.83")
+    assert cash.withdrawable == Decimal("50000.11")
     await adapter.aclose()
 
 
@@ -245,21 +245,21 @@ async def test_get_account_maps_the_derivative_margin_block() -> None:
 async def test_get_account_reads_line_available_from_profile() -> None:
     """The fix: balance comes from /va/profile, matched on accountNo."""
     respx.get(f"{_BASE}/profile").respond(
-        json=_profile(_cash_account("70173292", 50885.83), _cash_account("70173297", 13506.72))
+        json=_profile(_cash_account("70000002", 50000.11), _cash_account("70000007", 13000.22))
     )
     adapter = make_adapter()
-    account = await adapter.get_account("70173297")
-    assert account.buying_power == Decimal("13506.72")  # the SECOND entry, not the first
-    assert account.account == "70173297"
+    account = await adapter.get_account("70000007")
+    assert account.buying_power == Decimal("13000.22")  # the SECOND entry, not the first
+    assert account.account == "70000007"
     await adapter.aclose()
 
 
 @respx.mock
 async def test_get_account_accepts_int_and_float_money() -> None:
     """⚠️ The venue sends float when non-zero and **int** at zero, in the same field."""
-    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70412572", 0)))
+    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70000012", 0)))
     adapter = make_adapter()
-    account = await adapter.get_account("70412572")
+    account = await adapter.get_account("70000012")
     assert account.buying_power == Decimal("0")
     await adapter.aclose()
 
@@ -272,7 +272,7 @@ async def test_get_account_raises_rather_than_returning_zero_for_unknown_account
     silent degrade as *intended* -- and it was green against the live bridge, because
     that branch was the only one production ever took.
     """
-    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70173292", 50885.83)))
+    respx.get(f"{_BASE}/profile").respond(json=_profile(_cash_account("70000002", 50000.11)))
     adapter = make_adapter()
     with pytest.raises(LiberatorAccountNotFound):
         await adapter.get_account("99999999")
@@ -302,7 +302,7 @@ async def test_get_account_refuses_on_venue_errmsg_even_though_success_is_true()
     )
     adapter = make_adapter()
     with pytest.raises(LiberatorAccountNotFound, match="Account Not Authorized"):
-        await adapter.get_account("70173292")
+        await adapter.get_account("70000002")
     await adapter.aclose()
 
 
@@ -315,8 +315,8 @@ async def test_get_positions_refuses_loudly_instead_of_returning_empty() -> None
     """
     adapter = make_adapter()
     with pytest.raises(LiberatorPositionsUncaptured) as exc:
-        await adapter.get_positions("70173292")
-    assert exc.value.detail["account"] == "70173292"
+        await adapter.get_positions("70000002")
+    assert exc.value.detail["account"] == "70000002"
     await adapter.aclose()
 
 
