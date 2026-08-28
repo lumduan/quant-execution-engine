@@ -39,7 +39,30 @@ _ROOT = Path(__file__).resolve().parent.parent
 # "11111111-2222-4333-8444-555555555555" opens with eight digits and is not an account.
 # Excluding them in the PATTERN rather than the allowlist matters — an allowlist entry
 # would also wave through a real account that happened to be written next to a hyphen.
-_ACCOUNT_SHAPED = re.compile(r"(?<![-\w])(?:\d{8}|0\d{6})(?![-\w])")
+# Account-shaped literals — one alternative per VENUE GRAMMAR this platform has ever held:
+#
+#   \d{8}     liberator  <7-digit investorId><suffix>   e.g. 70000002
+#   0\d{6}    streaming_pro zero-led sub-account         e.g. 0500007
+#   \d{9}     broker-023 / InnovestX                     e.g. 9XXXXXXXX
+#   \d{6}-\d  broker-023 hyphenated form                 e.g. 5XXXXX-X
+#
+# ⚠️ The last two were added 2026-08-28 after two REAL broker-023 accounts were found
+# surviving in this PUBLIC repo. Both misses were structural, not careless:
+#
+#   * the 9-digit one was never matched — the pattern was scoped to exactly the two
+#     grammars someone had thought of;
+#   * the hyphenated one was matched and then THROWN AWAY by a `(?![-\w])` lookahead
+#     added to stop UUID segments matching. Fixing a false POSITIVE created a false
+#     NEGATIVE, which on a public repo is strictly the worse of the two.
+#
+# UUID segments are still excluded, but by SHAPE (a following `-` plus 4 hex plus `-`)
+# rather than by any trailing hyphen — so a hyphenated account is no longer waved through.
+#
+# Enumerating grammars rather than widening to `\d{7,10}` is deliberate: the wide form
+# matched 19 round risk caps and wire-format numerics, and every one of those would have
+# had to be allowlisted. An allowlist that large stops being a check and becomes a
+# dumping ground — the exact failure this file's header argues against.
+_ACCOUNT_SHAPED = re.compile(r"(?<![\w-])(?:\d{6}-\d|\d{8,9}|0\d{6})(?![\w])(?!-[0-9a-fA-F]{4}-)")
 
 # Synthetic accounts. They deliberately preserve the venue grammars the tests TEACH:
 #   Liberator — 8 digits, suffix 2 = CASH BALANCE (SET), 7 = DERIVATIVE (TFEX)
@@ -60,23 +83,32 @@ _NOT_ACCOUNTS = {
     "00000000": "obvious sentinel — the zero-padded form the venue REFUSES",
     "71937953": "a venue orderNo in a cancel fixture, not an account",
     "16312965": "a venue orderNo in a cancel fixture, not an account",
+    "100000000": "a round 100,000,000 risk cap in test_core_risk, not an account",
 }
 
-_SCANNED = ("src", "tests", "docs")
+# ⚠️ `.claude` and the repo-root markdown are scanned because omitting them is exactly how
+# two REAL broker-023 accounts survived the 2026-08-28 redaction pass on this PUBLIC repo:
+# they sat in `.claude/knowledge/decision-log.md` and `docs/plans/ROADMAP.md`, and the
+# scan never looked at the first path at all.
+_SCANNED = ("src", "tests", "docs", ".claude")
+_SCANNED_FILES = ("CLAUDE.md", "README.md", "CHANGELOG.md")
 _SKIP_NAMES = {Path(__file__).name}
 
 
 def _candidates() -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
-    for top in _SCANNED:
-        for path in (_ROOT / top).rglob("*"):
-            if path.suffix not in {".py", ".md"} or path.name in _SKIP_NAMES:
+    targets = [p for top in _SCANNED for p in (_ROOT / top).rglob("*")]
+    targets += [_ROOT / f for f in _SCANNED_FILES]
+    for path in targets:
+        if not path.is_file() or path.suffix not in {".py", ".md"}:
+            continue
+        if path.name in _SKIP_NAMES:
+            continue
+        for token in _ACCOUNT_SHAPED.findall(path.read_text(encoding="utf-8")):
+            # Dates (20260828) and version-ish runs are not account numbers.
+            if token.startswith(("19", "20")):
                 continue
-            for token in _ACCOUNT_SHAPED.findall(path.read_text(encoding="utf-8")):
-                # Dates (20260828) and version-ish runs are not account numbers.
-                if token.startswith(("19", "20")):
-                    continue
-                found.append((path.relative_to(_ROOT), token))
+            found.append((path.relative_to(_ROOT), token))
     return found
 
 
@@ -115,6 +147,12 @@ def test_the_guard_can_actually_fail() -> None:
     assert len(allowed) == len(_SYNTHETIC_ACCOUNTS) + len(_NOT_ACCOUNTS)
     # A UUID segment must NOT read as an account.
     assert _ACCOUNT_SHAPED.findall("11111111-2222-4333-8444-555555555555") == []
+    # 🔑 Regression control for the two REAL accounts this pattern used to miss
+    # (2026-08-28). Synthetic stand-ins, same two grammars — 9 digits, and hyphenated.
+    # Without these, a future "simplification" back to `\d{8}|0\d{6}` reads as harmless.
+    assert _ACCOUNT_SHAPED.findall("acct 123456789 here") == ["123456789"]
+    assert _ACCOUNT_SHAPED.findall("acct 123456-7 here") == ["123456-7"]
+    assert "123456789" not in allowed and "123456-7" not in allowed
 
 
 def test_the_synthetic_values_still_teach_what_the_real_ones_did() -> None:

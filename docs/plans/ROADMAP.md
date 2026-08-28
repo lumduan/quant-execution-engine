@@ -474,7 +474,7 @@ breakers would thaw the one-breaker `BrokerAdapter` base). Per-market reconciler
 `NormalizedOrder`, `POST /orders` (a spread = two independent submits, one per leg — no batch
 endpoint; in-engine refactor, no new `third_party` service). 713 tests passed, mypy strict, 96.22%
 coverage. **Real-venue read-only verified** through the refactored adapter against prod broker 023
-(equity `902001825` via the `ALGO_EQ` client, TFEX `507619-0` via the `ALGO` client; both apps'
+(equity `9XXXXXXXX` via the `ALGO_EQ` client, TFEX `5XXXXX-X` via the `ALGO` client; both apps'
 tokens acquired, PIN never sent). The InnovestX trading PIN is still absent from `.env` — the
 explicit `micro_live`-flip prerequisite. Phase plan:
 [`phase4.1-settrade-per-market-apps.md`](phase4.1-settrade-per-market-apps.md).
