@@ -46,6 +46,22 @@ class LiberatorAccountNotFound(OrderRejectedError):
 class LiberatorPositionsUncaptured(OrderRejectedError):
     """Liberator positions cannot be read — the response schema is unknown.
 
+    ➡️ **NO LONGER RAISED ANYWHERE, as of 2026-08-28 — and that is deliberate, not an
+    orphan.** The operator opened real SET and TFEX positions, the element schema was
+    captured (umbrella ``docs/reference/liberator-account-reads.md`` §2.2), and
+    ``LiberatorAdapter.get_positions`` now parses it. This class and its **501** mapping
+    in ``api/error_handlers.py`` are retained on purpose: the 501 status is still the
+    right answer for *"the adapter cannot do this"* — ``StreamingProAdapter.get_positions``
+    is still SET-only and has no equivalent refusal — and the docstring below records why
+    a loud refusal beat an invented parse for the four months it stood. **Do not delete it
+    on the grounds that nothing raises it; that is the point of this note.**
+
+    The refusal was vindicated, incidentally: the ten field names it was declining to
+    guess from turned out to be a **lower bound** (the venue sends 17 on TFEX) and one of
+    them, ``optVal``, does not exist at all.
+
+    --- the original reasoning, preserved ---
+
     ``POST /va/portfolio`` returns ``result.{list, stock}``, and **neither array has
     ever been observed non-empty** on this platform: no Liberator account holds
     anything, so the element shape (field names, types) has never been captured.
