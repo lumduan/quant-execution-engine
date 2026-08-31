@@ -52,6 +52,14 @@ class VenueOrderRow(BaseModel):
     # ⚠️ SET does not send this AT ALL (verified against a real capture 2026-08-31). It is required
     # to build a SET cancel, so the adapter must FAIL LOUD rather than treat "" as usable.
     ext_order_no: str = Field(default="", alias="extOrderNo")
+    # 🔑 THE SET CANCEL IDENTIFIER, and why it looked "undeterminable" on 2026-08-31: the
+    # field is NAMED DIFFERENTLY on the read surface than on the write surface. A SET cancel
+    # sends `extOrderNo = orderNoFis` alongside `orderNo = orderNoSeos` — verified by
+    # `session:sp-research` from the vendor's own de-escaped client bundle, at two independent
+    # sites. Both values are in every row; only the write-side NAME is absent from the read,
+    # which is why the field read as missing rather than renamed.
+    # ⚠️ FIS/SET ONLY — seosd/dgw key differently. Do not generalise this to other fronts.
+    order_no_fis: str = Field(default="", alias="orderNoFis")
     symbol: str = ""
     side: str = ""  # "Buy"|"Sell" (equity) | "Long"|"Short" (deriv)
     position: str | None = None  # "Open"|"Close" (TFEX) | None (SET)

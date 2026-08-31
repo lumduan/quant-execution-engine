@@ -134,9 +134,9 @@ class StreamingProAdapter(BrokerAdapter):
                 return CancelAck(
                     ok=False,
                     reason=(
-                        "SET cancel requires extOrderNo and the venue order read does not provide "
-                        "it (observed: orderNoFis/orderNoSeos only). Refusing to substitute a "
-                        "guessed identifier — resolve the cancel contract first."
+                        "SET cancel requires extOrderNo (= orderNoFis) and the venue order read "
+                        "returned neither for this order. Refusing to substitute a guessed "
+                        "identifier."
                     ),
                 )
         payload = mapping.to_cancel_payload(
@@ -163,9 +163,14 @@ class StreamingProAdapter(BrokerAdapter):
             # escaped this helper and surfaced as a 500 on the read AND left the cancel path
             # unable to build its payload — one parse bug, three symptoms (2026-08-31).
             return None
-        return next(
-            (r.ext_order_no for r in rows if r.order_no == order_no and r.ext_order_no), None
-        )
+        row = next((r for r in rows if r.order_no == order_no), None)
+        if row is None:
+            return None
+        # Prefer a real `extOrderNo` if a venue ever sends one on the read; otherwise use
+        # `orderNoFis`, which IS the SET cancel's extOrderNo under its read-surface name
+        # (sp-research, vendor client bundle, two independent sites). Returning None here makes
+        # `cancel()` refuse loudly rather than send a guess — still the correct last resort.
+        return row.ext_order_no or row.order_no_fis or None
 
     # ------------------------------------------------------------------ amend
     async def amend(

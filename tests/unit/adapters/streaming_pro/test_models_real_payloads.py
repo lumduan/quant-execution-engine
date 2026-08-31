@@ -190,3 +190,40 @@ def test_model_consumes_a_small_subset_of_a_large_payload() -> None:
     """
     assert len(_set_payload()[0]) == 41
     assert len(VenueOrderRow.model_fields) < 41
+
+
+def test_orderNoFis_is_the_SET_cancel_identifier() -> None:
+    """🔑 ``extOrderNo`` on the WRITE surface is ``orderNoFis`` on the READ surface.
+
+    This is why it looked undeterminable on 2026-08-31: the read row genuinely has no
+    ``extOrderNo`` key, so the field appeared absent rather than renamed. `session:sp-research`
+    settled it from the vendor's own de-escaped client bundle at two independent sites — a SET
+    cancel sends ``extOrderNo = orderNoFis`` alongside ``orderNo = orderNoSeos``.
+
+    Both values are in the captured row; only the write-side NAME is missing from the read.
+    """
+    row = parse_order_rows(_set_payload())[0]
+    assert row.order_no_fis == "26411", "the SET cancel's extOrderNo, under its read-surface name"
+    assert row.order_no == "73709728", "orderNo == orderNoSeos, which is what our store holds"
+    assert row.ext_order_no == "", "the venue does NOT send extOrderNo on the read"
+
+
+def test_the_fis_fallback_is_load_bearing_not_decorative() -> None:
+    """Mutation: strip ``orderNoFis`` and the resolution must FAIL, not quietly find something else.
+
+    Without this, a fallback that never fires would look identical to one that works — the same
+    silent-default trap that produced the six-alias bug in the first place.
+    """
+    payload = _set_payload()
+    del payload[0]["orderNoFis"]
+    row = parse_order_rows(payload)[0]
+    assert row.order_no_fis == "", "no orderNoFis -> nothing to fall back to"
+    assert (row.ext_order_no or row.order_no_fis or None) is None, (
+        "resolution must yield None so cancel() refuses loudly rather than guessing"
+    )
+
+
+def test_TFEX_rows_gain_no_fis_identifier() -> None:
+    """FIS-only. seosd/dgw key differently and must not inherit this mapping."""
+    row = parse_order_rows([{"orderNo": "71937953", "qty": 1, "matchQty": 0}])[0]
+    assert row.order_no_fis == ""

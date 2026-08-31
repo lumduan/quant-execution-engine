@@ -63,15 +63,15 @@ async def test_cancel_set_resolves_ext_order_no_via_orders() -> None:
 
 
 @respx.mock
-async def test_cancel_set_FAILS_LOUD_when_the_venue_omits_ext_order_no() -> None:
-    """🔴 The real SET shape: no ``extOrderNo`` anywhere — the cancel must REFUSE, not improvise.
+async def test_cancel_set_uses_orderNoFis_as_the_extOrderNo() -> None:
+    """🔑 The real SET row: no ``extOrderNo`` key, but ``orderNoFis`` IS that identifier.
 
-    This is the shape the venue actually returns (``orderNoFis``/``orderNoSeos``, and no
-    ``extOrderNo``). Two candidate identifiers sit right there, and substituting either into
-    a cancel against real money is precisely the assumption that stranded the EH7 order
-    on 2026-08-31.
+    ``session:sp-research`` verified from the vendor's de-escaped client bundle (two independent
+    sites) that a SET cancel sends ``extOrderNo = orderNoFis`` with ``orderNo = orderNoSeos``. The
+    field is renamed between the read and write surfaces, which is why it read as absent.
 
-    An explicit refusal naming the missing field is recoverable. A wrong cancel is not.
+    ⚠️ This test previously asserted the OPPOSITE — that the cancel must refuse — because the
+    mapping was unknown and guessing was the larger risk. Refusing was right THEN; it is wrong now.
     """
     respx.get(f"{_BASE}/orders", params={"account": "ACC", "market": "SET"}).respond(
         json=[
@@ -92,9 +92,31 @@ async def test_cancel_set_FAILS_LOUD_when_the_venue_omits_ext_order_no() -> None
     adapter = make_adapter()
     adapter._order_ref_cache["cid-set"] = ("73709728", Market.SET, "ACC", "PTT")
     ack = await adapter.cancel("cid-set")
-    assert ack.ok is False, "a SET cancel with no extOrderNo must not report success"
-    assert "extOrderNo" in (ack.reason or ""), "the refusal must name the missing field"
-    assert not route.calls, "nothing may be sent to the venue on a guessed identifier"
+    assert ack.ok, f"cancel should now resolve the identifier, got: {ack.reason}"
+    body = json.loads(route.calls.last.request.content)
+    assert body["ext_order_no"] == "26411", "extOrderNo must be orderNoFis"
+    assert body["order_no"] == "73709728", "orderNo must remain orderNoSeos"
+    assert body["symbol"] == "PTT"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_cancel_set_still_FAILS_LOUD_when_NEITHER_identifier_exists() -> None:
+    """The refusal survives as a genuine last resort — now rare rather than the normal path.
+
+    A row with no ``extOrderNo`` AND no ``orderNoFis`` leaves nothing to send. Guessing from
+    ``orderNoSeos`` would be the assumption that stranded the EH7 order; refusing is recoverable.
+    """
+    respx.get(f"{_BASE}/orders", params={"account": "ACC", "market": "SET"}).respond(
+        json=[{"orderNo": "73709728", "orderNoSeos": "73709728", "symbol": "PTT", "status": "O"}]
+    )
+    route = respx.post(f"{_BASE}/order/cancel").respond(json={"ok": True})
+    adapter = make_adapter()
+    adapter._order_ref_cache["cid-none"] = ("73709728", Market.SET, "ACC", "PTT")
+    ack = await adapter.cancel("cid-none")
+    assert ack.ok is False, "no identifier available -> must refuse"
+    assert "extOrderNo" in (ack.reason or "")
+    assert not route.calls, "nothing may reach the venue on a guessed identifier"
     await adapter.aclose()
 
 
