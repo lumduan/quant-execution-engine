@@ -19,6 +19,8 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from pydantic import ValidationError
+
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
     AccountType,
@@ -119,6 +121,24 @@ class StreamingProAdapter(BrokerAdapter):
         if market is Market.SET:
             # SET cancel needs extOrderNo (absent from the place ack) — resolve via the order book.
             ext_order_no = await self._lookup_ext_order_no(account, market, order_no)
+            if not ext_order_no:
+                # 🔴 FAIL LOUD. Verified against a real SET order row (2026-08-31, 41 keys): the
+                # venue does NOT send `extOrderNo` on the order read, under any alias. It sends
+                # `orderNoFis` and `orderNoSeos` instead, and which of those the cancel endpoint
+                # wants is UNVERIFIED — the Gate-#4 HAR used a 10-digit zero-padded value that
+                # matches neither directly.
+                #
+                # Sending a guessed identifier to a cancel endpoint against real money is exactly
+                # the class of assumption that stranded order 73709728. An explicit refusal that
+                # names the missing field is recoverable; a wrong cancel is not.
+                return CancelAck(
+                    ok=False,
+                    reason=(
+                        "SET cancel requires extOrderNo and the venue order read does not provide "
+                        "it (observed: orderNoFis/orderNoSeos only). Refusing to substitute a "
+                        "guessed identifier — resolve the cancel contract first."
+                    ),
+                )
         payload = mapping.to_cancel_payload(
             order_no=order_no,
             market=market,
@@ -138,7 +158,10 @@ class StreamingProAdapter(BrokerAdapter):
     async def _lookup_ext_order_no(self, account: str, market: Market, order_no: str) -> str | None:
         try:
             rows = await self.fetch_venue_orders(account, market)
-        except StreamingProTransportError:
+        except (StreamingProTransportError, ValidationError):
+            # ⚠️ ValidationError was NOT caught here before, so a single malformed venue row
+            # escaped this helper and surfaced as a 500 on the read AND left the cancel path
+            # unable to build its payload — one parse bug, three symptoms (2026-08-31).
             return None
         return next(
             (r.ext_order_no for r in rows if r.order_no == order_no and r.ext_order_no), None

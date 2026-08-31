@@ -39,6 +39,16 @@ async def test_cancel_tfex_sends_bare_order_no() -> None:
 
 @respx.mock
 async def test_cancel_set_resolves_ext_order_no_via_orders() -> None:
+    """The "venue DID supply extOrderNo" path.
+
+    ⚠️ This row shape is HYPOTHETICAL, and saying so matters. Verified against a real SET order
+    read on 2026-08-31 (41 keys, order 73709728), the venue does **not** send ``extOrderNo`` at
+    all — it sends ``orderNoFis``/``orderNoSeos``. This fixture was written from an assumed shape
+    and is why the gap survived to the first real order.
+
+    It is kept rather than deleted because the branch it covers is still correct *if* a venue ever
+    supplies the field. The companion test below covers what actually happens today.
+    """
     respx.get(f"{_BASE}/orders", params={"account": "ACC", "market": "SET"}).respond(
         json=[{"orderNo": "71937953", "extOrderNo": "0000031750", "symbol": "A"}]
     )
@@ -49,6 +59,42 @@ async def test_cancel_set_resolves_ext_order_no_via_orders() -> None:
     assert ack.ok
     body = json.loads(route.calls.last.request.content)
     assert body["ext_order_no"] == "0000031750" and body["symbol"] == "A"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_cancel_set_FAILS_LOUD_when_the_venue_omits_ext_order_no() -> None:
+    """🔴 The real SET shape: no ``extOrderNo`` anywhere — the cancel must REFUSE, not improvise.
+
+    This is the shape the venue actually returns (``orderNoFis``/``orderNoSeos``, and no
+    ``extOrderNo``). Two candidate identifiers sit right there, and substituting either into
+    a cancel against real money is precisely the assumption that stranded the EH7 order
+    on 2026-08-31.
+
+    An explicit refusal naming the missing field is recoverable. A wrong cancel is not.
+    """
+    respx.get(f"{_BASE}/orders", params={"account": "ACC", "market": "SET"}).respond(
+        json=[
+            {
+                "orderNo": "73709728",
+                "orderNoFis": "26411",
+                "orderNoSeos": "73709728",
+                "symbol": "PTT",
+                "status": "O",
+                "balance": 1,
+                "matched": 0,
+                "entryDate": "2026-08-31",
+                "entryTime": "11:37:02",
+            }
+        ]
+    )
+    route = respx.post(f"{_BASE}/order/cancel").respond(json={"ok": True})
+    adapter = make_adapter()
+    adapter._order_ref_cache["cid-set"] = ("73709728", Market.SET, "ACC", "PTT")
+    ack = await adapter.cancel("cid-set")
+    assert ack.ok is False, "a SET cancel with no extOrderNo must not report success"
+    assert "extOrderNo" in (ack.reason or ""), "the refusal must name the missing field"
+    assert not route.calls, "nothing may be sent to the venue on a guessed identifier"
     await adapter.aclose()
 
 

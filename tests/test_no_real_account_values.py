@@ -83,6 +83,10 @@ _NOT_ACCOUNTS = {
     "00000000": "obvious sentinel — the zero-padded form the venue REFUSES",
     "71937953": "a venue orderNo in a cancel fixture, not an account",
     "16312965": "a venue orderNo in a cancel fixture, not an account",
+    "73709728": (
+        "the venue orderNo of the 2026-08-31 EH7 SET order, in the captured VenueOrderRow "
+        "fixture and the comments explaining it — a broker order reference, not an account"
+    ),
     "100000000": "a round 100,000,000 risk cap in test_core_risk, not an account",
 }
 
