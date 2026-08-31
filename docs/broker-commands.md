@@ -332,6 +332,30 @@ at `micro_live`.** Plan for it rather than meeting it.
 default is `1000` and does front it, so this looks like a temporary measure outliving its condition —
 but it is `session:sp-research`'s to change, and until they do, the cap is 1.)*
 
+### 🔴 streaming_pro · SET: the cancel identifier is named `orderNoFis` on the READ, `extOrderNo` on the WRITE
+
+**A SET cancel must send `extOrderNo` — and no field with that name exists anywhere in the order
+row you read back.** It is there, under a different name: `orderNoFis`. The write surface and the
+read surface use different spellings for the same value.
+
+```jsonc
+// what GET /orders?account=…&market=SET returns for one working order
+{ "orderNo": "737148XX",       // == orderNoSeos — what we store as broker_order_id
+  "orderNoFis": "31591",       // ← THIS is the value a cancel must send as extOrderNo
+  "symbol": "PTT", "status": "O", "showOrderStatus": "Open(O)", … }
+```
+
+⚠️ **The failure mode is not a clear error.** Reading the row and looking for `extOrderNo` returns
+an empty string, which is indistinguishable from *"the venue did not give us one"* — so the field
+looks **absent** rather than **renamed**, and a cancel built from it silently has nothing to send.
+On 2026-08-31 this was reported as an undeterminable capture gap before the vendor's own client
+bundle settled it at two independent call sites.
+
+🔑 **FIS-only, deliberately.** `to_cancel_payload` adds `ext_order_no` for `Market.SET` alone.
+**TFEX (`seosd`) is a different front and keys differently**; assuming the same mapping there would
+reproduce this defect relocated rather than fix it. A unit test pins that TFEX rows gain no FIS
+identifier, so a well-meaning generalisation fails loudly.
+
 ### 🔴 Amend is cancel-then-replace on BOTH real brokers, for different reasons
 
 Only `sim` declares `native` amend. In code: *"after the broker-023 removal no REAL broker declares
@@ -511,6 +535,24 @@ bigger change than the two routes.
 
 **A `SIM-` prefix on `broker_order_id` means nothing reached a venue** — the reliable signal, whatever
 the stage says.
+
+### Which `(broker, market)` cancel paths have actually been proven at a real venue
+
+`/capabilities` tells you what a cell **accepts**. It cannot tell you what has ever been **exercised
+against a live venue**, and the two are not the same claim. As measured on the `micro_live` node's
+own order store on 2026-08-31, counting only rows carrying a real venue handle (`SIM-`-prefixed rows
+excluded, per the signal above):
+
+| broker · market | submit | cancel | basis |
+|---|---|---|---|
+| `liberator` · SET | ✅ | ✅ | 9 venue-confirmed cancels, 2026-08-25 → 08-31 |
+| `liberator` · TFEX | ✅ | ✅ | 29 venue-confirmed cancels |
+| `streaming_pro` · SET | ✅ | ✅ | first venue-confirmed cancel 2026-08-31 — submit → resting → cancel → gone, all read from the broker |
+| `streaming_pro` · TFEX | ❌ | ❌ | **no order of any status has ever been placed on this cell** |
+
+⚠️ **`streaming_pro · TFEX` is unproven, not broken** — nobody has tried it. Treat the `orderNoFis`
+mapping above as **not covering it**, and expect the `seosd` front to need its own investigation
+before a first cancel there is trusted.
 
 ### 🔴 At `paper`, a GREEN test does not prove broker connectivity
 
