@@ -494,17 +494,26 @@ GET /accounts/{account}/positions?broker=<broker>  ->  { positions: [ {account, 
 GET /accounts/{account}/open-orders?broker=<broker> ->  venue-truth resting orders
 ```
 
-⚠️ **`/positions` is proxied by the gateway as of `a0d750f` (PR #37, [[TK-0479]]) — but MERGED IS
-NOT DEPLOYED.** The gateway is containerised, so **the rebuild is the deploy**; until the running
-gateway is rebuilt, a caller reaching the engine only through `/api/v2/engines/execution/*` still
-**cannot read positions at all**, and will conclude the capability is missing rather than unrouted.
-**Until that rebuild lands: go direct to the engine.**
+✅ **`/positions` is proxied by the gateway and DEPLOYED** — `a0d750f` (PR #37, [[TK-0479]]), HOME
+gateway rebuilt 2026-09-01, image `44ea7f7f1c32` → `b97b841f8562`, verified end-to-end (no key → the
+engine's own 401; with key → 200; engine-direct and via-gateway byte-identical).
 
-🔑 Stated this way on purpose. This section spent four days asserting a status that had already
-changed; the fix for that is not to swap one undated claim for another. **Check the running image
-before believing this line** — and note the inverse hazard the umbrella records: for a
-container, a pin bump does *not* redeploy, while for an editable-install service advancing the tree
-*is* the deploy. Neither intuition generalises.
+> 🔴 **AND ON A `paper` NODE THE ANSWER IS NOT A VENUE ANSWER — [[TK-0488]], found while verifying
+> the above.** At `paper`, a read reaches the real adapter **only if one was constructed**. With no
+> credentials (`adapter_installed=false`) it **falls through to the sim adapter**, which answers
+> HTTP 200 with `{"positions": []}` — for *any* account, including the `00000000` sentinel the venue
+> refuses. The balance read is worse: it returns a fabricated **`buying_power: 1000000000`**, which
+> is shaped like a *measurement* rather than like an absence.
+>
+> ⇒ **On HOME, an empty positions list does NOT mean "flat".** It may mean nothing asked the venue.
+> `micro_live` raises instead, so **AWS is unaffected** and its reads are genuine. Check
+> `adapter_installed` on `/capabilities` before believing any read on a `paper` node.
+
+🔑 This section spent four days asserting *"Not built"* after the routes shipped, so the status line
+above names the image IDs rather than claiming an undated "now works" — **check the running image
+before believing it.** Note also the inverse hazard the umbrella records: for a container a pin bump
+does *not* redeploy, while for an editable-install service advancing the tree *is* the deploy.
+Neither intuition generalises.
 
 🔑 **An empty list means "this account holds nothing", and it can only mean that because every path
 that cannot answer RAISES instead.** A positions endpoint that returns `[]` on a failed read is worse
@@ -629,9 +638,24 @@ place/status/cancel run at `paper` proves **the contract and the durable-store p
 > result row is *not* evidence that Liberator was reached. Nothing was wrong; that is the design. But
 > a gate that reads those rows as broker proof is measuring the wrong thing.
 
-⚠️ **Reads are the exception, and it cuts the other way:** at `paper`, `intent=READ` is **not**
-intercepted — it goes to the **real** adapter and the real venue. So a balance read at `paper` touches
-the live broker with real credentials. Treat it as a live call, not a rehearsal.
+⚠️ **Reads are the exception, and it cuts the other way — *when a real adapter exists*:** at
+`paper`, `intent=READ` is **not** intercepted — it goes to the **real** adapter and the real venue.
+So a balance read at `paper` touches the live broker with real credentials. Treat it as a live call,
+not a rehearsal.
+
+> 🔴 **↻ CORRECTED 2026-09-01 — this paragraph was UNCONDITIONAL and is true only half the time
+> ([[TK-0488]]).** `resolve_adapter` sends a `paper` READ to the real adapter only
+> `if real is not None`; with no credentials constructed it **falls through to the sim adapter** and
+> answers 200 with sim data under the real broker's name — `{"positions": []}` for any account, and
+> a fabricated `buying_power: 1000000000` on the balance read. So on a credential-less `paper` node
+> the same call touches **nothing** and returns fiction, which is the opposite of "treat it as a
+> live call".
+>
+> **Both readings are dangerous and they are dangerous in opposite directions**, which is why the
+> condition has to be stated rather than the sentence simply reversed: *with* credentials it really
+> is a live broker call, and *without* them it is fiction wearing the broker's name. **Check
+> `adapter_installed` on `/capabilities` to know which node you are on.** `micro_live` raises rather
+> than substituting, so this is a `paper`-only hazard.
 
 ### 🔴 `micro_live` now REFUSES TO START without an EH6 declaration (new 2026-08-24, PR #38)
 
