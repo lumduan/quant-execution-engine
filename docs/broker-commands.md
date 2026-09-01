@@ -494,10 +494,17 @@ GET /accounts/{account}/positions?broker=<broker>  ->  { positions: [ {account, 
 GET /accounts/{account}/open-orders?broker=<broker> ->  venue-truth resting orders
 ```
 
-⚠️ **`/positions` is NOT proxied by the gateway** — `/accounts/{account}` and `…/open-orders` are.
-A caller that reaches the engine only through `/api/v2/engines/execution/*` therefore **cannot read
-positions at all**, and will conclude the capability is missing rather than unrouted. Go direct to
-the engine, or ask for the proxy.
+⚠️ **`/positions` is proxied by the gateway as of `a0d750f` (PR #37, [[TK-0479]]) — but MERGED IS
+NOT DEPLOYED.** The gateway is containerised, so **the rebuild is the deploy**; until the running
+gateway is rebuilt, a caller reaching the engine only through `/api/v2/engines/execution/*` still
+**cannot read positions at all**, and will conclude the capability is missing rather than unrouted.
+**Until that rebuild lands: go direct to the engine.**
+
+🔑 Stated this way on purpose. This section spent four days asserting a status that had already
+changed; the fix for that is not to swap one undated claim for another. **Check the running image
+before believing this line** — and note the inverse hazard the umbrella records: for a
+container, a pin bump does *not* redeploy, while for an editable-install service advancing the tree
+*is* the deploy. Neither intuition generalises.
 
 🔑 **An empty list means "this account holds nothing", and it can only mean that because every path
 that cannot answer RAISES instead.** A positions endpoint that returns `[]` on a failed read is worse
