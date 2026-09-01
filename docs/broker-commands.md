@@ -177,8 +177,13 @@ in ³: there the CASH entry *omits* the margin fields (→ `null`) while the DER
 them as `0`; here TFEX reports `0`. **Collapsing either direction is the bug**, and a test asserts a
 reported zero never becomes `null`.
 
-⚠️ **`get_positions` is still SET-only** — it hardcodes `Market.SET` and its docstring still says
-*"TFEX is a follow-up"*. The positions row above stays DESIGNED-ONLY for that reason.
+↻ **CORRECTED 2026-09-01.** ~~`get_positions` is still SET-only — it hardcodes `Market.SET` and its
+docstring still says *"TFEX is a follow-up"*. The positions row above stays DESIGNED-ONLY for that
+reason.~~ **All three clauses are false as of 2026-08-28.** `get_positions` queries the **TFEX front
+first** — deliberately the opposite order from `get_account`, because on the *holdings* endpoints the
+SET front answers `{"positions": []}` for a TFEX account, byte-identical to a genuinely flat SET
+account, while only the TFEX front *refuses* what it does not hold. SET-first would therefore report
+every TFEX account as flat. And the positions row above reads **🟢 LIVE**, not DESIGNED-ONLY.
 
 ⁵ ✅ **RESOLVED for SP-SET 2026-08-27** — `0500007` was added to the AWS declaration after verifying
 it is AWS's own SBITO/033 account (the bridge's `account-info` reports `brokerId 33`, `accountNo
@@ -371,7 +376,7 @@ a new one placed. You **lose queue priority**, and there is a **window with no r
 `cancel_replace` amend returns the **replacement** `client_order_id`, so supply
 `new_client_order_id`; a `native` (`sim`) amend keeps the same id and forbids that field.
 
-### ➡️ streaming_pro: balance is now SET **+ TFEX**; positions are still SET-only
+### ➡️ streaming_pro: balance is now SET **+ TFEX**; positions parse on SET and REFUSE LOUDLY on TFEX
 
 > 🕐 **This section's original claim is kept as history because it was TRUE when written, and
 > because the reasoning it records still applies to positions.** It said: *"The bridge's account
@@ -474,16 +479,42 @@ The router rejects an unsupported combination up front with `capability_unsuppor
 
 ---
 
-## 7 · DESIGNED-ONLY — positions, balance, open orders
+## 7 · Broker reads — positions, balance, open orders (🟢 **LIVE since 2026-08-27/28**)
 
-**Not built. Do not code against this section yet.** Recorded so the shape is agreed before it is.
+> 🔴 **THIS SECTION SAID "DESIGNED-ONLY — Not built. Do not code against this section yet" UNTIL
+> 2026-09-01, four days after all three routes shipped.** It is corrected here rather than quietly
+> rewritten because the staleness had a measurable cost: on 2026-09-01 another session read it,
+> concluded the platform had no way to read TFEX positions, and began drafting a request for a route
+> **that already existed and already answered their exact question**. A stale doc is not inert — it
+> keeps being believed, and it is believed *instead of* the code.
 
 ```
-GET /positions?account=<acct>&broker=<broker>   ->  [ {account, market, symbol, net_qty} ]
-GET /account?account=<acct>&broker=<broker>     ->  { account, buying_power }
+GET /accounts/{account}?broker=<broker>            ->  AccountInfo (balance / buying power)
+GET /accounts/{account}/positions?broker=<broker>  ->  { positions: [ {account, market, symbol, net_qty, side} ] }
+GET /accounts/{account}/open-orders?broker=<broker> ->  venue-truth resting orders
 ```
 
-Where each stands, as of 2026-08-24:
+⚠️ **`/positions` is NOT proxied by the gateway** — `/accounts/{account}` and `…/open-orders` are.
+A caller that reaches the engine only through `/api/v2/engines/execution/*` therefore **cannot read
+positions at all**, and will conclude the capability is missing rather than unrouted. Go direct to
+the engine, or ask for the proxy.
+
+🔑 **An empty list means "this account holds nothing", and it can only mean that because every path
+that cannot answer RAISES instead.** A positions endpoint that returns `[]` on a failed read is worse
+than none, because *flat* is a plausible answer a caller will act on.
+
+**Coverage, verified live 2026-09-01 across all four declared accounts:**
+
+| broker · market | positions read | note |
+|---|---|---|
+| `liberator` · SET | ✅ parses | `side` is `None` — SET equities cannot be short and the venue sends no side |
+| `liberator` · TFEX | ✅ parses | `side` populated (`BUY`/`SELL`); schema observed 2026-08-28 |
+| `streaming_pro` · SET | ✅ parses | `side` `None`, as above |
+| `streaming_pro` · TFEX | ⚠️ **501 `streaming_pro_positions_uncaptured`** *if the account holds anything* | a **flat** TFEX account returns `[]` honestly — the derivatives front refuses accounts it does not hold, so reaching the empty case proves the account was read, not skipped |
+
+🔴 **`side: null` means *the venue did not distinguish*. It never means flat, and it never means long.**
+
+Where each stands:
 
 * ✅ **`AccountInfo` NOW CARRIES the cash/equity/margin split** (PR #37). `account_type` plus
   `buying_power`, `cash_balance`, `credit_limit`, `withdrawable`, and — on a **DERIVATIVE** account —
@@ -491,7 +522,19 @@ Where each stands, as of 2026-08-24:
   "❌ no cash / equity / margin split — `buying_power` only". That is no longer true.**
   🔑 **Absent means "this broker does not report it", NEVER zero.** Do not read a `None` as `0`.
 * ✅ **liberator balance WORKS** — proven live against two funded accounts. Not exposed; not broken.
-* ⛔ **liberator POSITIONS DO NOT WORK AT ALL, and a route would not help** — see the block below.
+* ✅ **liberator POSITIONS WORK, on SET *and* TFEX.** ~~DO NOT WORK AT ALL, and a route would not help~~
+  — the blocker was a missing capture, and **the capture was taken 2026-08-28** when the operator held
+  real positions: `result.stock[]` is **17 fields on TFEX / 14 on SET**. See the block below, which is
+  retained as the audit trail of why the route was withheld.
+* 🔑 **THE REMAINING GAP IS `avg`, NOT THE ROUTE.** `adapters/base.Position` carries
+  `{account, market, symbol, net_qty, side}` — **no cost basis, no marks**. The venue *does* send
+  `avg`, `marketPrice`, `marketVal`, `unrealizedPL`, `unrealizedPLPercent`; the adapter discards them.
+  So a caller needing **average price** — to mark against venue truth rather than its own fill record —
+  cannot get it from this route today, and that is a **contract enrichment**, not a new endpoint.
+  ⚠️ If you enrich it, read `docs/reference/liberator-account-reads.md` §2.2a first: TFEX `amount`
+  and `marketVal` carry a **×1000 contract multiplier** that SET does not, `avg` is rounded,
+  `unrealizedPLPercent` is 0–100, and a **zero-qty row is still returned**. The multiplier is
+  **per-series**, observed on a single row at `qty=1` — do not hardcode 1000.
 * ⚠️ **CORRECTED 2026-08-28 — this line conflated the CONTRACT with the VENUE.** It read: *"no cost
   basis, no market value, no unrealised P&L — `net_qty` only, and no marks anywhere in the
   contract"*. The **contract** part is true and unchanged: `adapters/base.Position` carries
@@ -501,12 +544,19 @@ Where each stands, as of 2026-08-24:
   **`unrealizedPLPercent`**. ⇒ the marks are **available and currently discarded**, which is a very
   different statement from "they do not exist", and it makes enriching `Position` a real option
   rather than a blocked one.
-* ⚠️ **streaming_pro: balance covers SET + TFEX; POSITIONS are still SET-only**, per §5. Corrected
-  2026-08-27 — this line previously read *"SET-only for BOTH"*, which the bridge's new `seosd` front
-  superseded on the balance half the same day. Positions remain SET-only in the adapter.
+* ⚠️ **streaming_pro: balance covers SET + TFEX; POSITIONS parse on SET, and TFEX refuses LOUDLY.**
+  Corrected 2026-08-27 — this line previously read *"SET-only for BOTH"*, which the bridge's new
+  `seosd` front superseded on the balance half the same day. ↻ **Refined 2026-09-01:** "positions
+  remain SET-only" understated it — a TFEX account that *holds* something answers **501
+  `streaming_pro_positions_uncaptured`** rather than silently omitting the market, and a flat one
+  answers `[]`. Same missing-capture blocker liberator had until 2026-08-28, same fail-loud handling.
 
-> ⛔ **Why liberator positions are NOT a "just add the route" item — read this before planning around
-> one.**
+> ✅ **RESOLVED 2026-08-28 — the capture was taken and the route shipped. Retained as the audit trail
+> of why it was withheld, because the reasoning was right and it is the reason the route is trustworthy
+> now. It is NOT a description of the present.**
+>
+> ⛔ ~~**Why liberator positions are NOT a "just add the route" item — read this before planning around
+> one.**~~
 >
 > `POST /va/portfolio` answers `result.{list, stock}`, and **neither array has ever been observed
 > non-empty on this platform** — no Liberator account has ever held a position, so **the element
@@ -518,6 +568,11 @@ Where each stands, as of 2026-08-24:
 > ⇒ **The blocker is a missing capture, upstream of any route.** Shipping `GET /positions` today would
 > return a 501 or an empty list, not positions. What would settle it: one funded account holding one
 > position, captured once — [`docs/reference/liberator-account-reads.md`](../../docs/reference/liberator-account-reads.md) §7.
+>
+> ➡️ **That is exactly what happened.** The operator opened real SET and TFEX positions on 2026-08-27/28
+> and the capture landed `2026-08-28T04:03:55Z`. The prediction was right on every point that mattered —
+> the field count was a lower bound, and the client-bundle instrument had only ever seen the rendered
+> subset.
 
 If your strategy needs P&L or marks, say so — those still require the contracts to grow, and that is a
 bigger change than the two routes.
