@@ -29,7 +29,8 @@ _NOW = datetime(2026, 6, 11, 8, 0, 0, tzinfo=UTC)
 def _row(
     store: MemStore, status: OrderState, *, age_seconds: float = 0.0, **overrides: Any
 ) -> OrderRow:
-    order = make_order(broker="liberator", price="123.45", **overrides)
+    # price is a DEFAULT, not a fixture constant — TK-0493's ladder tests need to vary it.
+    order = make_order(broker="liberator", **{"price": "123.45", **overrides})
     store.seed(order, status)
     raw = store.orders[order.client_order_id]
     raw["created_at"] = _NOW - timedelta(seconds=age_seconds)
@@ -173,7 +174,7 @@ def test_fuzzy_match_unique_within_window() -> None:
     inside = _item(row, orderNo="7001", entryTime=ts_inside)
     outside = _item(row, orderNo="7002", entryTime=ts_outside)
     wrong_qty = _item(row, orderNo="7003", volume=row.quantity + 1)
-    assert fuzzy_match(row, [inside, outside, wrong_qty], claimed_order_nos=set()) is inside
+    assert fuzzy_match(row, [inside, outside, wrong_qty], claimed_order_nos=set()).item is inside
 
 
 def test_fuzzy_match_ambiguous_or_claimed_is_skipped() -> None:
@@ -181,11 +182,119 @@ def test_fuzzy_match_ambiguous_or_claimed_is_skipped() -> None:
     ts = (row.created_at + timedelta(seconds=1)).isoformat()
     a = _item(row, orderNo="7001", entryTime=ts)
     b = _item(row, orderNo="7002", entryTime=ts)
-    assert fuzzy_match(row, [a, b], claimed_order_nos=set()) is None  # ambiguous: never guess
-    assert fuzzy_match(row, [a, b], claimed_order_nos={"7002"}) is a  # claimed rows excluded
+    ambiguous = fuzzy_match(row, [a, b], claimed_order_nos=set())
+    assert ambiguous.item is None  # ambiguous: never guess
+    # 🔑 …and it must SAY it was ambiguous. A bare None cannot be told apart from
+    # "nothing matched", which is what let the caller reject a live order ([[TK-0493]]).
+    assert ambiguous.ambiguous is True
+    assert ambiguous.candidate_count == 2
+    assert fuzzy_match(row, [a, b], claimed_order_nos={"7002"}).item is a  # claimed excluded
     wrong_side = _item(row, orderNo="7004", side="S", entryTime=ts)
     no_ts = _item(row, orderNo="7005")
-    assert fuzzy_match(row, [wrong_side, no_ts], claimed_order_nos=set()) is None
+    nothing = fuzzy_match(row, [wrong_side, no_ts], claimed_order_nos=set())
+    assert nothing.item is None
+    # No candidates at all — the genuine-absence case, which MUST stay distinguishable
+    # from ambiguity because only this one may become terminal.
+    assert nothing.ambiguous is False
+    assert nothing.candidate_count == 0
+
+
+# ------------------------------------------- TK-0493: the 2026-09-02 false-terminal
+
+
+def test_a_PRICE_LADDER_no_longer_collides_with_itself() -> None:
+    """🔴 The 2026-09-02 incident, reproduced.
+
+    Four real-money orders were marked terminally REJECTED while resting live at the
+    venue. The strategy was walking an exit LADDER — same symbol, side and qty, seconds
+    apart, differing **only in price** — which the old key ``(account, symbol, side, qty)``
+    could not tell apart. Rung 1 matched uniquely; rung 2 saw two candidates and skipped.
+    Nothing about the second order was different. It was second.
+    """
+    store = MemStore()
+    rung1 = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="1.75")
+    rung2 = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="1.76")
+    ts = (rung1.created_at + timedelta(seconds=1)).isoformat()
+    at_175 = _item(rung1, orderNo="1157", price="1.75", entryTime=ts)
+    at_176 = _item(rung2, orderNo="1160", price="1.76", entryTime=ts)
+    book = [at_175, at_176]
+
+    assert fuzzy_match(rung1, book, claimed_order_nos=set()).item is at_175
+    assert fuzzy_match(rung2, book, claimed_order_nos=set()).item is at_176
+
+
+def test_AMBIGUITY_IS_NOT_ABSENCE_and_never_becomes_terminal() -> None:
+    """🔑 The money assertion — the half that holds when price cannot disambiguate.
+
+    Price narrows collisions; it cannot remove them. Two genuinely identical orders at one
+    price still tie, and the matcher still (correctly) refuses to guess. What must never
+    happen again is the caller reading that refusal as *absence* and writing a TERMINAL
+    state for an order that is almost certainly live at the venue.
+
+    The row stays ``PENDING_NEW`` — the honest state, and the only one available: the
+    9-state machine is frozen and a DB CHECK enforces the set.
+    """
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=600)  # long past the 60 s mark
+    ts = (row.created_at + timedelta(seconds=1)).isoformat()
+    twin_a = _item(row, orderNo="9001", entryTime=ts)
+    twin_b = _item(row, orderNo="9002", entryTime=ts)
+
+    outcome = fuzzy_match(row, [twin_a, twin_b], claimed_order_nos=set())
+    assert outcome.item is None and outcome.ambiguous is True
+
+    assert plan_actions(row, 0, None, now=_NOW, ambiguous=True) == []
+
+
+def test_GENUINE_ABSENCE_still_rejects_so_the_fix_is_not_just_never_rejecting() -> None:
+    """Positive control — without it, "never reject" would pass the test above.
+
+    Deleting the reject path entirely would satisfy the ambiguity assertion while removing
+    a real safety behaviour: an order that reached no venue at all must still resolve
+    bounded rather than sit PENDING_NEW forever.
+    """
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=600)
+    actions = plan_actions(row, 0, None, now=_NOW, ambiguous=False)
+    assert [a.kind for a in actions] == ["reject"]
+    assert actions[0].reason == "ack_lost_unmatched"
+
+
+def test_a_MISSING_venue_price_does_not_exclude_the_candidate() -> None:
+    """⚠️ The trap this fix could have introduced, pinned.
+
+    ``price`` is ``Decimal | None`` and this venue writes ``0`` where it has no price to
+    report. Treating either as a mismatch would exclude EVERY candidate, leaving zero —
+    which the caller reads as absence and rejects at the timeout. That is the same bug,
+    re-entered by a new door and now unconditional.
+    """
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="1.75")
+    ts = (row.created_at + timedelta(seconds=1)).isoformat()
+    for absent in ("0", "0.00"):
+        item = _item(row, orderNo="7100", price=absent, entryTime=ts)
+        assert fuzzy_match(row, [item], claimed_order_nos=set()).item is item, (
+            f"a venue price of {absent!r} means UNREPORTED and must not exclude"
+        )
+
+
+def test_the_loop_actually_THREADS_ambiguity_into_plan_actions() -> None:
+    """The wiring, asserted rather than trusted.
+
+    ``plan_actions(..., ambiguous=False)`` is the default, so a production caller that
+    forgot to pass it would silently keep the old rejecting behaviour and every unit test
+    above would still pass. This drives the real loop.
+    """
+    import inspect
+
+    from src.quant_execution_engine.adapters.liberator import reconciler as lib_rec
+
+    body = inspect.getsource(lib_rec.LiberatorReconciler)
+    assert "ambiguous=ambiguous" in body, "the loop must pass the flag it computed"
+    assert "ambiguous = outcome.ambiguous" in body, "the loop must read it from the outcome"
+    # Per-row reset: a value surviving into the next iteration would suppress a legitimate
+    # rejection for a DIFFERENT order.
+    assert "ambiguous = False" in body, "the flag must be reset per row, never hoisted"
 
 
 # ------------------------------------------------------------- reconcile_once

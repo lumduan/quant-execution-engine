@@ -5,10 +5,13 @@ liberator rows and drives the frozen 13-edge state machine through the
 Phase-2 repository seams (``ack_order`` / ``apply_fill`` / ``update_status``):
 
 * lost ack: a ``PENDING_NEW`` stuck >5 s fuzzy-matches ``(account, symbol,
-  side, qty)`` with venue ``entryTime`` within ±5 s of the persisted submit
-  timestamp; a unique match acks, an ambiguous one is skipped (never guessed),
-  and an unmatched row past 60 s resolves bounded to ``REJECTED
-  ("ack_lost_unmatched")`` — the loop NEVER re-sends;
+  side, qty, **price**)`` with venue ``entryTime`` within ±5 s of the persisted
+  submit timestamp; a unique match acks, and a row with **no** candidate past 60 s
+  resolves bounded to ``REJECTED ("ack_lost_unmatched")`` — the loop NEVER re-sends.
+  🔴 An **AMBIGUOUS** match (several candidates, none unique) is skipped and the row
+  **stays PENDING_NEW indefinitely** — it is NOT rejected. Ambiguity means the order is
+  almost certainly live at the venue; treating it as absence wrote a terminal REJECTED
+  for four live real-money orders on 2026-09-02 ([[TK-0493]]);
 * fills: venue ``matched`` is cumulative — the delta against the durable fill
   aggregate becomes one fill with the deterministic id ``{orderNo}:{matched}``
   (re-polls dedupe via the existing ``ON CONFLICT DO NOTHING``);
@@ -95,17 +98,70 @@ def fill_price_for(row: OrderRow, item: VenueOrderItem) -> Decimal | None:
     return row.price if row.price is not None else row.stop_price
 
 
+def _has_price(value: Decimal | None) -> bool:
+    """A usable price for matching: present AND positive.
+
+    ⚠️ ``0`` is how this venue reports *no price* (market orders), so treating it as a
+    real value would make every priced candidate mismatch — excluding all of them, which
+    the caller reads as *absent* and rejects at the timeout. That is the very bug
+    [[TK-0493]] removes, re-entered by a different door.
+    """
+    return value is not None and value > 0
+
+
+@dataclass(frozen=True)
+class MatchOutcome:
+    """Why :func:`fuzzy_match` returned what it did.
+
+    🔴 **The distinction this type exists to carry: "no venue row resembles this order"
+    and "several do and I declined to choose" are NOT the same fact.** Both used to
+    surface as a bare ``None``, and the caller rejected on either — writing a TERMINAL
+    ``REJECTED`` for orders that were resting live at the venue on real money
+    (2026-09-02, four orders, [[TK-0493]] / issue #270).
+    """
+
+    item: VenueOrderItem | None
+    candidate_count: int
+
+    @property
+    def ambiguous(self) -> bool:
+        """Candidates existed but none was unique — the order is almost certainly one."""
+        return self.item is None and self.candidate_count > 1
+
+
 def fuzzy_match(
     row: OrderRow,
     items: list[VenueOrderItem],
     *,
     claimed_order_nos: set[str],
-) -> VenueOrderItem | None:
-    """ADR §B lost-ack match: (account, symbol, side, qty) within ±5 s.
+) -> MatchOutcome:
+    """ADR §B lost-ack match: (account, symbol, side, qty, **price**) within ±5 s.
 
-    Only an UNIQUE candidate counts — an ambiguous match is skipped with a
-    warning, never guessed. Venue rows already claimed by another local order
-    are excluded.
+    Only a UNIQUE candidate counts — an ambiguous match is skipped, never guessed.
+    Venue rows already claimed by another local order are excluded.
+
+    🔑 **PRICE joined the key on 2026-09-02.** Without it a price *ladder* — same
+    symbol, side and qty, seconds apart, differing only in price — collides with
+    itself, and a strategy walking an exit ladder generates exactly that shape. In the
+    incident, rung 1 matched uniquely and rung 2 saw two candidates; the difference
+    between them was not the code but the order of arrival.
+
+    Price is the right discriminator because it is **intrinsic to the order we sent**:
+    unlike venue state it cannot change between the submit and the match.
+
+    ⚠️ **A missing venue price SKIPS the comparison — it must never fail it.**
+    ``VenueOrderItem.price`` is ``Decimal | None``. Treating ``None`` as a mismatch
+    would exclude every candidate, giving zero, which the caller reads as *absent* and
+    rejects at the timeout — reintroducing the exact bug this change removes, by a new
+    route and unconditionally.
+
+    ⛔ **Deliberately NOT filtered: venue rows that are already terminal.** Excluding
+    them would have resolved the 2026-09-02 incident on its own (the cancelled twin is
+    what kept the ambiguity alive), and it is still wrong: our lost-ack order may itself
+    be the terminal one — placed, then cancelled or rejected at the venue. Excluding
+    terminals would leave one candidate that is *a different, live order* and ack us
+    against the wrong ``orderNo``. **A confident wrong match is worse than an ambiguous
+    one, which merely does nothing.**
     """
     candidates = []
     for item in items:
@@ -115,20 +171,27 @@ def fuzzy_match(
             continue
         if from_venue_side(item.side) is not row.side:
             continue
+        # Compare price only when BOTH sides carry a REAL one — see the docstring warning.
+        # Non-positive counts as ABSENT, not as zero: this venue writes 0 where it has no
+        # price to report (a market order carries none), and the sibling streaming_pro
+        # reconciler already encodes the same convention in `fill_price_for`.
+        if _has_price(item.price) and _has_price(row.price) and item.price != row.price:
+            continue
         if item.entry_time is None:
             continue
         skew = abs((item.entry_time - row.created_at).total_seconds())
         if skew <= _FUZZY_WINDOW_SECONDS:
             candidates.append(item)
     if len(candidates) == 1:
-        return candidates[0]
+        return MatchOutcome(item=candidates[0], candidate_count=1)
     if len(candidates) > 1:
         logger.warning(
-            "reconcile: ambiguous lost-ack fuzzy match for %s (%d candidates) — skipped",
+            "reconcile: ambiguous lost-ack fuzzy match for %s (%d candidates) — skipped; "
+            "the order is LIVE at the venue and will NOT be marked terminal",
             row.client_order_id,
             len(candidates),
         )
-    return None
+    return MatchOutcome(item=None, candidate_count=len(candidates))
 
 
 def _venue_terminal_actions(row: OrderRow, item: VenueOrderItem) -> list[ReconcileAction]:
@@ -200,13 +263,44 @@ def plan_actions(
     item: VenueOrderItem | None,
     *,
     now: datetime,
+    ambiguous: bool = False,
 ) -> list[ReconcileAction]:
-    """Pure planning: one local row + its venue counterpart → persistence steps."""
+    """Pure planning: one local row + its venue counterpart → persistence steps.
+
+    ``ambiguous`` carries :attr:`MatchOutcome.ambiguous` — *the matcher saw candidates
+    and declined to choose*. It defaults to ``False`` because that is the truthful value
+    for every caller that did not run a lost-ack match at all; the production loop passes
+    it explicitly, and a test asserts that wiring rather than trusting the default.
+    """
     cid = row.client_order_id
     age_seconds = (now - row.created_at).total_seconds()
 
     if item is None:
         if row.status is OrderState.PENDING_NEW:
+            # 🔴 AMBIGUITY IS NOT ABSENCE. Candidates existed; one of them is almost
+            # certainly this order, resting LIVE at the venue. Rejecting here wrote a
+            # TERMINAL state for four live real-money orders on 2026-09-02 ([[TK-0493]],
+            # issue #270) — and the row then could not even be cancelled by cid, because
+            # the state machine correctly refuses to leave a terminal state.
+            #
+            # This is the same principle `absence_is_informative` already applies to the
+            # PENDING_CANCEL branch below (TK-0446): fail toward NO ACTION. Leaving a row
+            # unresolved is recoverable; wrongly declaring it dead is not.
+            #
+            # The row stays PENDING_NEW — which is the honest state, and the only one
+            # available: the 9-state machine is frozen (§E) and a DB CHECK enforces it.
+            # PENDING_NEW already means "submitted, outcome unread", which is exactly this.
+            if ambiguous:
+                if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
+                    logger.error(
+                        "reconcile: %s has been AMBIGUOUS for %.0fs (past the %ds mark where "
+                        "it used to be wrongly REJECTED). The order is LIVE at the venue and "
+                        "stays PENDING_NEW. Resolve by venue orderNo; NEVER resubmit.",
+                        cid,
+                        age_seconds,
+                        _ACK_LOST_TIMEOUT_SECONDS,
+                    )
+                return []
             if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
                 return [
                     ReconcileAction(kind="reject", client_order_id=cid, reason="ack_lost_unmatched")
@@ -363,16 +457,19 @@ class LiberatorReconciler:
         against cannot exist there. 🔴 Do not relax it anywhere else.
         """
         item = index.get(row.broker_order_id) if row.broker_order_id else None
+        ambiguous = False
         if item is None and row.status is OrderState.PENDING_NEW:
             old_enough = (now - row.created_at).total_seconds() > _STUCK_PENDING_SECONDS
             if old_enough or not require_stuck:
-                item = fuzzy_match(row, items, claimed_order_nos=claimed)
+                outcome = fuzzy_match(row, items, claimed_order_nos=claimed)
+                item = outcome.item
+                ambiguous = outcome.ambiguous
                 if item is not None:
                     claimed.add(item.order_no)
         result = await repositories.fetch_order_result(pool, row.client_order_id)
         filled_qty = result.filled_qty if result is not None else 0
         applied = 0
-        for action in plan_actions(row, filled_qty, item, now=now):
+        for action in plan_actions(row, filled_qty, item, now=now, ambiguous=ambiguous):
             try:
                 await self._execute(pool, action)
                 applied += 1

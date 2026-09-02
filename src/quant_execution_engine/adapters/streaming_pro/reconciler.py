@@ -4,9 +4,13 @@ Mirrors the Liberator reconciler: every pass polls ``GET /orders`` per ``(accoun
 non-terminal streaming_pro rows and drives the frozen 13-edge machine through the Phase-2 repository
 seams (``ack_order`` / ``apply_fill`` / ``update_status``):
 
-* lost ack: a ``PENDING_NEW`` stuck >5 s fuzzy-matches ``(symbol, side, qty)`` with venue
-  ``entryTime`` within ±5 s of the persisted submit ts; a unique match acks, an ambiguous one is
-  skipped, an unmatched row past 60 s resolves bounded to ``REJECTED`` — the loop NEVER re-sends;
+* lost ack: a ``PENDING_NEW`` stuck >5 s fuzzy-matches ``(symbol, side, qty, **price**)`` with
+  venue ``entryTime`` within ±5 s of the persisted submit ts; a unique match acks, and a row with
+  **no** candidate past 60 s resolves bounded to ``REJECTED`` — the loop NEVER re-sends.
+  🔴 An **AMBIGUOUS** match is skipped and the row **stays PENDING_NEW indefinitely**, never
+  rejected: candidates existing means the order is almost certainly live at the venue. Treating
+  ambiguity as absence wrote terminal REJECTEDs for live real-money orders on the liberator twin
+  (2026-09-02, [[TK-0493]]); this adapter carried the identical defect, unfired;
 * fills: venue ``matchQty`` is cumulative — the delta vs the durable fill aggregate becomes one fill
   with the deterministic id ``{order_no}:{matched}`` (re-polls dedupe via ``ON CONFLICT``);
 * venue terminals map onto legal edges only (cancelled → two-step, expired → EXPIRED, a post-ack
@@ -71,10 +75,52 @@ def fill_price_for(row: OrderRow, item: VenueOrderRow) -> Decimal | None:
     return row.price if row.price is not None else row.stop_price
 
 
+def _has_price(value: Decimal | None) -> bool:
+    """A usable price for matching: present AND positive.
+
+    ``0`` means *no price reported* here — the same convention ``fill_price_for`` above
+    already applies. Treating it as a real value would mismatch every priced candidate,
+    excluding all of them; the caller reads zero candidates as *absent* and rejects at
+    the timeout, which is the [[TK-0493]] bug by another route.
+    """
+    return value is not None and value > 0
+
+
+@dataclass(frozen=True)
+class MatchOutcome:
+    """Why :func:`fuzzy_match` returned what it did — see the liberator twin.
+
+    🔴 *"Nothing resembles this order"* and *"several do and I declined to choose"* are
+    different facts. Collapsing both into a bare ``None`` let the caller write a TERMINAL
+    ``REJECTED`` for orders resting live at the venue ([[TK-0493]], issue #270).
+    """
+
+    item: VenueOrderRow | None
+    candidate_count: int
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.item is None and self.candidate_count > 1
+
+
 def fuzzy_match(
     row: OrderRow, items: list[VenueOrderRow], *, claimed_order_nos: set[str]
-) -> VenueOrderRow | None:
-    """ADR §B lost-ack match: (symbol, side, qty) within ±5 s; only a UNIQUE candidate counts."""
+) -> MatchOutcome:
+    """ADR §B lost-ack match: (symbol, side, qty, **price**) within ±5 s.
+
+    Only a UNIQUE candidate counts.
+
+    🔑 **Price joined the key on 2026-09-02.** This adapter had the identical omission to
+    liberator's, where it produced four false terminal REJECTEDs on live real-money orders.
+    It had never fired here only because no *laddered* streaming_pro order had been placed —
+    fixing liberator alone would have left a loaded copy. A price ladder (same symbol, side
+    and qty, seconds apart, differing only in price) is the input class the old key was
+    blind to.
+
+    ⛔ Venue rows that are already terminal are deliberately NOT excluded: our lost-ack
+    order may itself be the terminal one, and excluding them could leave one candidate that
+    is a *different, live* order. A confident wrong match is worse than an ambiguous one.
+    """
     candidates = []
     for item in items:
         if item.order_no in claimed_order_nos:
@@ -83,19 +129,22 @@ def fuzzy_match(
             continue
         if from_venue_side(item.side) is not row.side:
             continue
+        if _has_price(item.price) and _has_price(row.price) and item.price != row.price:
+            continue
         if item.entry_time is None:
             continue
         if abs((item.entry_time - row.created_at).total_seconds()) <= _FUZZY_WINDOW_SECONDS:
             candidates.append(item)
     if len(candidates) == 1:
-        return candidates[0]
+        return MatchOutcome(item=candidates[0], candidate_count=1)
     if len(candidates) > 1:
         logger.warning(
-            "reconcile: ambiguous lost-ack fuzzy match for %s (%d) — skipped",
+            "reconcile: ambiguous lost-ack fuzzy match for %s (%d) — skipped; the order is "
+            "LIVE at the venue and will NOT be marked terminal",
             row.client_order_id,
             len(candidates),
         )
-    return None
+    return MatchOutcome(item=None, candidate_count=len(candidates))
 
 
 def _venue_terminal_actions(row: OrderRow, item: VenueOrderRow) -> list[ReconcileAction]:
@@ -116,14 +165,39 @@ def _venue_terminal_actions(row: OrderRow, item: VenueOrderRow) -> list[Reconcil
 
 
 def plan_actions(
-    row: OrderRow, filled_qty: int, item: VenueOrderRow | None, *, now: datetime
+    row: OrderRow,
+    filled_qty: int,
+    item: VenueOrderRow | None,
+    *,
+    now: datetime,
+    ambiguous: bool = False,
 ) -> list[ReconcileAction]:
-    """Pure planning: one local row + its venue counterpart → persistence steps."""
+    """Pure planning: one local row + its venue counterpart → persistence steps.
+
+    ``ambiguous`` carries :attr:`MatchOutcome.ambiguous`. It defaults to ``False`` — the
+    truthful value for any caller that ran no lost-ack match — and the production loop
+    passes it explicitly, with a test asserting that wiring rather than trusting it.
+    """
     cid = row.client_order_id
     age_seconds = (now - row.created_at).total_seconds()
 
     if item is None:
         if row.status is OrderState.PENDING_NEW:
+            # 🔴 AMBIGUITY IS NOT ABSENCE — see the liberator twin and [[TK-0493]].
+            # Candidates existed, so one of them is almost certainly this order, live at
+            # the venue. The row stays PENDING_NEW: the honest state, and the only one
+            # available (the 9-state machine is frozen and a DB CHECK enforces it).
+            if ambiguous:
+                if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
+                    logger.error(
+                        "reconcile: %s has been AMBIGUOUS for %.0fs (past the %ds mark where "
+                        "it used to be wrongly REJECTED). The order is LIVE at the venue and "
+                        "stays PENDING_NEW. Resolve by venue orderNo; NEVER resubmit.",
+                        cid,
+                        age_seconds,
+                        _ACK_LOST_TIMEOUT_SECONDS,
+                    )
+                return []
             if age_seconds > _ACK_LOST_TIMEOUT_SECONDS:
                 return [
                     ReconcileAction(kind="reject", client_order_id=cid, reason="ack_lost_unmatched")
@@ -242,17 +316,22 @@ class StreamingProReconciler:
             claimed = {r.broker_order_id for r in group_rows if r.broker_order_id is not None}
             for row in group_rows:
                 item = index.get(row.broker_order_id) if row.broker_order_id else None
+                # Per-row, NEVER hoisted: a value surviving into the next iteration would
+                # suppress a legitimate rejection for a DIFFERENT order.
+                ambiguous = False
                 if (
                     item is None
                     and row.status is OrderState.PENDING_NEW
                     and (now - row.created_at).total_seconds() > _STUCK_PENDING_SECONDS
                 ):
-                    item = fuzzy_match(row, items, claimed_order_nos=claimed)
+                    outcome = fuzzy_match(row, items, claimed_order_nos=claimed)
+                    item = outcome.item
+                    ambiguous = outcome.ambiguous
                     if item is not None:
                         claimed.add(item.order_no)
                 result = await repositories.fetch_order_result(pool, row.client_order_id)
                 filled_qty = result.filled_qty if result is not None else 0
-                for action in plan_actions(row, filled_qty, item, now=now):
+                for action in plan_actions(row, filled_qty, item, now=now, ambiguous=ambiguous):
                     try:
                         await self._execute(pool, action)
                         applied += 1

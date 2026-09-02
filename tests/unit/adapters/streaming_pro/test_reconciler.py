@@ -27,7 +27,8 @@ _NOW = datetime(2026, 6, 16, 8, 0, 0, tzinfo=UTC)
 def _row(
     store: MemStore, status: OrderState, *, age_seconds: float = 0.0, **overrides: Any
 ) -> OrderRow:
-    order = make_order(broker="streaming_pro", price="32.47", **overrides)
+    # price is a DEFAULT, not a fixture constant — TK-0493's ladder tests vary it.
+    order = make_order(broker="streaming_pro", **{"price": "32.47", **overrides})
     store.seed(order, status)
     raw = store.orders[order.client_order_id]
     raw["created_at"] = _NOW - timedelta(seconds=age_seconds)
@@ -150,7 +151,7 @@ def test_fuzzy_match_unique_within_window() -> None:
         row, orderNo="7002", entryTime=(row.created_at + timedelta(seconds=9)).isoformat()
     )
     wrong_qty = _item(row, orderNo="7003", qty=row.quantity + 1)
-    assert fuzzy_match(row, [inside, outside, wrong_qty], claimed_order_nos=set()) is inside
+    assert fuzzy_match(row, [inside, outside, wrong_qty], claimed_order_nos=set()).item is inside
 
 
 def test_fuzzy_match_ambiguous_or_claimed() -> None:
@@ -159,10 +160,17 @@ def test_fuzzy_match_ambiguous_or_claimed() -> None:
     ts = (row.created_at + timedelta(seconds=1)).isoformat()
     a = _item(row, orderNo="7001", entryTime=ts)
     b = _item(row, orderNo="7002", entryTime=ts)
-    assert fuzzy_match(row, [a, b], claimed_order_nos=set()) is None  # ambiguous: never guess
-    assert fuzzy_match(row, [a, b], claimed_order_nos={"7002"}) is a  # claimed excluded
+    ambiguous = fuzzy_match(row, [a, b], claimed_order_nos=set())
+    assert ambiguous.item is None  # ambiguous: never guess
+    # 🔑 …and it must SAY it was ambiguous. A bare None cannot be told apart from
+    # "nothing matched", which is what let the caller reject a live order ([[TK-0493]]).
+    assert ambiguous.ambiguous is True
+    assert ambiguous.candidate_count == 2
+    assert fuzzy_match(row, [a, b], claimed_order_nos={"7002"}).item is a  # claimed excluded
     no_ts = _item(row, orderNo="7005", entryTime=None)
-    assert fuzzy_match(row, [no_ts], claimed_order_nos=set()) is None
+    nothing = fuzzy_match(row, [no_ts], claimed_order_nos=set())
+    assert nothing.item is None
+    assert nothing.ambiguous is False  # genuine absence — the only case that may go terminal
 
 
 # ------------------------------------------------------------- reconcile_once
@@ -232,3 +240,70 @@ async def test_reconcile_skips_group_on_transport_error(monkeypatch: Any) -> Non
 async def test_reconcile_no_rows_is_zero(monkeypatch: Any) -> None:
     patch_repositories(monkeypatch, MemStore())
     assert await _reconciler().reconcile_once() == 0
+
+
+# ------------------------------------------- TK-0493: the same defect, here UNFIRED
+
+
+def test_a_PRICE_LADDER_no_longer_collides_with_itself() -> None:
+    """This adapter carried the identical omission to liberator's — a loaded copy.
+
+    On liberator it produced four terminal REJECTEDs on live real-money orders
+    (2026-09-02). It had never fired here only because no *laddered* streaming_pro order
+    had been placed. Fixing one adapter and not the other would have left the gun loaded.
+    """
+    store = MemStore()
+    rung1 = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="22.91")
+    rung2 = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="22.92")
+    ts = (rung1.created_at + timedelta(seconds=1)).isoformat()
+    at_lo = _item(rung1, orderNo="1162", price="22.91", entryTime=ts)
+    at_hi = _item(rung2, orderNo="1163", price="22.92", entryTime=ts)
+    book = [at_lo, at_hi]
+
+    assert fuzzy_match(rung1, book, claimed_order_nos=set()).item is at_lo
+    assert fuzzy_match(rung2, book, claimed_order_nos=set()).item is at_hi
+
+
+def test_AMBIGUITY_IS_NOT_ABSENCE_and_never_becomes_terminal() -> None:
+    """The money assertion — ambiguity must never reach a terminal state."""
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=600)
+    ts = (row.created_at + timedelta(seconds=1)).isoformat()
+    a = _item(row, orderNo="9001", entryTime=ts)
+    b = _item(row, orderNo="9002", entryTime=ts)
+
+    outcome = fuzzy_match(row, [a, b], claimed_order_nos=set())
+    assert outcome.item is None and outcome.ambiguous is True
+    assert plan_actions(row, 0, None, now=_NOW, ambiguous=True) == []
+
+
+def test_GENUINE_ABSENCE_still_rejects() -> None:
+    """Positive control — "never reject" would pass the test above and delete a real guard."""
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=600)
+    actions = plan_actions(row, 0, None, now=_NOW, ambiguous=False)
+    assert [a.kind for a in actions] == ["reject"]
+    assert actions[0].reason == "ack_lost_unmatched"
+
+
+def test_a_MISSING_venue_price_does_not_exclude_the_candidate() -> None:
+    """``0`` means UNREPORTED here — the convention ``fill_price_for`` already encodes."""
+    store = MemStore()
+    row = _row(store, OrderState.PENDING_NEW, age_seconds=10, price="22.91")
+    ts = (row.created_at + timedelta(seconds=1)).isoformat()
+    item = _item(row, orderNo="7100", price="0", entryTime=ts)
+    assert fuzzy_match(row, [item], claimed_order_nos=set()).item is item
+
+
+def test_the_loop_actually_THREADS_ambiguity_into_plan_actions() -> None:
+    """The wiring, asserted rather than trusted — the default would hide a missed call site."""
+    import inspect
+
+    from src.quant_execution_engine.adapters.streaming_pro import reconciler as sp_rec
+
+    body = inspect.getsource(sp_rec.StreamingProReconciler)
+    assert "ambiguous=ambiguous" in body
+    assert "ambiguous = outcome.ambiguous" in body
+    assert "ambiguous = False" in body, (
+        "must reset per row — a leak suppresses another order's reject"
+    )
