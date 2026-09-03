@@ -643,19 +643,28 @@ place/status/cancel run at `paper` proves **the contract and the durable-store p
 So a balance read at `paper` touches the live broker with real credentials. Treat it as a live call,
 not a rehearsal.
 
-> 🔴 **↻ CORRECTED 2026-09-01 — this paragraph was UNCONDITIONAL and is true only half the time
-> ([[TK-0488]]).** `resolve_adapter` sends a `paper` READ to the real adapter only
-> `if real is not None`; with no credentials constructed it **falls through to the sim adapter** and
-> answers 200 with sim data under the real broker's name — `{"positions": []}` for any account, and
-> a fabricated `buying_power: 1000000000` on the balance read. So on a credential-less `paper` node
-> the same call touches **nothing** and returns fiction, which is the opposite of "treat it as a
-> live call".
+> ✅ **↻ FIXED 2026-09-03 ([[TK-0488]]). The paragraph above is now unconditionally TRUE again —
+> because the other half was removed, not because it was reworded.**
 >
-> **Both readings are dangerous and they are dangerous in opposite directions**, which is why the
-> condition has to be stated rather than the sentence simply reversed: *with* credentials it really
-> is a live broker call, and *without* them it is fiction wearing the broker's name. **Check
-> `adapter_installed` on `/capabilities` to know which node you are on.** `micro_live` raises rather
-> than substituting, so this is a `paper`-only hazard.
+> **What it used to do:** `resolve_adapter` sent a `paper` READ to the real adapter only
+> `if real is not None`; with no credentials constructed it **fell through to the sim adapter** and
+> answered `200` with sim data **under the real broker's name** — `{"positions": []}` for any
+> account, including the `00000000` sentinel the venue refuses, and a fabricated
+> `buying_power: 1000000000`. `[]` is at least shaped like an absence; a billion baht is shaped
+> like a **measurement**.
+>
+> **What it does now:** a READ for a **real broker** on a node with no runtime **raises
+> `StageRejected`** — the same thing `micro_live` always did. The two stages no longer disagree
+> about what an unanswerable read means.
+>
+> ⚠️ **So a `paper` broker read can now FAIL, and that is the fix, not a regression.** If you get
+> a refusal, the node has no credential for that broker — check `adapter_installed` on
+> `/capabilities`. Callers that already treated a non-200 as *"could not read"* rather than
+> *"holds nothing"* need no change; both known consumers already did.
+>
+> 🔑 Unaffected on purpose: **`broker=sim` reads still work**, and the **paper placement
+> intercept is untouched** — placements still never reach a venue at `paper`. Only real-broker
+> READS refuse.
 
 ### 🔴 `micro_live` now REFUSES TO START without an EH6 declaration (new 2026-08-24, PR #38)
 
