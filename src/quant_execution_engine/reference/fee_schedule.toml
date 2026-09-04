@@ -276,4 +276,33 @@ label        = "SET listed equities"
 what_exists  = "commission 0.0015 ; tsd_clearing 0.00001 ; vat_rate 0.07 (fractions of trade value)"
 where        = "strategies/csm-set/configs/live-settings.yaml"
 why_not_canonical = "A configuration default carrying NO stated source of any kind."
-what_would_close_it = "The broker's published equity commission schedule, or a fill-level reconciliation."
+what_would_close_it = """
+⬇️ NARROWED 2026-09-04 — the platform's FIRST venue-quoted fee figures now exist for this
+instrument. `session:lib-research` called Liberator pre-place live (TK-0524 §Ruling, ruled
+non-mutating; order list [] before and after) for PTT 100 @ 35.00 and the venue itself
+returned: Total 3,500.00 / "Commission Fee + VAT" 1.87 / "Regulator Fee + VAT" 0.26 /
+Net Buy 3,502.13 — self-consistent, per ORDER, VAT folded into each line item.
+
+Implied: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
+all-in 0.060857 % incl VAT.
+
+🔴 Both in-tree models miss it, IN OPPOSITE DIRECTIONS — which is the entire reason this
+file's check is one-sided:
+  * csm-set `commission: 0.0015` is EXACTLY 3.00x the venue's ex-VAT commission. It
+    OVERSTATES, so it is the SAFE error: a strategy priced with it looks worse than reality.
+  * cash-and-carry `stk_fee = 0.000569` predicts 1.9915 against a venue all-in of 2.13 —
+    UNDERSTATES by 6.95 %. That is the UNSAFE direction, and the one this file alerts on.
+  (The 3.00x is exact enough to look like a tier or a decimal placement rather than drift;
+  diagnosing it is not this file's job. Reported, not fitted.)
+
+⚠️ STILL NOT CANONICAL, and one observation cannot make it so. One notional, one symbol,
+one side, one day. 3,500 THB is small enough that a MINIMUM COMMISSION would dominate and
+be indistinguishable from a flat percentage, and nothing here establishes tiering. TK-0524
+is explicit: enough to show a model and the venue disagree, NOT enough to replace a
+constant. cost.py's own standard applies — venue facts are re-checked against the broker's
+schedule, never FITTED to a data point.
+
+Remaining to close: the broker's published equity schedule, OR a repeated observation
+series across notionals (which is what execution.fee_observations exists to bank) that
+separates a flat rate from a rate-with-minimum.
+"""

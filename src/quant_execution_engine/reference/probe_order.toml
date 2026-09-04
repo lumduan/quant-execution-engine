@@ -1,15 +1,39 @@
 # ════════════════════════════════════════════════════════════════════════════
 # THE CANONICAL FEE PROBE ORDER — a definition, not a running thing.
 #
-# 🔴 NOTHING IN THIS REPO CALLS PRE-PLACE. The runner is gated OFF and raises if enabled
-# without a recorded operator ruling. As of 2026-09-04:
-#   * the "passthrough" this work was briefed against HAS NOT LANDED — `/pre-place/tfex` is
-#     a TYPED endpoint from 2025-09-08, last touched 2026-06-11 [GIT];
-#   * TK-0445 §9 marks `/va/order/pre-place` ⛔ **write-path [INFERRED]**;
-#   * TK-0524 concluded its non-mutating status "cannot be settled without calling it" and
-#     "needs an explicit operator ruling";
-#   * a related pre-place call was DECLINED by the operator 2026-08-29 — for a reason that no
-#     longer applies ("the result would license nothing"), but the safety half stands.
+# 🔴 NOTHING IN THIS REPO CALLS PRE-PLACE — and not because a flag is off. NO RUNNER EXISTS.
+# This file is a DEFINITION; there is no `probe.py`, no client, no scheduler. The safety
+# property holds by absence of code, which is stronger than a flag, and `tests/
+# test_fee_observations.py` pins it: the probe must stay unreachable from the order path.
+#
+# ⚠️ An earlier revision of this header claimed "the runner is gated OFF and raises if
+# enabled without a recorded operator ruling." That described a component that was never
+# built. Corrected here rather than deleted, because a stated safety mechanism that does not
+# exist is the more dangerous of the two errors — it invites a reader to trust a gate.
+#
+# ── WHY IT IS NOT RUN, as of 2026-09-04. The gate was TWO conditions; ONE HAS NOW CLOSED. ──
+#
+#   ① non-mutating?  ✅ **RULED NON-MUTATING 2026-09-04** — TK-0524 §Ruling, on three
+#      independent lines (the bridge makes exactly one HTTP call, AST-verified; the venue
+#      defines pre-place and place as separate operations; the venue's own UI calls place
+#      separately in pre-place's `onSuccess`, so a submitting pre-place would make the
+#      vendor's client double-submit every order). Empirically: order list `[]` before and
+#      `[]` after a live call. TK-0445 §9's ⛔ `write-path [INFERRED]` marking was WRONG and
+#      was corrected in `e59cf07`.
+#      ➡️ SUPERSEDES this file's first revision, which cited that marking and TK-0524's
+#         earlier "cannot be settled without calling it / needs an explicit operator ruling".
+#
+#   ② passthrough landed?  ❌ **STILL OPEN — this is the live blocker.** The brief's
+#      condition was "until the passthrough has landed AND been ruled non-mutating". The
+#      passthrough has not landed: `/pre-place/tfex` is still a TYPED endpoint from
+#      2025-09-08 [GIT], and liberator-trading-api **PR #58 is OPEN, not merged**. Until it
+#      merges the TFEX route reaches the **SET** calculator (TK-0524), so a TFEX probe run
+#      today would return plausible SET numbers for a TFEX question — a wrong answer wearing
+#      the shape of a right one.
+#
+#   ③ Separately, a live call on a real-money account is an operator action. The 2026-08-29
+#      decline was on VALUE ("the result would license nothing"), which no longer holds —
+#      but running one is still not something this file self-authorises.
 #
 # 🔴 WHY THE PARAMETERS ARE PINNED. Pre-place returns PER-ORDER figures and takes order
 # parameters, so an observation series with drifting parameters is not a series — it is a
@@ -77,7 +101,11 @@ never = ["on demand", "per quote", "from any strategy path", "inside the order p
 #   notional-term  fee ~= 5.5 + 0.0006955 * price * multiplier  (cash-carry SSF)
 # Vary quantity at fixed price; vary price at fixed quantity. If the fee scales with quantity
 # but not price it is per contract; if it moves with price there is a notional term.
-# ⚠️ NOT RUN — blocked, see the header. Reported as blocked, never guessed.
+# ⚠️ NOT RUN — see the header: ① non-mutating is now RULED ✅, ② the passthrough has not
+# landed (PR #58 open) ❌. Reported as blocked on ②, never guessed. Note TK-0524's warning
+# against the opposite error: its single live SET observation (PTT 100 @ 35.00) is ONE point,
+# one notional, one side — enough to show a model and the venue disagree, NOT enough to
+# replace a constant. This matrix exists because structure needs several points, not one.
 vary_quantity = [1, 2, 5]
 vary_price_fraction = ["0.70", "0.85"]
 expected_discriminator = "fee(qty=5)/fee(qty=1) ~= 5 AND fee(0.85)/fee(0.70) ~= 1  =>  per contract"

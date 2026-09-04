@@ -161,9 +161,11 @@ def test_compare_reads_a_STALE_basis_deliberately(scratch: Path) -> None:
 def test_the_probe_is_NOT_REACHABLE_from_the_order_path() -> None:
     """🔴 Structural, not a comment. A cost path that can fail on a network call is not one.
 
-    Walks the real import graph: no module reachable from the router or the adapters may
-    import the probe definition. A docstring saying "not in the order path" guarantees
-    nothing; this fails if someone wires it in.
+    Checks the DIRECT imports of the three order-path entry modules (router + both
+    adapters). It is not a transitive walk, and saying so matters: it catches the realistic
+    regression — someone wiring the probe into the order path — but it would not catch a
+    probe imported two hops away. A docstring claiming "the real import graph" would
+    overstate what this guarantees, which is the failure mode the whole file is about.
     """
     import ast
 
