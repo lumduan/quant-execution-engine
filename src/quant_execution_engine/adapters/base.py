@@ -80,6 +80,26 @@ class Position(BaseModel):
     This was recorded before positions are implemented anywhere, precisely because it is
     decidable without ever observing a populated response — which is the whole value of
     lib-research's finding.
+
+    🔴 **THE MONEY BLOCK IS READ FROM THE VENUE AND NEVER RECOMPUTED.** Every derivation is
+    wrong by a *different* mechanism, all three measured in the umbrella's
+    ``docs/reference/liberator-account-reads.md`` §2.2a:
+
+    * **TFEX ``amount``/``marketVal`` carry a ×1000 contract multiplier; SET does not.**
+      ``ORIZ26`` at qty 1: ``avg`` 1.82 but ``amount`` 1820 — so ``price × qty`` is 1000×
+      wrong on TFEX. The multiplier is **PER-SERIES**; this platform's frozen rule is
+      *never assume 1000* (``DEFAULT_MULTIPLIER``, confirmed per series at regeneration).
+    * **``avg_price`` is ROUNDED — it is a display value, not the cost basis.** ``ORI``:
+      ``cost_amount/qty`` = 1.79109 against a reported ``avg`` of 1.79, so ``avg × qty``
+      is off by ฿1.09 on a ฿1,791 position. **Mark against ``cost_amount``.**
+    * ``unrealizedPLPercent`` is deliberately **not carried**: it is
+      ``unrealized_pl / cost_amount × 100`` — derived from two fields already here, and
+      its 0–100 scaling (not a fraction) is a foot-gun worth leaving at the boundary.
+
+    ⚠️ **Every money field is ``None``-able and ``None`` means "this venue did not report
+    it" — NEVER zero.** A ``None`` cost read as ``0`` yields infinite P&L, and it will look
+    like a number rather than like a failure. Same rule ``AccountInfo`` already carries for
+    the margin block.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -89,6 +109,15 @@ class Position(BaseModel):
     symbol: str
     net_qty: int
     side: Side | None = None
+
+    # ── the venue's money block, as sent ──────────────────────────────────────
+    # `cost_amount` is FIRST on purpose: it is the one to mark against, and the field a
+    # caller asking for "average price" actually wants ([[TK-0480]]).
+    cost_amount: Decimal | None = None
+    avg_price: Decimal | None = None  # ⚠️ ROUNDED display value — see the class docstring
+    market_price: Decimal | None = None
+    market_value: Decimal | None = None
+    unrealized_pl: Decimal | None = None
 
 
 class AccountType(StrEnum):

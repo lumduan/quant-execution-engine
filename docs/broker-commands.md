@@ -542,15 +542,34 @@ Where each stands:
   — the blocker was a missing capture, and **the capture was taken 2026-08-28** when the operator held
   real positions: `result.stock[]` is **17 fields on TFEX / 14 on SET**. See the block below, which is
   retained as the audit trail of why the route was withheld.
-* 🔑 **THE REMAINING GAP IS `avg`, NOT THE ROUTE.** `adapters/base.Position` carries
-  `{account, market, symbol, net_qty, side}` — **no cost basis, no marks**. The venue *does* send
-  `avg`, `marketPrice`, `marketVal`, `unrealizedPL`, `unrealizedPLPercent`; the adapter discards them.
-  So a caller needing **average price** — to mark against venue truth rather than its own fill record —
-  cannot get it from this route today, and that is a **contract enrichment**, not a new endpoint.
-  ⚠️ If you enrich it, read `docs/reference/liberator-account-reads.md` §2.2a first: TFEX `amount`
-  and `marketVal` carry a **×1000 contract multiplier** that SET does not, `avg` is rounded,
-  `unrealizedPLPercent` is 0–100, and a **zero-qty row is still returned**. The multiplier is
-  **per-series**, observed on a single row at `qty=1` — do not hardcode 1000.
+* ✅ **SHIPPED 2026-09-04 ([[TK-0480]]) — `Position` now carries the venue's money block.**
+  ~~THE REMAINING GAP IS `avg`, NOT THE ROUTE~~ — it is no longer a gap. `Position` carries
+  `{account, market, symbol, net_qty, side}` **plus** `cost_amount`, `avg_price`, `market_price`,
+  `market_value`, `unrealized_pl` — all `Decimal | None`, where **`None` means "this venue did not
+  report it", NEVER zero**.
+
+  🔑 **If you asked for "average price", the field you want is `cost_amount`, not `avg_price`.**
+  `avg_price` is the venue's **rounded display** value: on the captured `ORI` row it is `1.79`
+  while the true cost `amount` is `1791.09`, so `avg_price × net_qty` is **off by ฿1.09 on a
+  ฿1,791 position**. Mark against `cost_amount`.
+
+  🔴 **READ these fields; NEVER recompute them.** `price × qty` is **1000× wrong on TFEX** —
+  `amount`/`market_value` already carry the contract multiplier (`ORIZ26`: `avg` 1.82,
+  `amount` 1820) — and "just divide by 1000" is equally wrong, because the multiplier is
+  **per-series** (`DEFAULT_MULTIPLIER`, confirmed per series; the platform's frozen rule is
+  *never assume 1000*). Full semantics: `docs/reference/liberator-account-reads.md` §2.2a.
+
+  ⚠️ **Two deliberate omissions.** `unrealizedPLPercent` is **not** carried — it is
+  `unrealized_pl / cost_amount × 100`, derivable from two fields already here, and its 0–100
+  scaling (not a fraction) is a foot-gun better left at the boundary. And on **`streaming_pro`,
+  `unrealized_pl` is `None`**: that front sends `profit`/`percentProfit`/`realizeProfit`, and
+  mapping `profit` on the strength of its name would be inference rather than capture. What
+  would settle it: a populated row where `profit == marketValue − amount`.
+
+  ↻ **Also fixed in the same change: a zero-quantity row is no longer emitted as a position.**
+  The venue returns rows holding nothing that still carry `sideShow: "Long"` and
+  `positionShow: "Open"`, so the engine had been emitting phantom holdings with a populated
+  side. **Row count is not position count.**
 * ⚠️ **CORRECTED 2026-08-28 — this line conflated the CONTRACT with the VENUE.** It read: *"no cost
   basis, no market value, no unrealised P&L — `net_qty` only, and no marks anywhere in the
   contract"*. The **contract** part is true and unchanged: `adapters/base.Position` carries

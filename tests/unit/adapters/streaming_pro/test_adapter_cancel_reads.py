@@ -426,3 +426,70 @@ async def test_a_REPORTED_zero_margin_stays_zero_and_never_becomes_null() -> Non
     assert info.initial_margin is not None, "a REPORTED zero must not become null"
     assert info.maintenance_margin == Decimal("0.0")
     await adapter.aclose()
+
+
+# ------------------------------------------- TK-0480: this front SPELLS THEM DIFFERENTLY
+
+
+@respx.mock
+async def test_the_SET_row_money_block_uses_THIS_FRONTS_spellings() -> None:
+    """🔑 `averagePrice`/`marketValue`, NOT liberator's `avg`/`marketVal`.
+
+    The captured 20-field SET row spells four of the five money fields differently from the
+    liberator row. Mapping by analogy rather than by capture is exactly the defect that
+    produced the VenueOrderRow incident — a model written against one market's names that
+    silently defaulted the other's to zero. These are read off the capture.
+    """
+    respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=_TFEX_REFUSED)
+    respx.get(f"{_BASE}/portfolio", params={"account": "ACC"}).respond(
+        json={
+            "account": "ACC",
+            "positions": [
+                {
+                    "symbol": "PTT",
+                    "currentVolume": 300,
+                    "actualVolume": 300,
+                    "amount": 10530.75,
+                    "averagePrice": 35.1025,
+                    "marketPrice": 35.5,
+                    "marketValue": 10650.0,
+                    "profit": 119.25,
+                    "percentProfit": 1.13,
+                    "realizeProfit": 0,
+                }
+            ],
+        }
+    )
+    adapter = make_adapter()
+    p = (await adapter.get_positions("ACC"))[0]
+    assert p.cost_amount == Decimal("10530.75")
+    assert p.avg_price == Decimal("35.1025")
+    assert p.market_price == Decimal("35.5")
+    assert p.market_value == Decimal("10650.0")
+    # 🔴 DELIBERATELY UNMAPPED. `profit` is the obvious candidate for unrealised P&L, and
+    # "obvious from the name" is INFERENCE, not capture. What would confirm it: a populated
+    # row where `profit == marketValue - amount` — the identity liberator's `unrealizedPL`
+    # satisfies exactly. Note this fixture SATISFIES that identity (10650 - 10530.75 =
+    # 119.25) and the adapter still declines: the rule is "not established", not "looks
+    # plausible in one made-up row".
+    assert p.unrealized_pl is None
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_ZERO_QUANTITY_SET_row_is_NOT_a_position_here_either() -> None:
+    """The same rule as liberator's — row count is not position count."""
+    respx.get(f"{_BASE}/tfex/portfolio", params={"account": "ACC"}).respond(json=_TFEX_REFUSED)
+    respx.get(f"{_BASE}/portfolio", params={"account": "ACC"}).respond(
+        json={
+            "account": "ACC",
+            "positions": [
+                {"symbol": "PTT", "currentVolume": 300},
+                {"symbol": "GONE", "currentVolume": 0, "amount": 0, "averagePrice": 0},
+            ],
+        }
+    )
+    adapter = make_adapter()
+    positions = await adapter.get_positions("ACC")
+    assert [x.symbol for x in positions] == ["PTT"]
+    await adapter.aclose()
