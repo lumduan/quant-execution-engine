@@ -1,0 +1,245 @@
+# ════════════════════════════════════════════════════════════════════════════
+# THE canonical trading fee schedule for this platform. ONE file, no second copy.
+#
+# 🔴 WHY THIS EXISTS. On 2026-09-04 an audit found FIVE independent cost models in the
+# umbrella. Their multipliers and tick sizes were venue-correct; their FEES were not, and
+# the operator's real schedule existed only in conversation. The worst divergence:
+# `tfex-s50-multi-tf-swing/backtest/costs.py` charges 160 + 1 = 161 THB per S50 side against
+# an actual all-in of 21.40 — 7.52x, and 11.43x on the commission alone.
+#
+# 🔴 EVERY MONETARY VALUE IS A QUOTED STRING and is converted to Decimal at load. This tree
+# already carries a documented defect from YAML coercing `1.20` to a float and `no` to a
+# boolean; these are money, and a float here is a wrong number nobody sees.
+#
+# 🔴 THIS FILE CARRIES FACTS, NOT DECISIONS. Fees, multipliers, tick sizes. No cost logic,
+# no slippage, nothing conditioned on a strategy or an outcome — consumers keep their own
+# logic and read the facts from here. A test asserts the loader exposes no such function.
+#
+# ⚠️ DO NOT hand-edit the umbrella's docs/reference/fee-schedule.md. It is GENERATED from
+# this file, and a drift test fails if the two disagree. Two hand-maintained copies of the
+# same facts is the exact defect this file exists to end.
+#     regenerate:  uv run python scripts/generate_fee_doc.py
+# ════════════════════════════════════════════════════════════════════════════
+
+schema_version = 1
+
+[meta]
+canonical_path = "src/quant_execution_engine/reference/fee_schedule.toml"
+generated_doc  = "docs/reference/fee-schedule.md"   # in the UMBRELLA repo
+currency       = "THB"
+
+# ─────────────────────────── S50 index FUTURES ───────────────────────────
+[instrument.s50_futures]
+label        = "SET50 Index Futures"
+venue        = "TFEX"
+ticker       = "S50"
+broker       = "liberator"
+
+  [instrument.s50_futures.commission]
+  value        = "14"
+  unit         = "THB per contract per side"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note = """
+🔴 OPERATOR-SUPPLIED, with NO in-tree corroboration and no published source this session
+could reach. Volume tiers exist down to 8 THB; the operator has instructed that the FLAT 14
+be used as the conservative basis for all calculations, so a tier discount must never be
+assumed here.
+⚠️ Do not let this read as venue-fetched. The SSF coefficients in cash-and-carry were once
+described as "seeds" when they were broker facts, and the mis-description survived because
+nothing stated the provenance. This line is that statement."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_futures.exchange_clearing]
+  value        = "6"
+  unit         = "THB per contract per side"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note = """
+COMBINED exchange + clearing, operator-supplied.
+⚠️ The venue publishes a CAP on the EXCHANGE COMPONENT ALONE — "Maximum of THB 7 per
+contract per side" (futures). 6 sits under that cap, but the two are DIFFERENT QUANTITIES:
+a cap on one component versus a combined actual charge. Treating the venue line as
+corroboration of this figure would be a category error, so it is recorded as context, not
+as a source. See `venue_exchange_fee_cap` below, which IS venue-fetched."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_futures.vat_rate]
+  value        = "0.07"
+  unit         = "fraction, applied to (commission + exchange_clearing)"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note         = "Thai VAT, 7%. Applied to the SUM of the two fee components, not to each."
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_futures.all_in_per_side]
+  value        = "21.40"
+  unit         = "THB per contract per side"
+  source_kind  = "derived"
+  source       = "(commission + exchange_clearing) * (1 + vat_rate)"
+  corroborated = true
+  note = """
+DERIVED, and a test pins the arithmetic in Decimal: (14 + 6) * 1.07 == 21.40 exactly.
+If any component is edited without this figure, the test fails — which is the point."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_futures.contract_multiplier]
+  value        = "200"
+  unit         = "THB per index point"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
+  verbatim     = "Contract Multiplier | THB 200 per index point"
+  corroborated = true
+  note = """
+Rendered with headless Chrome: the page is a Nuxt app and the served HTML carries NO spec
+text at all — a plain curl returns HTTP 200 and 144 KB containing none of these values.
+⛔ NOT taken from the SP bridge's /instrument-info: that is the apigwcld / proto-REST plane,
+prohibited by standing operator ruling (TK-0137)."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 365
+
+  [instrument.s50_futures.tick_size]
+  value        = "0.1"
+  unit         = "index point"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
+  verbatim     = "Minimum Price Fluctuations | 0.1 index point  (or THB 20 per contract)"
+  corroborated = true
+  note         = "0.1 index point x THB 200/point = THB 20 per contract, as the venue states."
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 365
+
+  [instrument.s50_futures.venue_exchange_fee_cap]
+  value        = "7"
+  unit         = "THB per contract per side (MAXIMUM, exchange component only)"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
+  verbatim     = "Exchange Fee | Maximum of THB 7 per contract per side"
+  corroborated = true
+  note = """
+A CAP on ONE COMPONENT — not what is actually charged, and not comparable to
+`exchange_clearing` above without saying so. Recorded because it is the only venue-published
+figure bearing on the fee side at all."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 365
+
+# ─────────────────────────── S50 index OPTIONS ───────────────────────────
+[instrument.s50_options]
+label        = "SET50 Index Options"
+venue        = "TFEX"
+ticker       = "S50C (call) / S50P (put)"
+broker       = "liberator"
+
+  [instrument.s50_options.commission]
+  value        = "14"
+  unit         = "THB per contract per side"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note         = "Same schedule as futures; flat 14 as the conservative basis, tiers not assumed."
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_options.exchange_clearing]
+  value        = "6"
+  unit         = "THB per contract per side"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note = """
+🔴 READ THIS ONE CAREFULLY. The venue publishes "Maximum of THB 5 per contract per side" as
+the OPTIONS exchange fee — LOWER than this combined 6. That is not a contradiction: 6 is
+exchange + clearing together, so the exchange part must be at most 5 with clearing making up
+the rest. It IS, however, proof that this figure cannot be read as an exchange fee alone,
+and the futures/options caps differ (7 vs 5) while the operator's combined figure does not.
+If this schedule is ever refined into separate exchange and clearing components, start here."""
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_options.vat_rate]
+  value        = "0.07"
+  unit         = "fraction, applied to (commission + exchange_clearing)"
+  source_kind  = "operator_supplied"
+  source       = "operator, verbal — recorded into this file 2026-09-04"
+  corroborated = false
+  note         = "Thai VAT, 7%."
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_options.all_in_per_side]
+  value        = "21.40"
+  unit         = "THB per contract per side"
+  source_kind  = "derived"
+  source       = "(commission + exchange_clearing) * (1 + vat_rate)"
+  corroborated = true
+  note         = "Same arithmetic as futures; pinned by the same Decimal test."
+  recorded_utc = "2026-09-04T08:37:26Z"
+  max_age_days = 180
+
+  [instrument.s50_options.contract_multiplier]
+  value        = "200"
+  unit         = "THB per index point"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
+  verbatim     = "Contract Multiplier | THB 200 per index point"
+  corroborated = true
+  note         = "Same multiplier as the futures, fetched separately rather than assumed."
+  recorded_utc = "2026-09-04T08:37:48Z"
+  max_age_days = 365
+
+  [instrument.s50_options.tick_size]
+  value        = "0.10"
+  unit         = "index point"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
+  verbatim     = "Minimum Price Fluctuations | 0.10 index point"
+  corroborated = true
+  note = """
+The venue writes it "0.10" here and "0.1" on the futures page. Same value; both are recorded
+exactly as published rather than normalised, because a verbatim field that has been tidied is
+no longer verbatim."""
+  recorded_utc = "2026-09-04T08:37:48Z"
+  max_age_days = 365
+
+  [instrument.s50_options.venue_exchange_fee_cap]
+  value        = "5"
+  unit         = "THB per contract per side (MAXIMUM, exchange component only)"
+  source_kind  = "venue_fetched"
+  source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
+  verbatim     = "Exchange Fee | Maximum of THB 5 per contract per side"
+  corroborated = true
+  note         = "Differs from the futures cap of 7 — see this instrument's exchange_clearing note."
+  recorded_utc = "2026-09-04T08:37:48Z"
+  max_age_days = 365
+
+# ─────────────────────────── GAPS — recorded, NOT filled ───────────────────────────
+# The brief's instruction: cover other classes only if their facts reach the same standard,
+# and otherwise record the gap. These do not reach it. Nothing uncorroborated becomes
+# canonical — that is the whole point of the file.
+
+[[gap]]
+instrument   = "single_stock_futures"
+label        = "SET single-stock futures (SSF)"
+what_exists  = "fut_fee = 5.5 + 0.0006955*price*multiplier ; stk_fee = 0.000569*price*multiplier (VAT-inclusive)"
+where        = "strategies/cash-and-carry-set-tfex/src/cash_and_carry_set_tfex/signal/cost.py (copied verbatim into plans/cash-and-carry-set-tfex/poc/poc1_basis_decode.py)"
+why_not_canonical = """
+Attributed in-tree to "Liberator's published schedule" (operator, 2026-08-18), but that
+schedule is not reachable from this session and has no in-tree corroboration. The same file
+records that these coefficients were once mis-described as "seeds" — so its provenance has
+already been wrong once, which is a reason for care rather than for trust."""
+what_would_close_it = "The broker's published schedule, or a fill-level reconciliation against banked commission actuals."
+
+[[gap]]
+instrument   = "set_equities"
+label        = "SET listed equities"
+what_exists  = "commission 0.0015 ; tsd_clearing 0.00001 ; vat_rate 0.07 (fractions of trade value)"
+where        = "strategies/csm-set/configs/live-settings.yaml"
+why_not_canonical = "A configuration default carrying NO stated source of any kind."
+what_would_close_it = "The broker's published equity commission schedule, or a fill-level reconciliation."
