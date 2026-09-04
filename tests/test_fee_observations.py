@@ -119,14 +119,13 @@ def test_resolution_returns_the_RIGHT_entry_on_EACH_SIDE_of_the_boundary(
         ),
     )
     s = load_fee_schedule(scratch)
-    kw = {"allow_stale": True}
-    assert s.resolve("s50_futures", "commission", on=date(2026, 9, 9), **kw).value == Decimal("14")
-    assert s.resolve("s50_futures", "commission", on=date(2026, 9, 10), **kw).value == Decimal(
-        "16.50"
-    )
-    assert s.resolve("s50_futures", "commission", on=date(2026, 9, 11), **kw).value == Decimal(
-        "16.50"
-    )
+
+    def in_force_on(day: date) -> Decimal:
+        return s.resolve("s50_futures", "commission", on=day, allow_stale=True).value
+
+    assert in_force_on(date(2026, 9, 9)) == Decimal("14"), "the day BEFORE: still the old basis"
+    assert in_force_on(date(2026, 9, 10)) == Decimal("16.50"), "the boundary day: the new basis"
+    assert in_force_on(date(2026, 9, 11)) == Decimal("16.50"), "and after"
 
 
 def test_resolve_REQUIRES_a_date_rather_than_defaulting_to_today() -> None:
