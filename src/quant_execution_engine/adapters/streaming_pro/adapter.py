@@ -272,7 +272,9 @@ class StreamingProAdapter(BrokerAdapter):
                 continue
             symbol = raw_row.get("symbol")
             qty = _coerce_int(raw_row.get("currentVolume", raw_row.get("actualVolume")))
-            if isinstance(symbol, str) and qty is not None:
+            # 🔴 A zero-quantity row is NOT a holding — the same rule the liberator adapter
+            # applies (§2.2a④). Row count is not position count.
+            if isinstance(symbol, str) and qty:
                 positions.append(
                     Position(
                         account=account,
@@ -283,6 +285,24 @@ class StreamingProAdapter(BrokerAdapter):
                         # field — None means "the venue did not distinguish", which is
                         # exactly what it did.
                         side=None,
+                        # ⚠️ THIS FRONT SPELLS THEM DIFFERENTLY from liberator's — the
+                        # captured 20-field SET row uses `averagePrice`/`marketValue`
+                        # where liberator sends `avg`/`marketVal`. Mapping by analogy
+                        # instead of by capture is the defect that produced the
+                        # VenueOrderRow incident; these four are read off the capture.
+                        cost_amount=_opt_decimal(raw_row, "amount"),
+                        avg_price=_opt_decimal(raw_row, "averagePrice"),
+                        market_price=_opt_decimal(raw_row, "marketPrice"),
+                        market_value=_opt_decimal(raw_row, "marketValue"),
+                        # 🔴 unrealized_pl is LEFT UNMAPPED, deliberately. The row carries
+                        # `profit`, `percentProfit` and `realizeProfit`; `profit` is the
+                        # obvious candidate, and "obvious from the name" is INFERENCE, not
+                        # capture — the house rule that produced every correct parse here.
+                        # WHAT WOULD CONFIRM IT: one populated row where
+                        #   profit == marketValue - amount
+                        # which is the identity liberator's `unrealizedPL` satisfies
+                        # exactly. Until then None means "we have not established it",
+                        # which is honest; a wrong P&L would not be.
                     )
                 )
         return positions

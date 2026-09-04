@@ -542,3 +542,129 @@ def test_new_read_codes_are_mapped_not_silently_400() -> None:
     # and they must stay distinct: "this account does not exist" and "we cannot read positions
     # at all" are different failures, and collapsing them would hide one behind the other.
     assert LiberatorAccountNotFound.code != LiberatorPositionsUncaptured.code
+
+
+# ------------------------------------------- TK-0480: the venue money block
+
+
+# 🔑 The values below are the REAL captured rows from the umbrella's
+# `docs/reference/liberator-account-reads.md` §2.2 (2026-08-28T04:03:55Z) — not invented.
+# Fixtures built from inference test the inference; these test the venue.
+_CAPTURED_SET_ORI = {
+    "symbol": "ORI",
+    "symbolDisplay": "ORI",
+    "sideShow": "",
+    "actualVol": 1000,
+    "avaiVol": 1000,
+    "avg": 1.79,
+    "marketPrice": 1.8,
+    "unrealizedPL": 8.91,
+    "unrealizedPLPercent": 0.4974624390734134,
+    "realizedPL": 0,
+    "amount": 1791.09,
+    "marketVal": 1800,
+}
+_CAPTURED_TFEX_ORIZ26 = {
+    "symbol": "ORIZ26",
+    "symbolDisplay": "ORIZ26",
+    "sideShow": "Short",
+    "actualVol": 1,
+    "avg": 1.82,
+    "marketPrice": 1.82,
+    "unrealizedPL": 0,
+    "unrealizedPLPercent": 0,
+    "amount": 1820,
+    "marketVal": 1820,
+    "positionShow": "Open",
+}
+# ④ A zero-quantity row that is NOT a holding — and does not look empty.
+_CAPTURED_PHANTOM = {
+    "symbol": "SAWADU26",
+    "symbolDisplay": "SAWADU26",
+    "sideShow": "Long",
+    "actualVol": 0,
+    "avg": 0,
+    "amount": 0,
+    "marketVal": 0,
+    "marketPrice": 0,
+    "positionShow": "Open",
+}
+
+
+@respx.mock
+async def test_avg_is_ROUNDED_and_cost_amount_is_the_truth() -> None:
+    """🔑 The headline of [[TK-0480]], on the real captured SET row.
+
+    The ticket asked for "average price". `avg` is a **display** value: ORI's true cost is
+    `amount` = 1791.09, while `avg` = 1.79 gives `avg x qty` = 1790.00 — **off by ฿1.09 on a
+    ฿1,791 position**. Shipping `avg` alone would have handed back the rounded number as if
+    it were the cost basis.
+
+    Both are carried, and this test pins that they DISAGREE — an adapter that "helpfully"
+    reconciled them would destroy the very distinction the field pair exists to preserve.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_SET}").respond(json=_portfolio(_CAPTURED_SET_ORI))
+    adapter = make_adapter()
+    p = (await adapter.get_positions(_ACCT_SET))[0]
+    assert p.cost_amount == Decimal("1791.09")
+    assert p.avg_price == Decimal("1.79")
+    assert p.avg_price * p.net_qty == Decimal("1790.00")
+    assert p.cost_amount - (p.avg_price * p.net_qty) == Decimal("1.09")
+    assert p.market_price == Decimal("1.8") and p.market_value == Decimal("1800")
+    assert p.unrealized_pl == Decimal("8.91")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_the_TFEX_x1000_MULTIPLIER_is_passed_through_UNTOUCHED() -> None:
+    """🔴 `amount`/`marketVal` already carry the contract multiplier. Do not normalise.
+
+    ORIZ26 at qty 1: `avg` 1.82 but `amount` 1820 — a ratio of exactly 1000. A `price x qty`
+    derivation is 1000x wrong on TFEX, and "just divide by 1000" is equally wrong because the
+    multiplier is **PER-SERIES** (`DEFAULT_MULTIPLIER`, confirmed per series; the platform's
+    frozen rule is *never assume 1000*).
+
+    So the only correct behaviour is to carry what the venue sent, and that is what this pins.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(json=_portfolio(_CAPTURED_TFEX_ORIZ26))
+    adapter = make_adapter()
+    p = (await adapter.get_positions(_ACCT_TFEX))[0]
+    assert p.cost_amount == Decimal("1820")
+    assert p.avg_price == Decimal("1.82")
+    assert p.cost_amount / (p.avg_price * p.net_qty) == Decimal("1000")
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_a_ZERO_QUANTITY_row_is_NOT_a_position() -> None:
+    """④ The phantom row — and note what it carries while holding nothing.
+
+    `SAWADU26` came back `actualVol: 0` with `sideShow: "Long"` AND `positionShow: "Open"`
+    populated. **Row count is not position count**, and neither field may decide whether a
+    position exists. Before this fix the engine emitted it, so a caller reading venue truth
+    would report a long that is not there.
+    """
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_TFEX}").respond(
+        json=_portfolio(_CAPTURED_TFEX_ORIZ26, _CAPTURED_PHANTOM)
+    )
+    adapter = make_adapter()
+    positions = await adapter.get_positions(_ACCT_TFEX)
+    assert [p.symbol for p in positions] == ["ORIZ26"], "the zero-qty row must not survive"
+    await adapter.aclose()
+
+
+@respx.mock
+async def test_an_ABSENT_money_field_is_None_and_NEVER_zero() -> None:
+    """A venue that omits the block must not read as a free position.
+
+    `None` = "not reported"; `Decimal(0)` = "reported as zero". Conflating them yields an
+    infinite P&L that looks like a number rather than like a failure — the same rule
+    `AccountInfo` carries for its margin block.
+    """
+    bare = {"symbol": "ZZZ", "symbolDisplay": "ZZZ", "sideShow": "", "actualVol": 5}
+    respx.get(f"{_BASE}/portfolio/get/{_ACCT_SET}").respond(json=_portfolio(bare))
+    adapter = make_adapter()
+    p = (await adapter.get_positions(_ACCT_SET))[0]
+    assert p.cost_amount is None and p.avg_price is None
+    assert p.market_price is None and p.market_value is None and p.unrealized_pl is None
+    await adapter.aclose()

@@ -149,6 +149,15 @@ def _position(account: str, market: Market, raw: dict[str, Any]) -> Position:
         symbol=symbol,
         net_qty=qty,
         side=_POSITION_SIDES.get(side_show or ""),
+        # 🔴 READ, NEVER RECOMPUTE — §2.2a. `amount`/`marketVal` already carry the TFEX
+        # ×1000 contract multiplier (per-series; never assume 1000), and `avg` is a
+        # ROUNDED display value: ORI's amount/qty is 1.79109 against a reported avg of
+        # 1.79. Deriving cost from `avg × qty` is off by ฿1.09 on a ฿1,791 position.
+        cost_amount=_opt_decimal(raw, "amount"),
+        avg_price=_opt_decimal(raw, "avg"),
+        market_price=_opt_decimal(raw, "marketPrice"),
+        market_value=_opt_decimal(raw, "marketVal"),
+        unrealized_pl=_opt_decimal(raw, "unrealizedPL"),
     )
 
 
@@ -412,7 +421,17 @@ class LiberatorAdapter(BrokerAdapter):
             raise LiberatorTransportError(
                 f"liberator portfolio: result.stock is {type(rows).__name__}, not a list"
             )
-        return [_position(account, market, raw) for raw in rows if isinstance(raw, dict)]
+        # 🔴 A ZERO-QUANTITY ROW IS NOT A HOLDING, and it does not look empty — §2.2a④.
+        # The captured `SAWADU26` came back `actualVol: 0, avg: 0, amount: 0` while still
+        # carrying `sideShow: "Long"` and `positionShow: "Open"`. **Row count is not
+        # position count**, and neither `sideShow` nor `positionShow` may decide whether a
+        # position exists — a caller trusting the row reports a long that is not there.
+        #
+        # ⚠️ Filtered HERE rather than left to callers: this route is the venue-truth
+        # surface, and a phantom row with a populated side is precisely the kind of
+        # confident-looking wrong answer it exists to eliminate.
+        parsed = (_position(account, market, raw) for raw in rows if isinstance(raw, dict))
+        return [p for p in parsed if p.net_qty != 0]
 
     async def get_account(self, account: str) -> AccountInfo:
         """Buying power for ``account``, from ``GET /va/profile``.
