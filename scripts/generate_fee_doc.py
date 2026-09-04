@@ -44,9 +44,20 @@ def render(s: FeeSchedule) -> str:
     a("> cd quant-execution-engine && uv run python scripts/generate_fee_doc.py")
     a("> ```")
     a("")
-    a("This document carries **facts** — fees, multipliers, tick sizes. It carries **no cost")
-    a("logic, no slippage model, and nothing conditioned on a strategy or an outcome**.")
-    a("Consumers keep their own logic and read the facts from here.")
+    a("🔴 **This is a POLICY, not a record of facts.** The broker runs promotions, so the rate")
+    a("actually charged varies day to day. This is a **fixed, deliberately conservative basis**")
+    a("pinned at the most expensive tier, so every strategy calculation is deterministic and")
+    a("never flatters itself. What is *actually* charged lives in `execution.fee_observations`")
+    a("and is checked against this **one-sidedly**: an observation at or below the basis is")
+    a("normal and silent; one **above** it means the basis has stopped being conservative,")
+    a("which alerts and appends a new dated entry.")
+    a("")
+    a("**Entries are an append-only dated series.** Resolve the entry in force for **the period")
+    a("you are computing over**, never simply the newest — that is what keeps an old result")
+    a("reconstructible. Adoption appends; it never overwrites.")
+    a("")
+    a("It still carries **no cost logic, no slippage model, and nothing conditioned on a")
+    a("strategy or an outcome**. Consumers keep their own logic and read the basis from here.")
     a("")
     a(f"Currency **{s.currency}** · schema v{s.schema_version}")
     a("")
@@ -89,15 +100,21 @@ def render(s: FeeSchedule) -> str:
         a("")
         a(f"`{key}` · venue **{inst.venue}** · ticker **{inst.ticker}** · broker **{inst.broker}**")
         a("")
-        a("| field | value | unit | provenance | corroborated | recorded | max age |")
-        a("|---|---|---|---|---|---|---|")
-        for fk, e in inst.entries.items():
-            a(
-                f"| `{fk}` | **{e.value}** | {e.unit} | {_KIND[e.source_kind]} | "
-                f"{'yes' if e.corroborated else '**no**'} | {e.recorded_utc:%Y-%m-%d} | "
-                f"{e.max_age_days}d |"
-            )
-        for fk, e in inst.entries.items():
+        a(
+            "| field | effective from | value | unit | provenance | "
+            "corroborated | recorded | max age |"
+        )
+        a("|---|---|---|---|---|---|---|---|")
+        for fk, entries in inst.series.items():
+            for e in entries:
+                a(
+                    f"| `{fk}` | `{e.effective_from}` | **{e.value}** | {e.unit} | "
+                    f"{_KIND[e.source_kind]} | "
+                    f"{'yes' if e.corroborated else '**no**'} | {e.recorded_utc:%Y-%m-%d} | "
+                    f"{e.max_age_days}d |"
+                )
+        for fk, entries in inst.series.items():
+            e = entries[-1]
             if e.verbatim or e.note:
                 a("")
                 a(f"**`{fk}`** — {e.source}")

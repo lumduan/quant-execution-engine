@@ -11,9 +11,29 @@
 # already carries a documented defect from YAML coercing `1.20` to a float and `no` to a
 # boolean; these are money, and a float here is a wrong number nobody sees.
 #
-# 🔴 THIS FILE CARRIES FACTS, NOT DECISIONS. Fees, multipliers, tick sizes. No cost logic,
-# no slippage, nothing conditioned on a strategy or an outcome — consumers keep their own
-# logic and read the facts from here. A test asserts the loader exposes no such function.
+# 🔴 THIS FILE IS A POLICY, NOT A RECORD OF FACTS — corrected 2026-09-04.
+#
+# It was headed "FACTS, NOT DECISIONS" for one day, and that was wrong ON ITS OWN TERMS: the
+# commission entry already said the operator "has instructed that the FLAT 14 be used as the
+# conservative basis for all calculations", which is a decision. The broker runs promotions,
+# so the rate ACTUALLY CHARGED varies day to day; a single number cannot be a fact about it.
+#
+# What this file is: a **fixed, deliberately conservative basis pinned at the most expensive
+# tier**, so every strategy calculation is deterministic and never flatters itself. Strategies
+# read this and ONLY this. Cost calculation must never depend on a network call succeeding.
+#
+# What the broker actually charges lives in `execution.fee_observations` and is compared
+# against this file ONE-SIDEDLY (see `EFFECTIVE-DATED ENTRIES` below).
+#
+# Still true, and still enforced by tests: no cost logic, no slippage, nothing conditioned on
+# a strategy or an outcome. Consumers keep their own logic and read the basis from here.
+#
+# ── EFFECTIVE-DATED ENTRIES ──────────────────────────────────────────────────────────
+# Every field is an APPEND-ONLY LIST of entries, each with `effective_from`. Adoption of a
+# higher observed rate APPENDS; it NEVER overwrites. Overwriting would silently make results
+# computed before and after incomparable — and this project has just spent a week on a study
+# whose conclusion rested on a cost basis nobody could reconstruct. Consumers resolve the
+# entry in force for the PERIOD THEY ARE COMPUTING OVER, not the newest one.
 #
 # ⚠️ DO NOT hand-edit the umbrella's docs/reference/fee-schedule.md. It is GENERATED from
 # this file, and a drift test fails if the two disagree. Two hand-maintained copies of the
@@ -35,8 +55,9 @@ venue        = "TFEX"
 ticker       = "S50"
 broker       = "liberator"
 
-  [instrument.s50_futures.commission]
+  [[instrument.s50_futures.commission]]
   value        = "14"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -52,8 +73,9 @@ nothing stated the provenance. This line is that statement."""
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_futures.exchange_clearing]
+  [[instrument.s50_futures.exchange_clearing]]
   value        = "6"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -68,8 +90,9 @@ as a source. See `venue_exchange_fee_cap` below, which IS venue-fetched."""
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_futures.vat_rate]
+  [[instrument.s50_futures.vat_rate]]
   value        = "0.07"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "fraction, applied to (commission + exchange_clearing)"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -78,8 +101,9 @@ as a source. See `venue_exchange_fee_cap` below, which IS venue-fetched."""
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_futures.all_in_per_side]
+  [[instrument.s50_futures.all_in_per_side]]
   value        = "21.40"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "derived"
   source       = "(commission + exchange_clearing) * (1 + vat_rate)"
@@ -90,8 +114,9 @@ If any component is edited without this figure, the test fails — which is the 
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_futures.contract_multiplier]
+  [[instrument.s50_futures.contract_multiplier]]
   value        = "200"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per index point"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
@@ -105,8 +130,9 @@ prohibited by standing operator ruling (TK-0137)."""
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 365
 
-  [instrument.s50_futures.tick_size]
+  [[instrument.s50_futures.tick_size]]
   value        = "0.1"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "index point"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
@@ -116,8 +142,9 @@ prohibited by standing operator ruling (TK-0137)."""
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 365
 
-  [instrument.s50_futures.venue_exchange_fee_cap]
+  [[instrument.s50_futures.venue_exchange_fee_cap]]
   value        = "7"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side (MAXIMUM, exchange component only)"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
@@ -137,8 +164,9 @@ venue        = "TFEX"
 ticker       = "S50C (call) / S50P (put)"
 broker       = "liberator"
 
-  [instrument.s50_options.commission]
+  [[instrument.s50_options.commission]]
   value        = "14"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -147,8 +175,9 @@ broker       = "liberator"
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_options.exchange_clearing]
+  [[instrument.s50_options.exchange_clearing]]
   value        = "6"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -163,8 +192,9 @@ If this schedule is ever refined into separate exchange and clearing components,
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_options.vat_rate]
+  [[instrument.s50_options.vat_rate]]
   value        = "0.07"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "fraction, applied to (commission + exchange_clearing)"
   source_kind  = "operator_supplied"
   source       = "operator, verbal — recorded into this file 2026-09-04"
@@ -173,8 +203,9 @@ If this schedule is ever refined into separate exchange and clearing components,
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_options.all_in_per_side]
+  [[instrument.s50_options.all_in_per_side]]
   value        = "21.40"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side"
   source_kind  = "derived"
   source       = "(commission + exchange_clearing) * (1 + vat_rate)"
@@ -183,8 +214,9 @@ If this schedule is ever refined into separate exchange and clearing components,
   recorded_utc = "2026-09-04T08:37:26Z"
   max_age_days = 180
 
-  [instrument.s50_options.contract_multiplier]
+  [[instrument.s50_options.contract_multiplier]]
   value        = "200"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per index point"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
@@ -194,8 +226,9 @@ If this schedule is ever refined into separate exchange and clearing components,
   recorded_utc = "2026-09-04T08:37:48Z"
   max_age_days = 365
 
-  [instrument.s50_options.tick_size]
+  [[instrument.s50_options.tick_size]]
   value        = "0.10"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "index point"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
@@ -208,8 +241,9 @@ no longer verbatim."""
   recorded_utc = "2026-09-04T08:37:48Z"
   max_age_days = 365
 
-  [instrument.s50_options.venue_exchange_fee_cap]
+  [[instrument.s50_options.venue_exchange_fee_cap]]
   value        = "5"
+  effective_from = "2026-09-04"   # the day this basis was first recorded
   unit         = "THB per contract per side (MAXIMUM, exchange component only)"
   source_kind  = "venue_fetched"
   source       = "https://www.tfex.co.th/en/products/equity/set50-index-options/contract-specification"
