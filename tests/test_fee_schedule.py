@@ -42,11 +42,21 @@ def test_every_entry_carries_provenance_and_a_staleness_rule() -> None:
     """No entry may exist without saying where it came from and when it expires."""
     s = load_fee_schedule()
     for inst in s.instruments.values():
-        for key, e in inst.entries.items():
-            assert e.source.strip(), f"{key} has no source"
-            assert e.source_kind in {"operator_supplied", "venue_fetched", "derived"}
-            assert e.max_age_days > 0, f"{key} has no staleness rule"
-            assert e.recorded_utc.tzinfo is not None, f"{key} recorded_utc is naive"
+        for key, entries in inst.series.items():
+            assert entries, f"{key} has an EMPTY series"
+            for e in entries:
+                assert e.source.strip(), f"{key} has no source"
+                assert e.source_kind in {
+                    "operator_supplied",
+                    "venue_fetched",
+                    "derived",
+                    "observed_adopted",
+                }
+                assert e.max_age_days > 0, f"{key} has no staleness rule"
+                assert e.recorded_utc.tzinfo is not None, f"{key} recorded_utc is naive"
+                # Every entry must say WHEN it takes effect — the property that keeps an
+                # old result reconstructible after an adoption appends.
+                assert e.effective_from is not None, f"{key} has no effective_from"
 
 
 def test_operator_supplied_figures_are_LABELLED_as_uncorroborated() -> None:
@@ -67,10 +77,11 @@ def test_venue_fetched_figures_carry_a_VERBATIM_quote_and_a_url() -> None:
     """A 'fetched' figure with no quote is indistinguishable from a remembered one."""
     s = load_fee_schedule()
     for inst in s.instruments.values():
-        for key, e in inst.entries.items():
-            if e.source_kind == "venue_fetched":
-                assert e.source.startswith("https://"), f"{key}: source is not a URL"
-                assert e.verbatim, f"{key}: venue-fetched but quotes nothing"
+        for key, entries in inst.series.items():
+            for e in entries:
+                if e.source_kind == "venue_fetched":
+                    assert e.source.startswith("https://"), f"{key}: source is not a URL"
+                    assert e.verbatim, f"{key}: venue-fetched but quotes nothing"
 
 
 def test_the_venue_multiplier_and_tick_match_their_verbatim_quotes() -> None:
@@ -127,7 +138,8 @@ def test_an_UNQUOTED_number_in_the_toml_is_REFUSED(tmp_path: Path) -> None:
     bad.write_text(
         'schema_version = 1\n[meta]\ncurrency = "THB"\n'
         '[instrument.x]\nlabel = "x"\nvenue = "v"\nticker = "t"\nbroker = "b"\n'
-        '[instrument.x.commission]\nvalue = 14.0\nunit = "u"\n'
+        '[[instrument.x.commission]]\nvalue = 14.0\nunit = "u"\n'
+        'effective_from = "2026-09-04"\n'
         'source_kind = "operator_supplied"\nsource = "s"\ncorroborated = false\n'
         'recorded_utc = "2026-09-04T00:00:00Z"\nmax_age_days = 1\n',
         encoding="utf-8",

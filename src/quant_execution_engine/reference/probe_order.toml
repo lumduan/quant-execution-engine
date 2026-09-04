@@ -1,0 +1,111 @@
+# ════════════════════════════════════════════════════════════════════════════
+# THE CANONICAL FEE PROBE ORDER — a definition, not a running thing.
+#
+# 🔴 NOTHING IN THIS REPO CALLS PRE-PLACE — and not because a flag is off. NO RUNNER EXISTS.
+# This file is a DEFINITION; there is no `probe.py`, no client, no scheduler. The safety
+# property holds by absence of code, which is stronger than a flag, and `tests/
+# test_fee_observations.py` pins it: the probe must stay unreachable from the order path.
+#
+# ⚠️ An earlier revision of this header claimed "the runner is gated OFF and raises if
+# enabled without a recorded operator ruling." That described a component that was never
+# built. Corrected here rather than deleted, because a stated safety mechanism that does not
+# exist is the more dangerous of the two errors — it invites a reader to trust a gate.
+#
+# ── WHY IT IS NOT RUN, as of 2026-09-04. The gate was TWO conditions; ONE HAS NOW CLOSED. ──
+#
+#   ① non-mutating?  ✅ **RULED NON-MUTATING 2026-09-04** — TK-0524 §Ruling, on three
+#      independent lines (the bridge makes exactly one HTTP call, AST-verified; the venue
+#      defines pre-place and place as separate operations; the venue's own UI calls place
+#      separately in pre-place's `onSuccess`, so a submitting pre-place would make the
+#      vendor's client double-submit every order). Empirically: order list `[]` before and
+#      `[]` after a live call. TK-0445 §9's ⛔ `write-path [INFERRED]` marking was WRONG and
+#      was corrected in `e59cf07`.
+#      ➡️ SUPERSEDES this file's first revision, which cited that marking and TK-0524's
+#         earlier "cannot be settled without calling it / needs an explicit operator ruling".
+#
+#   ② passthrough landed?  ❌ **STILL OPEN — this is the live blocker.** The brief's
+#      condition was "until the passthrough has landed AND been ruled non-mutating". The
+#      passthrough has not landed: `/pre-place/tfex` is still a TYPED endpoint from
+#      2025-09-08 [GIT], and liberator-trading-api **PR #58 is OPEN, not merged**. Until it
+#      merges the TFEX route reaches the **SET** calculator (TK-0524), so a TFEX probe run
+#      today would return plausible SET numbers for a TFEX question — a wrong answer wearing
+#      the shape of a right one.
+#
+#   ③ Separately, a live call on a real-money account is an operator action. The 2026-08-29
+#      decline was on VALUE ("the result would license nothing"), which no longer holds —
+#      but running one is still not something this file self-authorises.
+#
+# 🔴 WHY THE PARAMETERS ARE PINNED. Pre-place returns PER-ORDER figures and takes order
+# parameters, so an observation series with drifting parameters is not a series — it is a
+# pile of unrelated numbers. Every parameter below is fixed, and the ones that cannot be
+# fixed (the symbol) carry an explicit roll rule and are stamped into every stored row.
+# ════════════════════════════════════════════════════════════════════════════
+
+schema_version = 1
+
+[probe]
+side = "Long"
+# 🔑 BUY/Long, quantity 1 — the smallest unit. Quantity is the variable the structure matrix
+# varies, so the daily baseline must sit at the floor: if the baseline itself were 5, a
+# per-contract fee and a notional fee would both scale from it and the daily series would
+# carry no structural information at all.
+quantity = 1
+position = "Open"
+validity_type = "Day"
+price_type = "Limit"
+
+# 🔴 PRICE RULE — a FRACTION of the front-month settlement, never an absolute.
+# The contract's price limit is "+30% of the latest settlement price" [venue, fetched
+# 2026-09-04]. Quoting at 0.70 x settlement puts the probe a FULL LIMIT-WIDTH below the
+# market, so it is unmarketable by construction rather than by luck.
+#
+# ⚠️ An absolute price cannot do this. S50 moved from ~900 to ~1069 within this project's
+# own records; a price fixed at "630" would have been 30% below market then and 41% below
+# now — and had the index fallen instead, it would have drifted INTO marketability while
+# looking unchanged in the config. The fraction holds the relationship the absolute loses.
+price_fraction_of_settlement = "0.70"
+price_round = "down"          # round DOWN to the tick: rounding up moves TOWARD the market
+tick_size_source = "fee_schedule.toml :: s50_futures.tick_size (venue-fetched)"
+
+[symbol]
+# 🔴 FRONT-MONTH ROLL RULE, and why the stored record must show it.
+# The probe tracks the S50 front month. It therefore CHANGES CONTRACT periodically, and an
+# observation series that silently switches contract is a series with a break nobody can see.
+root = "S50"
+rule = "front month = the nearest listed contract month that has not passed its last trading day"
+last_trading_day = "the business day immediately preceding the last business day of the contract month"
+last_trading_day_source = "https://www.tfex.co.th/en/products/equity/set50-index-futures/contract-specification"
+last_trading_day_verbatim = "The business day immediately preceding the last business day of the contract month. Time at which trading ceases on Last Trading Day is 16:30 hrs."
+roll_when = "on the last trading day, the probe moves to the next contract month"
+# Every stored observation carries symbol + contract_month + is_roll_boundary, so the
+# discontinuity is visible in the data rather than inferred from a calendar afterwards.
+stamped_columns = ["symbol", "contract_month", "is_roll_boundary"]
+
+[cadence]
+# 🔴 ONCE PER TRADING DAY, PRE-SESSION. One call, one account, fixed parameters.
+# The platform's anti-polling rule (operator, 2026-08-01) prohibits "any design whose polling
+# scales with universe size" without an explicit recorded decision. This is O(1) per day and
+# does not scale with universe size at all.
+#
+# ⚠️ It is a CORROBORATOR, never a runtime cost oracle. No strategy path reads it, and a cost
+# calculation that can fail on a network timeout is not a cost calculation. A test walks the
+# import graph to prove no order-path module can reach the probe.
+frequency = "once per trading day"
+window = "pre-session"
+decision_record = "plans/_pm ticket + quant-execution-engine knowledge dir"
+never = ["on demand", "per quote", "from any strategy path", "inside the order path"]
+
+[structure_matrix]
+# The 5 probes that separate the two structurally incompatible models in this umbrella:
+#   per-contract   fee ~= 14 * contracts                        (tfex-s50 backtest)
+#   notional-term  fee ~= 5.5 + 0.0006955 * price * multiplier  (cash-carry SSF)
+# Vary quantity at fixed price; vary price at fixed quantity. If the fee scales with quantity
+# but not price it is per contract; if it moves with price there is a notional term.
+# ⚠️ NOT RUN — see the header: ① non-mutating is now RULED ✅, ② the passthrough has not
+# landed (PR #58 open) ❌. Reported as blocked on ②, never guessed. Note TK-0524's warning
+# against the opposite error: its single live SET observation (PTT 100 @ 35.00) is ONE point,
+# one notional, one side — enough to show a model and the venue disagree, NOT enough to
+# replace a constant. This matrix exists because structure needs several points, not one.
+vary_quantity = [1, 2, 5]
+vary_price_fraction = ["0.70", "0.85"]
+expected_discriminator = "fee(qty=5)/fee(qty=1) ~= 5 AND fee(0.85)/fee(0.70) ~= 1  =>  per contract"
