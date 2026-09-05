@@ -140,6 +140,22 @@ def parse_order_items(payload: dict[str, Any]) -> list[VenueOrderItem]:
     An envelope that *does* carry a ``result`` object with no ``list`` is a genuinely
     empty book and correctly returns ``[]``.
     """
+    return [VenueOrderItem.model_validate(row) for row in venue_order_rows(payload)]
+
+
+def venue_order_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """The RAW order dicts from an orders-query envelope, before any model narrows them.
+
+    Extracted from :func:`parse_order_items` so the refusal below lives in **one** place.
+    ``VenueOrderItem`` sets ``extra="ignore"``, so fields the reconciler does not consume —
+    ``fee`` and ``vat`` among them — are dropped at validation. A caller that needs the
+    venue's own words (the fee sweep banks the payload verbatim) must read the dicts.
+
+    🔴 Duplicating the envelope walk instead would put the "an unreadable envelope is NOT an
+    empty book" guarantee in two copies, and this platform has already paid for that shape
+    once: the TK-0036/37/90 back-ports are what motivated extracting `quant-capture-core`. A
+    safety property that exists twice is one someone can fix in one place.
+    """
     result: Any = None
     for envelope_key in ("raw_response", "data"):
         envelope = payload.get(envelope_key)
@@ -155,4 +171,4 @@ def parse_order_items(payload: dict[str, Any]) -> list[VenueOrderItem]:
     raw_items = result.get("list")
     if not isinstance(raw_items, list):
         return []  # result present, no list => the venue really has no open orders
-    return [VenueOrderItem.model_validate(item) for item in raw_items if isinstance(item, dict)]
+    return [item for item in raw_items if isinstance(item, dict)]
