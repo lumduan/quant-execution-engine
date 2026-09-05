@@ -111,5 +111,5 @@ def _micro_live_unconfigured_message(broker: Broker) -> str:
         )
     return (
         "stage 'micro_live' requires a configured liberator runtime "
-        "(owner mode + EXECUTION_ENGINE_LIBERATOR_API_KEY/PIN)"
+        "(owner mode + EXECUTION_ENGINE_LIBERATOR_API_KEY)"
     )

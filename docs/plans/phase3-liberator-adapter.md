@@ -203,7 +203,7 @@ The binding prompt that initiated this phase (reproduced verbatim):
   │ price                 │ price (2 dp Decimal)                       │                                                        │
   │ quantity              │ volume                                     │ int                                                    │
   │ account               │ accountNo                                  │ never log in full                                      │
-  │ PIN from env/settings │ pin                                        │ never log; sourced from EXECUTION_ENGINE_LIBERATOR_PIN │
+  │ non-secret constant   │ pin                                        │ mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER (TK-0529)    │
   └───────────────────────┴────────────────────────────────────────────┴────────────────────────────────────────────────────────┘
 
   TFEX (POST /api/v1/order/place/tfex → TFEXOrderRequest):
@@ -269,7 +269,11 @@ The binding prompt that initiated this phase (reproduced verbatim):
   Add under EXECUTION_ENGINE_* prefix (in src/quant_execution_engine/config/settings.py):
 
   - EXECUTION_ENGINE_LIBERATOR_BASE_URL — adapter target URL (default http://liberator-trading-api:8200/api/v1)
-  - EXECUTION_ENGINE_LIBERATOR_PIN — trading PIN (never logged, never validated beyond presence; type SecretStr)
+  - ~~EXECUTION_ENGINE_LIBERATOR_PIN~~ — **REMOVED 2026-09-05 (TK-0529).** This line's own
+    words were the tell: *"never validated beyond presence"*. The bridge overwrites the
+    caller's PIN with its own at six unconditional sites, so the engine's copy authorised
+    nothing. The bridge's required `pin` field is satisfied by a non-secret constant,
+    `mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER`.
   - EXECUTION_ENGINE_LIBERATOR_HEARTBEAT_INTERVAL_SECONDS (default 30)
   - EXECUTION_ENGINE_LIBERATOR_CIRCUIT_BREAKER_THRESHOLD (default 3)
   - EXECUTION_ENGINE_LIBERATOR_RECONCILE_INTERVAL_SECONDS (default 12)

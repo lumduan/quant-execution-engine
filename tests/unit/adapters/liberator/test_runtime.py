@@ -16,7 +16,6 @@ from tests.conftest import make_order, make_settings
 
 _CREDS: dict[str, Any] = {
     "liberator_api_key": SecretStr("k"),
-    "liberator_pin": SecretStr("123456"),
 }
 
 
@@ -51,7 +50,7 @@ def test_create_returns_none_when_disabled_and_warns_on_missing_creds(
             make_settings(stage="micro_live", public_mode=False)
         )
     assert created is None
-    assert "credentials absent" in caplog.text
+    assert "api-key absent" in caplog.text
 
 
 def test_create_is_a_singleton() -> None:

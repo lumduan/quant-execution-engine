@@ -69,14 +69,14 @@ def _valid_order(
 @pytest.mark.parametrize("order_type", _SET_TYPES)
 def test_set_payload_every_valid_cell(order_type: str, side: str, tif: str) -> None:
     order = _valid_order("SET", order_type, side, tif)
-    payload = mapping.to_set_payload(order, pin="123456")
+    payload = mapping.to_set_payload(order)
     assert payload == {
         "accountNo": order.account,
         "icebergVol": order.display_qty or 0,
         "volume": 100,
         "symbol": order.symbol,
         "side": "Buy" if side == "BUY" else "Sell",
-        "pin": "123456",
+        "pin": mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER,
         "price": "123.45",
         "priceType": _EXPECTED_SET_PRICE_TYPE[order_type],
         "validityType": _EXPECTED_VALIDITY[tif],
@@ -92,7 +92,7 @@ def test_tfex_payload_every_valid_cell(
     order_type: str, side: str, position_effect: str, tif: str
 ) -> None:
     order = _valid_order("TFEX", order_type, side, tif, position_effect=position_effect)
-    payload = mapping.to_tfex_payload(order, pin="654321")
+    payload = mapping.to_tfex_payload(order)
     is_stop = order_type in ("STOP", "STOP_LIMIT")
     assert payload == {
         "accountNo": order.account,
@@ -101,7 +101,7 @@ def test_tfex_payload_every_valid_cell(
         "symbol": "S50H26",
         "side": "Long" if side == "BUY" else "Short",
         "position": "Open" if position_effect == "OPEN" else "Close",
-        "pin": "654321",
+        "pin": mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER,
         "price": "123.45",
         "priceType": _EXPECTED_TFEX_PRICE_TYPE[order_type],
         "validityType": _EXPECTED_VALIDITY[tif],
@@ -113,27 +113,27 @@ def test_tfex_payload_every_valid_cell(
 
 def test_iceberg_maps_display_qty_to_iceberg_vol() -> None:
     order = _valid_order("SET", "ICEBERG", "BUY", "DAY", display_qty=25)
-    assert mapping.to_set_payload(order, pin="123456")["icebergVol"] == 25
+    assert mapping.to_set_payload(order)["icebergVol"] == 25
     tfex = _valid_order("TFEX", "ICEBERG", "SELL", "DAY", display_qty=7)
-    assert mapping.to_tfex_payload(tfex, pin="123456")["icebergVol"] == 7
+    assert mapping.to_tfex_payload(tfex)["icebergVol"] == 7
 
 
 def test_tfex_market_order_without_price_sends_zero() -> None:
     order = _valid_order("TFEX", "MARKET", "BUY", "IOC", price=None)
-    payload = mapping.to_tfex_payload(order, pin="123456")
+    payload = mapping.to_tfex_payload(order)
     assert payload["price"] == "0"
 
 
 def test_set_market_family_without_any_price_rejects_preflight() -> None:
     order = _valid_order("SET", "MARKET", "BUY", "DAY", price=None)
     with pytest.raises(LiberatorMappingError, match="indicative price"):
-        mapping.to_set_payload(order, pin="123456")
+        mapping.to_set_payload(order)
 
 
 def test_set_price_more_than_two_dp_rejects_never_requantizes() -> None:
     order = _valid_order("SET", "LIMIT", "BUY", "DAY", price="123.456")
     with pytest.raises(LiberatorMappingError, match="2 decimal places"):
-        mapping.to_set_payload(order, pin="123456")
+        mapping.to_set_payload(order)
 
 
 def test_set_stop_types_are_not_expressible() -> None:
@@ -152,8 +152,8 @@ def test_tfex_auction_and_mtl_types_are_not_expressible() -> None:
 def test_place_payload_dispatches_by_market() -> None:
     set_order = _valid_order("SET", "LIMIT", "BUY", "DAY")
     tfex_order = _valid_order("TFEX", "LIMIT", "BUY", "DAY")
-    assert "nvdr" in mapping.to_place_payload(set_order, pin="1" * 6)
-    assert "position" in mapping.to_place_payload(tfex_order, pin="1" * 6)
+    assert "nvdr" in mapping.to_place_payload(set_order)
+    assert "position" in mapping.to_place_payload(tfex_order)
 
 
 def test_paths_are_relative_without_leading_slash() -> None:
@@ -165,9 +165,9 @@ def test_paths_are_relative_without_leading_slash() -> None:
 
 
 def test_cancel_payload_is_single_element_order_no_list() -> None:
-    assert mapping.to_cancel_payload("3064", pin="123456") == {
+    assert mapping.to_cancel_payload("3064") == {
         "orderNo": ["3064"],
-        "pin": "123456",
+        "pin": mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER,
     }
 
 
@@ -242,7 +242,7 @@ def test_reject_code_wins_over_status_words() -> None:
 
 def test_position_effect_mapping_is_exact() -> None:
     order = _valid_order("TFEX", "LIMIT", "BUY", "DAY", position_effect="CLOSE")
-    assert mapping.to_tfex_payload(order, pin="123456")["position"] == "Close"
+    assert mapping.to_tfex_payload(order)["position"] == "Close"
     assert mapping._POSITIONS[PositionEffect.OPEN] == "Open"
 
 

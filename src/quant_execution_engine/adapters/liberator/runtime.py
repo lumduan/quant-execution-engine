@@ -55,12 +55,20 @@ async def _resolve_order_from_store(client_order_id: str) -> tuple[str, Market] 
 
 
 def liberator_enabled(settings: Settings) -> bool:
-    """The start predicate (see module docstring)."""
+    """The start predicate — **no PIN check** ([[TK-0529]]).
+
+    Structurally identical to ``streaming_pro_enabled``, and now for the same reason: the
+    bridge stamps its own PIN, so the engine's copy authorised nothing and gating on it only
+    made this service a custodian of a live trading credential it could not use.
+
+    The api-key is the credential that actually authenticates the engine to the bridge, so it
+    is the correct thing to key on. ``mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER`` still
+    satisfies the bridge's required ``pin`` field — that is a schema obligation, not a secret.
+    """
     return (
         settings.stage in _BROKER_STAGES
         and not settings.public_mode
         and settings.liberator_api_key is not None
-        and settings.liberator_pin is not None
     )
 
 
@@ -72,23 +80,22 @@ def create_liberator_runtime(settings: Settings) -> LiberatorAdapter | None:
     if (
         settings.stage in _BROKER_STAGES
         and not settings.public_mode
-        and (settings.liberator_api_key is None or settings.liberator_pin is None)
+        and settings.liberator_api_key is None
     ):
         logger.warning(
-            "liberator credentials absent at stage '%s'; liberator routing disabled",
+            "liberator api-key absent at stage '%s'; liberator routing disabled",
             settings.stage,
         )
         return None
     if not liberator_enabled(settings):
         return None
-    assert settings.liberator_api_key is not None and settings.liberator_pin is not None
+    assert settings.liberator_api_key is not None
     transport = LiberatorTransport(
         base_url=settings.liberator_base_url,
         api_key=settings.liberator_api_key,
     )
     _adapter = LiberatorAdapter(
         transport=transport,
-        pin=settings.liberator_pin,
         breaker_threshold=settings.liberator_circuit_breaker_threshold,
         # Venue-facing placement cap (D2) — place() only.
         post_rate_limit=settings.liberator_post_rate_limit,

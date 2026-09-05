@@ -66,7 +66,9 @@ def _spy_liberator_adapter(
     log: list[str], clock: _Clock, *, post_rate: float = 1.0
 ) -> LiberatorAdapter:
     transport = LiberatorTransport(base_url=_LBASE, api_key=SecretStr("test-key"))
-    adapter = LiberatorAdapter(transport=transport, pin=SecretStr("987654"))
+    adapter = LiberatorAdapter(
+        transport=transport,
+    )
     adapter._place_limiter = _SpyBucket(post_rate, name="liberator_post", log=log, clock=clock)
     return adapter
 

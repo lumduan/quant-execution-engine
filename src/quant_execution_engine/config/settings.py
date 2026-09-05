@@ -99,7 +99,6 @@ class Settings(BaseSettings):
     # load in sim, where no broker is configured); NEVER logged.
     liberator_base_url: str = "http://liberator-trading-api:8200/api/v1"
     liberator_api_key: SecretStr | None = None
-    liberator_pin: SecretStr | None = None
     liberator_heartbeat_interval_seconds: int = 30
     liberator_circuit_breaker_threshold: int = 3
     liberator_reconcile_interval_seconds: int = 12
