@@ -19,7 +19,7 @@ _BASE = "http://liberator-trading-api:8200/api/v1"
 
 def make_adapter(**kwargs: Any) -> LiberatorAdapter:
     transport = LiberatorTransport(base_url=_BASE, api_key=SecretStr("test-key"))
-    return LiberatorAdapter(transport=transport, pin=SecretStr("987654"), **kwargs)
+    return LiberatorAdapter(transport=transport, **kwargs)
 
 
 def _ok_place(order_no: str = "3064") -> dict[str, Any]:

@@ -23,8 +23,6 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from pydantic import SecretStr
-
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
     AccountType,
@@ -240,7 +238,6 @@ class LiberatorAdapter(BrokerAdapter):
         self,
         *,
         transport: LiberatorTransport,
-        pin: SecretStr,
         breaker_threshold: int = 3,
         post_rate_limit: float = 5.0,
         resolve_order: OrderIdResolver | None = None,
@@ -248,7 +245,6 @@ class LiberatorAdapter(BrokerAdapter):
         super().__init__()
         self.breaker = SessionCircuitBreaker(failure_threshold=breaker_threshold)
         self._transport = transport
-        self._pin = pin
         # Venue-facing placement cap (Phase 6 / D2): a token bucket on the
         # placement path ONLY. cancel()/heartbeat()/reconciler fetches stay
         # unthrottled — a cancel or a liveness probe must never queue behind a
@@ -267,7 +263,7 @@ class LiberatorAdapter(BrokerAdapter):
     # ------------------------------------------------------------------ place
     async def place(self, order: NormalizedOrder) -> PlaceAck:
         try:
-            payload = mapping.to_place_payload(order, pin=self._pin.get_secret_value())
+            payload = mapping.to_place_payload(order)
         except LiberatorMappingError as exc:
             return PlaceAck(rejected=True, reject_reason=str(exc))
         # Throttle the placement path to the venue's request budget (D2) — a
@@ -330,7 +326,7 @@ class LiberatorAdapter(BrokerAdapter):
                 )
             return CancelAck(ok=False, reason="no broker_order_id mapping for client_order_id")
         order_no, market = resolved
-        payload = mapping.to_cancel_payload(order_no, pin=self._pin.get_secret_value())
+        payload = mapping.to_cancel_payload(order_no)
         try:
             envelope = await self._transport.post(mapping.cancel_path(market), payload)
         except LiberatorTransportError as exc:

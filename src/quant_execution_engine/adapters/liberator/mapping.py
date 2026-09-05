@@ -129,7 +129,40 @@ def _set_wire_price(order: NormalizedOrder) -> str:
     return format(price.quantize(_TWO_DP), "f")
 
 
-def to_set_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
+# ════════════════════════════════════════════════════════════════════════════
+# 🔴 NOT A SECRET, AND NOT THE TRADING PIN. Do not set this from configuration.
+#
+# The bridge REQUIRES a `pin` field on all six order models — `Field(..., min_length=6,
+# max_length=10)` plus a `field_validator` enforcing digits-only — so the engine cannot
+# simply omit it: an absent or malformed value is a 422 and the order never reaches the
+# venue. But the bridge then OVERWRITES it, unconditionally, at six sites
+# (`pin = get_settings().liberator_pin` in place/cancel/pre-place of both the SET and TFEX
+# services). The engine's value is therefore inert: it satisfies a schema and is discarded.
+#
+# EVIDENCE, because "the bridge overwrites it" is exactly the kind of claim that should not
+# be taken on trust:
+#   * AST over the deployed services: 6 unconditional overwrite sites, and ZERO reads of any
+#     caller-supplied `.pin` attribute, against a control of 37-39 attribute reads on the
+#     same request objects in the same files;
+#   * the deployed bridge code was digest-matched to `origin/main` on both nodes, so the
+#     overwrite that was read is the overwrite that runs;
+#   * 🔑 production had already proven it: the engine's configured PIN was NOT the bridge's
+#     PIN, and real orders — places AND cancels, both of which stamp this field — were
+#     accepted by the venue throughout (2026-09-04: every order carried a venue handle).
+#     A wrong PIN reaching the venue would have failed them all.
+#
+# Holding a real trading credential to fill a field that is thrown away made this engine a
+# second custodian of a live secret for no benefit ([[TK-0529]]). Ten digits, all zeros, so
+# it cannot be mistaken for a real PIN (both observed real PINs are six digits) and so this
+# value never appears in any node's configuration.
+#
+# ➡️ The true fix is to make `pin` optional on the bridge, after which the engine sends
+#    nothing at all. That is a bridge change and is deliberately not made here.
+# ════════════════════════════════════════════════════════════════════════════
+_BRIDGE_REQUIRED_PIN_PLACEHOLDER = "0000000000"
+
+
+def to_set_payload(order: NormalizedOrder) -> dict[str, Any]:
     """``NormalizedOrder`` → ``SETOrderRequest`` JSON body."""
     return {
         "accountNo": order.account,
@@ -137,7 +170,7 @@ def to_set_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
         "volume": order.quantity,
         "symbol": order.symbol,
         "side": venue_side(order.side, Market.SET),
-        "pin": pin,
+        "pin": _BRIDGE_REQUIRED_PIN_PLACEHOLDER,
         "price": _set_wire_price(order),
         "priceType": venue_price_type(order.order_type, Market.SET),
         "validityType": venue_validity(order.tif),
@@ -145,7 +178,7 @@ def to_set_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
     }
 
 
-def to_tfex_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
+def to_tfex_payload(order: NormalizedOrder) -> dict[str, Any]:
     """``NormalizedOrder`` → ``TFEXOrderRequest`` JSON body.
 
     ``stopSymbol`` is required by the upstream model on EVERY TFEX order — it
@@ -166,7 +199,7 @@ def to_tfex_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
         "symbol": order.symbol,
         "side": venue_side(order.side, Market.TFEX),
         "position": _POSITIONS[order.position_effect],
-        "pin": pin,
+        "pin": _BRIDGE_REQUIRED_PIN_PLACEHOLDER,
         "price": format(price, "f"),
         "priceType": venue_price_type(order.order_type, Market.TFEX),
         "validityType": venue_validity(order.tif),
@@ -176,15 +209,15 @@ def to_tfex_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
     }
 
 
-def to_place_payload(order: NormalizedOrder, *, pin: str) -> dict[str, Any]:
+def to_place_payload(order: NormalizedOrder) -> dict[str, Any]:
     if order.market is Market.SET:
-        return to_set_payload(order, pin=pin)
-    return to_tfex_payload(order, pin=pin)
+        return to_set_payload(order)
+    return to_tfex_payload(order)
 
 
-def to_cancel_payload(broker_order_id: str, *, pin: str) -> dict[str, Any]:
+def to_cancel_payload(broker_order_id: str) -> dict[str, Any]:
     """Cancel is by venue order number, as a list (≤50 — the engine sends one)."""
-    return {"orderNo": [broker_order_id], "pin": pin}
+    return {"orderNo": [broker_order_id], "pin": _BRIDGE_REQUIRED_PIN_PLACEHOLDER}
 
 
 # ----------------------------------------------------------------- read side

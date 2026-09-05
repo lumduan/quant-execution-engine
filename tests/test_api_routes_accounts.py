@@ -372,14 +372,15 @@ _LIVE_PROFILE: dict[str, Any] = {
 
 
 def _live_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _ProfileTransport]:
-    from pydantic import SecretStr
     from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
     from src.quant_execution_engine.api import deps
     from src.quant_execution_engine.core.router import OrderRouter
 
     patch_repositories(monkeypatch, MemStore())
     transport = _ProfileTransport(_LIVE_PROFILE)
-    adapter = LiberatorAdapter(transport=transport, pin=SecretStr("000000"))  # type: ignore[arg-type]
+    adapter = LiberatorAdapter(
+        transport=transport,  # type: ignore[arg-type]
+    )
     settings = make_settings(
         public_mode=False,
         stage="micro_live",
@@ -470,7 +471,6 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
     `AccountInfo`, whose validator FORBIDS them on a non-derivative account, and the
     read 500s instead of returning a balance. With it, they are ignored.
     """
-    from pydantic import SecretStr
     from src.quant_execution_engine.adapters.liberator.adapter import LiberatorAdapter
     from src.quant_execution_engine.api import deps
     from src.quant_execution_engine.core.router import OrderRouter
@@ -497,7 +497,6 @@ def test_a_CASH_payload_carrying_margin_fields_is_IGNORED_not_propagated(
     }
     adapter = LiberatorAdapter(
         transport=_ProfileTransport(hostile),  # type: ignore[arg-type]
-        pin=SecretStr("000000"),
     )
     settings = make_settings(
         public_mode=False, stage="micro_live", real_routing_accounts=["70000002"]

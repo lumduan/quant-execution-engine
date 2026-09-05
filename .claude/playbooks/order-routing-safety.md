@@ -76,7 +76,7 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-com
 
 ### Secret hygiene (Liberator)
 
-- `EXECUTION_ENGINE_LIBERATOR_PIN` / `_API_KEY` are `SecretStr`; only
+- `EXECUTION_ENGINE_LIBERATOR_API_KEY` is a `SecretStr`; only
   `adapters/liberator/transport.py` touches the wire and it logs method/path/status plus a
   **redacted** payload (`pin`/`accountNo` masked). A caplog test pins "PIN never logged" —
   keep it green on every adapter change.

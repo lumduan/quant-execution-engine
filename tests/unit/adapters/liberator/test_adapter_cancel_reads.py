@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 import respx
 from src.quant_execution_engine.adapters.base import AccountType
+from src.quant_execution_engine.adapters.liberator import mapping
 from src.quant_execution_engine.adapters.liberator.errors import (
     LiberatorAccountNotFound,
     LiberatorPositionsUncaptured,
@@ -38,7 +39,10 @@ async def test_cancel_uses_cached_order_no_from_place() -> None:
     ack = await adapter.cancel(order.client_order_id)
     assert ack.ok
     sent = json.loads(cancel_route.calls.last.request.content)
-    assert sent == {"orderNo": ["3064"], "pin": "987654"}
+    assert sent == {
+        "orderNo": ["3064"],
+        "pin": mapping._BRIDGE_REQUIRED_PIN_PLACEHOLDER,
+    }
     await adapter.aclose()
 
 

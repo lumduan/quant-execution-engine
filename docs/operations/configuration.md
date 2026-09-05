@@ -111,7 +111,6 @@ Enforced in **every** stage (including `sim`), after the capability check and be
 |---------|------|---------|:---:|--------|
 | `EXECUTION_ENGINE_LIBERATOR_BASE_URL` | str | `http://liberator-trading-api:8200/api/v1` | — | Internal upstream URL (never `localhost`) |
 | `EXECUTION_ENGINE_LIBERATOR_API_KEY` | SecretStr \| None | `None` | ✅ | api-key header to the upstream (must equal its `API_KEY`) |
-| `EXECUTION_ENGINE_LIBERATOR_PIN` | SecretStr \| None | `None` | ✅ | Per-order trading PIN |
 | `EXECUTION_ENGINE_LIBERATOR_HEARTBEAT_INTERVAL_SECONDS` | int | `30` | — | Session heartbeat cadence |
 | `EXECUTION_ENGINE_LIBERATOR_CIRCUIT_BREAKER_THRESHOLD` | int | `3` | — | Consecutive heartbeat failures before the breaker trips |
 | `EXECUTION_ENGINE_LIBERATOR_RECONCILE_INTERVAL_SECONDS` | int | `12` | — | Reconciliation loop cadence |
