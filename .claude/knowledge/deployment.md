@@ -43,7 +43,7 @@ docker compose -f docker-compose.yml \
 - **Engine:** `EXECUTION_ENGINE_*` from the process environment + `.env` (private overlay
   `env_file`). `pydantic-settings`, frozen at startup.
 - **Bundled Liberator upstream:** its settings loader reads **YAML over env** — so Redis host and the
-  internal port are pinned via the mounted `docker/liberator/system.yaml` (plus
+  internal port are pinned via the mounted **`broker-api/docker/liberator/`** `system.yaml` (plus
   `session_status.yaml` / `trading_hour.yaml` / `order_config.yaml`, which `validate_configuration()`
   requires at startup; the image ships only `*.yaml.example` templates so these complete it
   deterministically — no secrets). Its **credentials** (`LIBERATOR_USERNAME` / `PASSWORD` / `PIN`,

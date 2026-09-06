@@ -165,8 +165,14 @@ docker compose -f docker-compose.yml -f docker-compose.private.yml -f docker-com
 ### Gotcha ② — trading-hours config is Redis-cached
 
 The trading-hours service caches its config in Redis (`liberator:trading:config`, **24 h TTL**) and
-**prefers the cache over the file**. So editing `docker/liberator/trading_hour.yaml` alone may not take
-effect — clear the cache key too:
+**prefers the cache over the file**. So editing `broker-api/docker/liberator/trading_hour.yaml` alone
+may not take effect — clear the cache key too:
+
+> ⚠️ **Path corrected 2026-09-06.** This said `docker/liberator/…`, relative to *this* repo, which
+> was right only while the bridge was nested under it. Since the de-nesting the live file is the
+> umbrella's `broker-api/docker/liberator/trading_hour.yaml`; this repo's copy was a stale vendor
+> **sample** whose holiday calendar held 2025 data and **no 2026 dates at all**, and it has been
+> deleted (see `docker/liberator/README.md`).
 
 ```bash
 docker exec liberator-redis redis-cli DEL liberator:trading:config
