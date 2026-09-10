@@ -304,6 +304,7 @@ by ~7x. The commission remains UNCAPTURED and is the real open question.
 
 🔴 AND ON TFEX IT IS WORSE, BECAUSE `amount` MEANS DIFFERENT THINGS ON TWO PLANES:
   * ORDER plane (this observation): `amount` = price x MATCHED qty, NO contract multiplier -> 20.03
+    ^ see the STATUS table below: OBSERVED at both endpoints, INFERRED between them
   * POSITION plane: `amount`/`marketVal` carry a x1000 multiplier
     (docs/reference/liberator-account-reads.md §2.2a ①, ORIZ26 avg x qty 1.82 vs amount 1820)
 An SSF is 1000 shares, so the real TFEX notional here is ~20,030 and the reported 20.03 omits it.
@@ -333,12 +334,32 @@ NO FILL — never of a zero-fee venue. It must not be banked as a charge of zero
 blotter_sweep.py` already refuses it structurally by banking only `matched > 0` rows; this is WHY
 that guard is load-bearing rather than merely tidy.
 
-⚠️ THE 0.007 % RATE ABOVE IS UNAFFECTED -- but mark the STATUS of that claim honestly, because it
-is the same shape as the error just corrected. It rests on `fee` and `amount` BOTH scaling with
-`matched`, so that their ratio survives a partial fill. That is [INFERRED], not [OBSERVED]: every
-fill seen so far has been a FULL fill, which is exactly the case that cannot test it. A PARTIAL fill
-is the observation that would confirm it independently. Not to be manufactured -- captured if one
-arises. Until then the rate is well-evidenced for full fills and inferred for partial ones.
+⚠️ STATUS OF EVERY CLAIM IN THIS BLOCK -- stated because the correction above was itself an
+inference in the voice of an observation, and so was its first replacement:
+
+    `amount` != price x ENTERED qty                          [OBSERVED]  3 zero rows, real prices
+    `amount` == 0 when matched == 0                          [OBSERVED]  same 3 rows
+    `amount` == price x qty when matched == entered          [OBSERVED]  2 full fills
+    `amount` == price x MATCHED qty when 0 < matched < ent.   [INFERRED]  no observation exists
+    the 0.007 % ratio survives a partial fill                 [INFERRED]  depends on the row above
+
+🔑 WHAT WE HAVE IS TWO ENDPOINTS, NOT A CURVE. `matched == 0 -> amount == 0` and
+`matched == entered -> amount == price x qty`. "price x MATCHED qty" is the natural line through
+them, and A LINE THROUGH TWO POINTS IS NOT A MEASUREMENT OF THE POINTS BETWEEN.
+
+The full-fill endpoint is confirmed INDEPENDENTLY of the blotter, from `execution.orders`/`fills`:
+BGRIM ordered 1000 filled 1000, BGRIMZ26 ordered 1 filled 1, and the three zero rows ordered
+1000/1/1 filled 0.
+
+🔴 AND THE GAP CANNOT BE CLOSED FROM EXISTING DATA: a query over the WHOLE `execution` history
+returns ZERO partial fills, ever. So this is not a case someone can find by looking harder -- it has
+to arise. Not to be manufactured (see §2.2a's `qty >= 2` ruling); captured if it happens.
+
+🔴 A DEGENERATE CASE IS THE MOST DANGEROUS EVIDENCE, BECAUSE IT LOOKS LIKE THE CLEANEST. `matched 1
+of 1`, qty 1, a single row, a full fill, an exact round number -- each satisfies the most candidate
+rules at once. Every wrong generalisation in this block rested on `matched 1 of 1`. Before
+generalising a field's formula: ask which OTHER formula the same observation would equally satisfy,
+NAME the case that separates them, and check whether you have actually seen it.
 
 Superseded derivation: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
 all-in 0.060857 % incl VAT.
