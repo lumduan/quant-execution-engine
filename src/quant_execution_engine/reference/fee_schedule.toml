@@ -357,7 +357,20 @@ so it cannot see an order placed outside the engine, and it spans 2026-08-21 -> 
 liberator (257 orders; 263 from 2026-08-20 across all brokers). It is zero over TWENTY DAYS of
 engine-mediated orders, which is a real denominator but not a lifetime one.
 
-And the denominator that matters is orders that COULD have partial-filled, which is far smaller:
+🔑 THE CLEANEST STATEMENT NEEDS NO DENOMINATOR AT ALL (session:lib-research's formulation, verified
+here and then widened): an order that was EVER partially filled and did not complete must end in a
+terminal status other than FILLED **while carrying non-zero fills**. Across ALL 257 liberator
+orders -- not just the qty > 1 ones -- that signature has ZERO instances:
+
+    CANCELLED  158 orders, 0 with fills      FILLED  26 orders, 26 with fills
+    REJECTED    72 orders, 0 with fills      EXPIRED  1 order,  0 with fills
+    and no FILLED order is SHORT: FILLED-with-sum(fills) <> quantity is 0
+
+This sidesteps the eligibility argument rather than winning it. It is also stronger than a fills
+query, because `PARTIALLY_FILLED` is a REAL STATE in the frozen machine -- five transitions in
+`core/state_machine.py` -- so this is a case the system explicitly models and has NEVER OCCUPIED.
+
+The eligibility numbers are still worth keeping, because they say WHY, and the why differs by market:
 
     SET    96 orders qty>1  ->  33 reached the book  ->  15 actually filled, ALL of them completely
     TFEX    1 order  qty>1  ->   0 reached the book  (REJECTED 2026-08-31, ORIZ26)
