@@ -351,13 +351,34 @@ The full-fill endpoint is confirmed INDEPENDENTLY of the blotter, from `executio
 BGRIM ordered 1000 filled 1000, BGRIMZ26 ordered 1 filled 1, and the three zero rows ordered
 1000/1/1 filled 0.
 
-🔴 AND THE GAP CANNOT BE CLOSED FROM EXISTING DATA: a query over the WHOLE `execution` history
-returns ZERO partial fills, ever. So this is not a case someone can find by looking harder -- it has
-to arise. Not to be manufactured (see §2.2a's `qty >= 2` ruling); captured if it happens.
+🔴 AND THE GAP CANNOT BE CLOSED FROM EXISTING DATA -- BUT STATE IT AT THE RIGHT SCOPE. Zero partial
+fills exist in `execution.orders`/`fills`. "Zero, EVER" was an overclaim: that table is the ENGINE'S,
+so it cannot see an order placed outside the engine, and it spans 2026-08-21 -> 2026-09-10 for
+liberator (257 orders; 263 from 2026-08-20 across all brokers). It is zero over TWENTY DAYS of
+engine-mediated orders, which is a real denominator but not a lifetime one.
+
+And the denominator that matters is orders that COULD have partial-filled, which is far smaller:
+
+    SET    96 orders qty>1  ->  33 reached the book  ->  15 actually filled, ALL of them completely
+    TFEX    1 order  qty>1  ->   0 reached the book  (REJECTED 2026-08-31, ORIZ26)
+    (no REJECTED order carries fills, so excluding them is sound -- checked, not assumed)
+
+⇒ THE TWO MARKETS HAVE DIFFERENT DISPOSITIONS AND ONLY ONE IS "AWAITING EVIDENCE":
+  * SET  -- genuinely possible, has not happened, but on a base of FIFTEEN filled orders. That is
+    weak evidence of absence. INFERRED, and a partial may well arise on its own.
+  * TFEX -- 160 of 161 orders are qty 1, where one contract fills or it does not. A partial is
+    IMPOSSIBLE BY CONSTRUCTION at current sizing: not awaiting evidence, CLOSED to evidence. Only a
+    deliberate size change could produce one, and §2.2a's `qty >= 2` ruling already declined that on
+    value. Do not record this half as "pending" -- nothing is pending.
+
+Not to be manufactured either way: the only route to the TFEX evidence is the order that was
+declined.
 
 🔴 A DEGENERATE CASE IS THE MOST DANGEROUS EVIDENCE, BECAUSE IT LOOKS LIKE THE CLEANEST. `matched 1
 of 1`, qty 1, a single row, a full fill, an exact round number -- each satisfies the most candidate
-rules at once. Every wrong generalisation in this block rested on `matched 1 of 1`. Before
+rules at once. Every wrong generalisation in this block rested on `matched 1 of 1` -- and that was
+NOT an unlucky sample: 160 of 161 TFEX orders are qty 1, so the degenerate case IS this platform's
+normal operating shape, and the first observation of any new field will probably have it. Before
 generalising a field's formula: ask which OTHER formula the same observation would equally satisfy,
 NAME the case that separates them, and check whether you have actually seen it.
 
