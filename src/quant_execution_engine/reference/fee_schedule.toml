@@ -370,6 +370,23 @@ This sidesteps the eligibility argument rather than winning it. It is also stron
 query, because `PARTIALLY_FILLED` is a REAL STATE in the frozen machine -- five transitions in
 `core/state_machine.py` -- so this is a case the system explicitly models and has NEVER OCCUPIED.
 
+That upgrade survives the attack it invites -- "a state can exist in a machine and be UNREACHABLE in
+practice, in which case 'never entered' is a fact about our code, not the venue." It is not dead:
+`db/repositories.py:288` picks the target state from summed fills on EVERY fill, inside `apply_fill`'s
+transaction, and the same state is load-bearing in two more places (`_RECONCILE_STATES`, and the
+venue-resting / mass-cancel query). If it were unreachable those would be broken too.
+
+✅ AND THE CLAIM IS POSITIVE, NOT AN ABSENCE. All 26 filled orders arrived as EXACTLY ONE fill row,
+so the state was never even TRANSITED en route to FILLED -- the discriminating branch was reached 26
+times and took the complete path every time. So the finding is not "we looked for partial fills and
+found none"; it is: THIS VENUE, AT THESE ORDER SIZES, REPORTS COMPLETE ATOMIC FILLS, evidenced by 26
+evaluations of a live condition. An absence invites "you queried wrong"; a condition that ran and was
+never true does not.
+
+⚠️ Scope unchanged, and the last clause carries it: 20 days, engine-mediated, and it is a statement
+about THESE ORDER SIZES (160 of 161 TFEX at qty 1; SET at 100/1000). A larger order into a thinner
+book is exactly where it would first fail, and nothing here speaks to that.
+
 The eligibility numbers are still worth keeping, because they say WHY, and the why differs by market:
 
     SET    96 orders qty>1  ->  33 reached the book  ->  15 actually filled, ALL of them completely
