@@ -160,8 +160,12 @@ async def sweep_account(
 
     Only rows with ``matched > 0`` are banked: an unfilled order has not been charged, and
     banking its ``fee: 0`` would fill the table with rows that look like evidence of a free
-    trade. ``balance``/``cancelled`` are irrelevant here — a partially filled order has been
-    charged for the part that filled.
+    trade. ✅ CONFIRMED BY OBSERVATION 2026-09-10 (it was reasoning when written): the venue
+    reports ``amount``/``fee``/``vat`` as **0 on an unmatched row even though a real ``price``
+    is present** — ORI @ 1.42, SAWADU26 @ 17.60, BGRIMZ26 @ 20.20, all ``matched 0``. So a
+    ``fee`` of 0 is evidence of NO FILL, never of a zero-fee venue, and this guard is what
+    stops that misreading reaching the table. ``balance``/``cancelled`` are irrelevant
+    here — a partially filled order has been charged for the part that filled.
 
     ⚠️ An unreadable envelope RAISES (via :func:`venue_order_rows`) rather than reading as an
     empty book. That refusal is load-bearing in the reconciler and is inherited deliberately:

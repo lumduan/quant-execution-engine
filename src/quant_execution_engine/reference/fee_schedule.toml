@@ -303,12 +303,32 @@ this platform currently persists. Banking `fee` as "the charged cost" would unde
 by ~7x. The commission remains UNCAPTURED and is the real open question.
 
 🔴 AND ON TFEX IT IS WORSE, BECAUSE `amount` MEANS DIFFERENT THINGS ON TWO PLANES:
-  * ORDER plane (this observation): `amount` = price x qty, NO contract multiplier -> 20.03
+  * ORDER plane (this observation): `amount` = price x MATCHED qty, NO contract multiplier -> 20.03
   * POSITION plane: `amount`/`marketVal` carry a x1000 multiplier
     (docs/reference/liberator-account-reads.md §2.2a ①, ORIZ26 avg x qty 1.82 vs amount 1820)
 An SSF is 1000 shares, so the real TFEX notional here is ~20,030 and the reported 20.03 omits it.
 The TFEX `fee` of 0.0014021 THB is therefore ~1/1000th of even a regulator-style charge — not a
 plausible real charge at all. Same field name, two planes, two meanings.
+
+↻ SHARPENED 2026-09-10 — `amount` IS THE MATCHED VALUE, NOT THE ORDERED ONE.
+The ORDER-plane bullet above said "price x qty", which reads as the quantity as ENTERED. It is the
+MATCHED quantity. On an UNMATCHED row `amount` is 0 even though a real `price` is present. Observed
+on three rows the same day, on both accounts:
+    ORI       B  status X  matched 0  price 1.42   amount 0  fee 0  vat 0
+    SAWADU26  B  status X  matched 0  price 17.60  amount 0  fee 0  vat 0
+    BGRIMZ26  S  status C  matched 0  price 20.20  amount 0  fee 0  vat 0
+Found by session:lib-research on a 22:38 BKK post-close read; the amount=0/fee=0 halves were
+independently present in this session's own 20:36 BKK read, which is what makes it two observations
+rather than one.
+
+🔑 CONSEQUENCE, AND IT IS THE REASON THIS IS RECORDED IN A *FEE* FILE: a `fee` of 0 is evidence of
+NO FILL — never of a zero-fee venue. It must not be banked as a charge of zero. `observations/
+blotter_sweep.py` already refuses it structurally by banking only `matched > 0` rows; this is WHY
+that guard is load-bearing rather than merely tidy.
+
+⚠️ THE 0.007 % RATE ABOVE IS UNAFFECTED. `fee` and `amount` both scale with the matched quantity,
+so their ratio is identical on a partial fill and on a full one. This sharpens what the DENOMINATOR
+is; it does not move the rate.
 
 Superseded derivation: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
 all-in 0.060857 % incl VAT.
