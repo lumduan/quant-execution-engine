@@ -283,7 +283,34 @@ non-mutating; order list [] before and after) for PTT 100 @ 35.00 and the venue 
 returned: Total 3,500.00 / "Commission Fee + VAT" 1.87 / "Regulator Fee + VAT" 0.26 /
 Net Buy 3,502.13 — self-consistent, per ORDER, VAT folded into each line item.
 
-Implied: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
+↻ CORRECTED 2026-09-10 — the regulator rate is EXACTLY 0.007 % ex-VAT [OBSERVED, both markets].
+The 0.006943 % below was a ROUNDING ARTEFACT, not a different rate: it was back-derived from a
+"Regulator Fee + VAT" of 0.26 displayed to 2dp. An exact 0.007 % reproduces that display —
+3500 x 0.00007 = 0.245, x 1.07 VAT = 0.26215, shown as 0.26 — so the derivation was consistent
+with the truth and simply lost precision to the display.
+
+FIRST DIRECT OBSERVATION, 2026-09-10, two real fills on the AWS real-money node, read-only:
+
+    SET  BGRIM     1000 @ 19.90   amount 19900     fee 1.393       vat 0.09751
+    TFEX BGRIMZ26     1 @ 20.03   amount 20.03     fee 0.0014021   vat 0.000098147
+
+    fee / amount = 0.00700000 %  on BOTH markets, EXACT (19900 x 0.00007 = 1.393 to 1e-12)
+    vat / fee    = 7.000000 %    on BOTH  =>  `fee` is EX-VAT
+
+🔑 WHAT THE BLOTTER `fee` FIELD IS: the REGULATOR fee, and ONLY that. It is NOT the commission,
+which the same pre-place puts at 0.049933 % ex-VAT — 7.1x larger — and which appears in NO field
+this platform currently persists. Banking `fee` as "the charged cost" would understate a SET trade
+by ~7x. The commission remains UNCAPTURED and is the real open question.
+
+🔴 AND ON TFEX IT IS WORSE, BECAUSE `amount` MEANS DIFFERENT THINGS ON TWO PLANES:
+  * ORDER plane (this observation): `amount` = price x qty, NO contract multiplier -> 20.03
+  * POSITION plane: `amount`/`marketVal` carry a x1000 multiplier
+    (docs/reference/liberator-account-reads.md §2.2a ①, ORIZ26 avg x qty 1.82 vs amount 1820)
+An SSF is 1000 shares, so the real TFEX notional here is ~20,030 and the reported 20.03 omits it.
+The TFEX `fee` of 0.0014021 THB is therefore ~1/1000th of even a regulator-style charge — not a
+plausible real charge at all. Same field name, two planes, two meanings.
+
+Superseded derivation: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
 all-in 0.060857 % incl VAT.
 
 🔴 Both in-tree models miss it, IN OPPOSITE DIRECTIONS — which is the entire reason this
