@@ -373,8 +373,17 @@ query, because `PARTIALLY_FILLED` is a REAL STATE in the frozen machine -- five 
 That upgrade survives the attack it invites -- "a state can exist in a machine and be UNREACHABLE in
 practice, in which case 'never entered' is a fact about our code, not the venue." It is not dead:
 `db/repositories.py:288` picks the target state from summed fills on EVERY fill, inside `apply_fill`'s
-transaction, and the same state is load-bearing in two more places (`_RECONCILE_STATES`, and the
-venue-resting / mass-cancel query). If it were unreachable those would be broken too.
+transaction. A second WRITER exists on the amend-restore path, `core/router.py:510`
+(`PENDING_REPLACE -> NEW -> PARTIALLY_FILLED when the order is partly filled`).
+
+⚠️ ONLY WRITERS COUNT TOWARD REACHABILITY, AND AN EARLIER VERSION OF THIS PARAGRAPH GOT THAT WRONG.
+It cited three sites, of which two -- `_SELECT_OPEN_ORDERS` and `_RECONCILE_STATES` -- merely READ the
+state. A reader cannot make a state occur: if the value never appears, `WHERE status IN ('NEW',
+'PARTIALLY_FILLED')` returns exactly what it should, correct and EMPTY. That is the umbrella's
+"an intentionally-inert code path is indistinguishable from a broken one", and counting those two as
+evidence was the same error as counting REJECTED orders as evidence of no partial fill -- sites that
+could not have produced the outcome. Caught by session:lib-research. The readers show the model is
+COHERENT; they say nothing about whether the state is REACHABLE.
 
 ✅ AND THE CLAIM IS POSITIVE, NOT AN ABSENCE. All 26 filled orders arrived as EXACTLY ONE fill row,
 so the state was never even TRANSITED en route to FILLED -- the discriminating branch was reached 26
