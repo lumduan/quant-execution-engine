@@ -374,7 +374,10 @@ That upgrade survives the attack it invites -- "a state can exist in a machine a
 practice, in which case 'never entered' is a fact about our code, not the venue." It is not dead:
 `db/repositories.py:288` picks the target state from summed fills on EVERY fill, inside `apply_fill`'s
 transaction. A second WRITER exists on the amend-restore path, `core/router.py:510`
-(`PENDING_REPLACE -> NEW -> PARTIALLY_FILLED when the order is partly filled`).
+(`PENDING_REPLACE -> NEW -> PARTIALLY_FILLED when the order is partly filled`) -- but it has NEVER
+FIRED: its precondition `PENDING_REPLACE` has ZERO transitions in `execution.order_events`. So TWO
+WRITERS IS THE ACCURATE COUNT AND ONE WRITER IS THE EVIDENCE. A writer that never ran belongs in the
+same bucket as a reader for this argument: it did not produce the outcome.
 
 ⚠️ ONLY WRITERS COUNT TOWARD REACHABILITY, AND AN EARLIER VERSION OF THIS PARAGRAPH GOT THAT WRONG.
 It cited three sites, of which two -- `_SELECT_OPEN_ORDERS` and `_RECONCILE_STATES` -- merely READ the
@@ -386,8 +389,25 @@ could not have produced the outcome. Caught by session:lib-research. The readers
 COHERENT; they say nothing about whether the state is REACHABLE.
 
 ✅ AND THE CLAIM IS POSITIVE, NOT AN ABSENCE. All 26 filled orders arrived as EXACTLY ONE fill row,
-so the state was never even TRANSITED en route to FILLED -- the discriminating branch was reached 26
-times and took the complete path every time. So the finding is not "we looked for partial fills and
+and the state was never even TRANSITED en route to FILLED -- the discriminating branch was reached 26
+times and took the complete path every time.
+
+🔑 "NEVER TRANSITED" IS [OBSERVED], NOT INFERRED, AND IT TOOK AN INSTRUMENT NEITHER SESSION HAD USED.
+Every query above reads CURRENT status, which structurally cannot see a TRANSIENT state that was
+entered and then left. `execution.order_events` records TRANSITIONS (`from_status` -> `to_status`),
+so it can. Transitions INTO each state across all 263 orders:
+
+    PENDING_NEW 263 · NEW 190 · CANCELLED 160 · PENDING_CANCEL 160 · REJECTED 73 · FILLED 29 · EXPIRED 1
+    PARTIALLY_FILLED 0 · PENDING_REPLACE 0
+
+Positive control: the states known to have occurred are non-zero, so a zero here is an answer and not
+a broken read. And the table's CHECK constraint permits all nine states, so `PARTIALLY_FILLED`'s
+absence is not a schema restriction -- the column may legally hold it and never has.
+
+⚠️ THE NEAR-MISS IS WORTH MORE THAN THE RESULT: the first attempt at this queried TERMINAL statuses
+for `PENDING_REPLACE`. That state is transient, so a completed amend leaves a terminal status and is
+INVISIBLE there -- finding nothing would have proved nothing. When asking "did this state ever
+occur?", ask whether your instrument can see a state that was ENTERED AND LEFT. So the finding is not "we looked for partial fills and
 found none"; it is: THIS VENUE, AT THESE ORDER SIZES, REPORTS COMPLETE ATOMIC FILLS, evidenced by 26
 evaluations of a live condition. An absence invites "you queried wrong"; a condition that ran and was
 never true does not.
