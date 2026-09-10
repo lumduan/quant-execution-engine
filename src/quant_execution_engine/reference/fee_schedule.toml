@@ -317,18 +317,28 @@ on three rows the same day, on both accounts:
     ORI       B  status X  matched 0  price 1.42   amount 0  fee 0  vat 0
     SAWADU26  B  status X  matched 0  price 17.60  amount 0  fee 0  vat 0
     BGRIMZ26  S  status C  matched 0  price 20.20  amount 0  fee 0  vat 0
-Found by session:lib-research on a 22:38 BKK post-close read; the amount=0/fee=0 halves were
-independently present in this session's own 20:36 BKK read, which is what makes it two observations
-rather than one.
+Neither read alone was sufficient: this session's 20:36 BKK read carried the amount=0 / fee=0 rows
+FIRST, and session:lib-research's 22:38 BKK read added `price` -- the field that turns "these rows
+are empty" into "`amount` is the matched value". Two independent observations, one semantic.
+
+🔑 WHY THIS WRONG READING SURVIVED, WHICH IS THE PART THAT GENERALISES: the first fill ever observed
+was BGRIMZ26, matched 1 OF 1. On a FULL fill `price x entered qty` and `price x MATCHED qty`
+COINCIDE -- so the evidence that appeared to establish the rule could not distinguish the two
+readings, and had no counterexample until the unmatched rows arrived. A generalisation drawn from a
+single full fill was never tested by the observation supporting it. Before generalising a field's
+formula, ask which OTHER formula the same observation would equally satisfy.
 
 🔑 CONSEQUENCE, AND IT IS THE REASON THIS IS RECORDED IN A *FEE* FILE: a `fee` of 0 is evidence of
 NO FILL — never of a zero-fee venue. It must not be banked as a charge of zero. `observations/
 blotter_sweep.py` already refuses it structurally by banking only `matched > 0` rows; this is WHY
 that guard is load-bearing rather than merely tidy.
 
-⚠️ THE 0.007 % RATE ABOVE IS UNAFFECTED. `fee` and `amount` both scale with the matched quantity,
-so their ratio is identical on a partial fill and on a full one. This sharpens what the DENOMINATOR
-is; it does not move the rate.
+⚠️ THE 0.007 % RATE ABOVE IS UNAFFECTED -- but mark the STATUS of that claim honestly, because it
+is the same shape as the error just corrected. It rests on `fee` and `amount` BOTH scaling with
+`matched`, so that their ratio survives a partial fill. That is [INFERRED], not [OBSERVED]: every
+fill seen so far has been a FULL fill, which is exactly the case that cannot test it. A PARTIAL fill
+is the observation that would confirm it independently. Not to be manufactured -- captured if one
+arises. Until then the rate is well-evidenced for full fills and inferred for partial ones.
 
 Superseded derivation: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
 all-in 0.060857 % incl VAT.
