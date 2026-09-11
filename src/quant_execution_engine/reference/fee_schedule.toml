@@ -303,12 +303,143 @@ this platform currently persists. Banking `fee` as "the charged cost" would unde
 by ~7x. The commission remains UNCAPTURED and is the real open question.
 
 🔴 AND ON TFEX IT IS WORSE, BECAUSE `amount` MEANS DIFFERENT THINGS ON TWO PLANES:
-  * ORDER plane (this observation): `amount` = price x qty, NO contract multiplier -> 20.03
+  * ORDER plane (this observation): `amount` = price x MATCHED qty, NO contract multiplier -> 20.03
+    ^ see the STATUS table below: OBSERVED at both endpoints, INFERRED between them
   * POSITION plane: `amount`/`marketVal` carry a x1000 multiplier
     (docs/reference/liberator-account-reads.md §2.2a ①, ORIZ26 avg x qty 1.82 vs amount 1820)
 An SSF is 1000 shares, so the real TFEX notional here is ~20,030 and the reported 20.03 omits it.
 The TFEX `fee` of 0.0014021 THB is therefore ~1/1000th of even a regulator-style charge — not a
 plausible real charge at all. Same field name, two planes, two meanings.
+
+↻ SHARPENED 2026-09-10 — `amount` IS THE MATCHED VALUE, NOT THE ORDERED ONE.
+The ORDER-plane bullet above said "price x qty", which reads as the quantity as ENTERED. It is the
+MATCHED quantity. On an UNMATCHED row `amount` is 0 even though a real `price` is present. Observed
+on three rows the same day, on both accounts:
+    ORI       B  status X  matched 0  price 1.42   amount 0  fee 0  vat 0
+    SAWADU26  B  status X  matched 0  price 17.60  amount 0  fee 0  vat 0
+    BGRIMZ26  S  status C  matched 0  price 20.20  amount 0  fee 0  vat 0
+Neither read alone was sufficient: this session's 20:36 BKK read carried the amount=0 / fee=0 rows
+FIRST, and session:lib-research's 22:38 BKK read added `price` -- the field that turns "these rows
+are empty" into "`amount` is the matched value". Two independent observations, one semantic.
+
+🔑 WHY THIS WRONG READING SURVIVED, WHICH IS THE PART THAT GENERALISES: the first fill ever observed
+was BGRIMZ26, matched 1 OF 1. On a FULL fill `price x entered qty` and `price x MATCHED qty`
+COINCIDE -- so the evidence that appeared to establish the rule could not distinguish the two
+readings, and had no counterexample until the unmatched rows arrived. A generalisation drawn from a
+single full fill was never tested by the observation supporting it. Before generalising a field's
+formula, ask which OTHER formula the same observation would equally satisfy.
+
+🔑 CONSEQUENCE, AND IT IS THE REASON THIS IS RECORDED IN A *FEE* FILE: a `fee` of 0 is evidence of
+NO FILL — never of a zero-fee venue. It must not be banked as a charge of zero. `observations/
+blotter_sweep.py` already refuses it structurally by banking only `matched > 0` rows; this is WHY
+that guard is load-bearing rather than merely tidy.
+
+⚠️ STATUS OF EVERY CLAIM IN THIS BLOCK -- stated because the correction above was itself an
+inference in the voice of an observation, and so was its first replacement:
+
+    `amount` != price x ENTERED qty                          [OBSERVED]  3 zero rows, real prices
+    `amount` == 0 when matched == 0                          [OBSERVED]  same 3 rows
+    `amount` == price x qty when matched == entered          [OBSERVED]  2 full fills
+    `amount` == price x MATCHED qty when 0 < matched < ent.   [INFERRED]  no observation exists
+    the 0.007 % ratio survives a partial fill                 [INFERRED]  depends on the row above
+
+🔑 WHAT WE HAVE IS TWO ENDPOINTS, NOT A CURVE. `matched == 0 -> amount == 0` and
+`matched == entered -> amount == price x qty`. "price x MATCHED qty" is the natural line through
+them, and A LINE THROUGH TWO POINTS IS NOT A MEASUREMENT OF THE POINTS BETWEEN.
+
+The full-fill endpoint is confirmed INDEPENDENTLY of the blotter, from `execution.orders`/`fills`:
+BGRIM ordered 1000 filled 1000, BGRIMZ26 ordered 1 filled 1, and the three zero rows ordered
+1000/1/1 filled 0.
+
+🔴 AND THE GAP CANNOT BE CLOSED FROM EXISTING DATA -- BUT STATE IT AT THE RIGHT SCOPE. Zero partial
+fills exist in `execution.orders`/`fills`. "Zero, EVER" was an overclaim: that table is the ENGINE'S,
+so it cannot see an order placed outside the engine, and it spans 2026-08-21 -> 2026-09-10 for
+liberator (257 orders; 263 from 2026-08-20 across all brokers). It is zero over TWENTY DAYS of
+engine-mediated orders, which is a real denominator but not a lifetime one.
+
+🔑 THE CLEANEST STATEMENT NEEDS NO DENOMINATOR AT ALL (session:lib-research's formulation, verified
+here and then widened): an order that was EVER partially filled and did not complete must end in a
+terminal status other than FILLED **while carrying non-zero fills**. Across ALL 257 liberator
+orders -- not just the qty > 1 ones -- that signature has ZERO instances:
+
+    CANCELLED  158 orders, 0 with fills      FILLED  26 orders, 26 with fills
+    REJECTED    72 orders, 0 with fills      EXPIRED  1 order,  0 with fills
+    and no FILLED order is SHORT: FILLED-with-sum(fills) <> quantity is 0
+
+This sidesteps the eligibility argument rather than winning it. It is also stronger than a fills
+query, because `PARTIALLY_FILLED` is a REAL STATE in the frozen machine -- five transitions in
+`core/state_machine.py` -- so this is a case the system explicitly models and has NEVER OCCUPIED.
+
+That upgrade survives the attack it invites -- "a state can exist in a machine and be UNREACHABLE in
+practice, in which case 'never entered' is a fact about our code, not the venue." It is not dead:
+`db/repositories.py:288` picks the target state from summed fills on EVERY fill, inside `apply_fill`'s
+transaction. A second WRITER exists on the amend-restore path, `core/router.py:510`
+(`PENDING_REPLACE -> NEW -> PARTIALLY_FILLED when the order is partly filled`) -- but it has NEVER
+FIRED: its precondition `PENDING_REPLACE` has ZERO transitions in `execution.order_events`. So TWO
+WRITERS IS THE ACCURATE COUNT AND ONE WRITER IS THE EVIDENCE. A writer that never ran belongs in the
+same bucket as a reader for this argument: it did not produce the outcome.
+
+⚠️ ONLY WRITERS COUNT TOWARD REACHABILITY, AND AN EARLIER VERSION OF THIS PARAGRAPH GOT THAT WRONG.
+It cited three sites, of which two -- `_SELECT_OPEN_ORDERS` and `_RECONCILE_STATES` -- merely READ the
+state. A reader cannot make a state occur: if the value never appears, `WHERE status IN ('NEW',
+'PARTIALLY_FILLED')` returns exactly what it should, correct and EMPTY. That is the umbrella's
+"an intentionally-inert code path is indistinguishable from a broken one", and counting those two as
+evidence was the same error as counting REJECTED orders as evidence of no partial fill -- sites that
+could not have produced the outcome. Caught by session:lib-research. The readers show the model is
+COHERENT; they say nothing about whether the state is REACHABLE.
+
+✅ AND THE CLAIM IS POSITIVE, NOT AN ABSENCE. All 26 filled orders arrived as EXACTLY ONE fill row,
+and the state was never even TRANSITED en route to FILLED -- the discriminating branch was reached 26
+times and took the complete path every time.
+
+🔑 "NEVER TRANSITED" IS [OBSERVED], NOT INFERRED, AND IT TOOK AN INSTRUMENT NEITHER SESSION HAD USED.
+Every query above reads CURRENT status, which structurally cannot see a TRANSIENT state that was
+entered and then left. `execution.order_events` records TRANSITIONS (`from_status` -> `to_status`),
+so it can. Transitions INTO each state across all 263 orders:
+
+    PENDING_NEW 263 · NEW 190 · CANCELLED 160 · PENDING_CANCEL 160 · REJECTED 73 · FILLED 29 · EXPIRED 1
+    PARTIALLY_FILLED 0 · PENDING_REPLACE 0
+
+Positive control: the states known to have occurred are non-zero, so a zero here is an answer and not
+a broken read. And the table's CHECK constraint permits all nine states, so `PARTIALLY_FILLED`'s
+absence is not a schema restriction -- the column may legally hold it and never has.
+
+⚠️ THE NEAR-MISS IS WORTH MORE THAN THE RESULT: the first attempt at this queried TERMINAL statuses
+for `PENDING_REPLACE`. That state is transient, so a completed amend leaves a terminal status and is
+INVISIBLE there -- finding nothing would have proved nothing. When asking "did this state ever
+occur?", ask whether your instrument can see a state that was ENTERED AND LEFT. So the finding is not "we looked for partial fills and
+found none"; it is: THIS VENUE, AT THESE ORDER SIZES, REPORTS COMPLETE ATOMIC FILLS, evidenced by 26
+evaluations of a live condition. An absence invites "you queried wrong"; a condition that ran and was
+never true does not.
+
+⚠️ Scope unchanged, and the last clause carries it: 20 days, engine-mediated, and it is a statement
+about THESE ORDER SIZES (160 of 161 TFEX at qty 1; SET at 100/1000). A larger order into a thinner
+book is exactly where it would first fail, and nothing here speaks to that.
+
+The eligibility numbers are still worth keeping, because they say WHY, and the why differs by market:
+
+    SET    96 orders qty>1  ->  33 reached the book  ->  15 actually filled, ALL of them completely
+    TFEX    1 order  qty>1  ->   0 reached the book  (REJECTED 2026-08-31, ORIZ26)
+    (no REJECTED order carries fills, so excluding them is sound -- checked, not assumed)
+
+⇒ THE TWO MARKETS HAVE DIFFERENT DISPOSITIONS AND ONLY ONE IS "AWAITING EVIDENCE":
+  * SET  -- genuinely possible, has not happened, but on a base of FIFTEEN filled orders. That is
+    weak evidence of absence. INFERRED, and a partial may well arise on its own.
+  * TFEX -- 160 of 161 orders are qty 1, where one contract fills or it does not. A partial is
+    IMPOSSIBLE BY CONSTRUCTION at current sizing: not awaiting evidence, CLOSED to evidence. Only a
+    deliberate size change could produce one, and §2.2a's `qty >= 2` ruling already declined that on
+    value. Do not record this half as "pending" -- nothing is pending.
+
+Not to be manufactured either way: the only route to the TFEX evidence is the order that was
+declined.
+
+🔴 A DEGENERATE CASE IS THE MOST DANGEROUS EVIDENCE, BECAUSE IT LOOKS LIKE THE CLEANEST. `matched 1
+of 1`, qty 1, a single row, a full fill, an exact round number -- each satisfies the most candidate
+rules at once. Every wrong generalisation in this block rested on `matched 1 of 1` -- and that was
+NOT an unlucky sample: 160 of 161 TFEX orders are qty 1, so the degenerate case IS this platform's
+normal operating shape, and the first observation of any new field will probably have it. Before
+generalising a field's formula: ask which OTHER formula the same observation would equally satisfy,
+NAME the case that separates them, and check whether you have actually seen it.
 
 Superseded derivation: commission 0.049933 % ex-VAT (~0.05 %), regulator 0.006943 % ex-VAT,
 all-in 0.060857 % incl VAT.
