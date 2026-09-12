@@ -330,9 +330,14 @@ single full fill was never tested by the observation supporting it. Before gener
 formula, ask which OTHER formula the same observation would equally satisfy.
 
 🔑 CONSEQUENCE, AND IT IS THE REASON THIS IS RECORDED IN A *FEE* FILE: a `fee` of 0 is evidence of
-NO FILL — never of a zero-fee venue. It must not be banked as a charge of zero. `observations/
-blotter_sweep.py` already refuses it structurally by banking only `matched > 0` rows; this is WHY
-that guard is load-bearing rather than merely tidy.
+NO FILL — never of a zero-fee venue. IT MUST NOT BE BANKED AS A CHARGE OF ZERO.
+
+⚠️ THIS RULE NOW BINDS A WRITER THAT DOES NOT YET EXIST, WHICH IS WHY IT IS STATED HERE AND NOT IN
+CODE. `observations/blotter_sweep.py` enforced it structurally by banking only `matched > 0` rows,
+and that module was DELETED on 2026-09-12 under issue #289 ("no sweep, no schedule") — its premise
+was refuted, since `fee` is the regulator fee and not the charged cost. Nothing writes `charged`
+observations today. Whatever does next — the pre-place corroborator ([[TK-0528]]) or a successor —
+must carry the same guard, and a `fee` of 0 on an unmatched row is the case it has to refuse.
 
 ⚠️ STATUS OF EVERY CLAIM IN THIS BLOCK -- stated because the correction above was itself an
 inference in the voice of an observation, and so was its first replacement:
