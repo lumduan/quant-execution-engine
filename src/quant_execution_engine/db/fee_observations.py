@@ -5,10 +5,23 @@ deliberately conservative basis pinned at the most expensive tier so every strat
 calculation is deterministic and never flatters itself. This module holds the **FACTS** it
 is checked against.
 
+⚠️ **NOTHING IMPORTS THIS MODULE TODAY, AND THAT IS DELIBERATE — DO NOT READ IT AS AN ORPHAN.**
+Its only production importer was ``observations/blotter_sweep.py``, **deleted 2026-09-12** under
+issue #289 (*"no sweep, no schedule"*): that sweep banked ``/va/order``'s ``fee`` as the charged
+cost, and ``fee`` is the **regulator fee** only — exactly 0.007 % of ``amount`` ex-VAT, with the
+commission ~7.1x larger and absent from the blotter entirely. The sweep's premise was refuted, not
+its schedule.
+
+**This module is retained on purpose.** The decision cancelled *one writer*, not the store: the
+table exists on both nodes with its append-only grant, and the pre-place corroborator ([[TK-0528]])
+is still live and still writes ``indicative_quote`` observations — it is gated only on an operator
+go for a live real-money call. ``execution.fee_observations`` holds 0 rows as of 2026-09-12.
+⇒ if you are here because nothing imports it, that is the recorded state and not a fault.
+
 🔴 **Deliberately NOT part of** :mod:`.repositories`. That module is imported by
 ``core.router`` and both adapters, so anything added to it lands in the order path by
 construction. A cost corroborator that can fail on a network call has no business there, and
-``tests/test_fee_observations.py`` walks the import graph to keep it out.
+``tests/test_fee_observations_store.py`` walks the import graph to keep it out.
 
 **Four properties this module enforces structurally, not by convention:**
 
