@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      simulate_unreachable_index:
+        description: "TEST ONLY: route the audit through a dead proxy. The run must grade could-not-run, never a finding."
+        type: boolean
+        default: false
 
 jobs:
   bandit:
@@ -38,6 +43,9 @@ jobs:
 
   pip-audit:
     runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.audit.outputs.result }}
+      reason: ${{ steps.audit.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +59,77 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups --frozen
+        id: sync
+        continue-on-error: true   # an install that cannot complete is graded below as COULD-NOT-RUN, not as a finding
+        run: |
+          for attempt in 1 2 3; do
+            uv sync --all-groups --frozen && exit 0
+            echo "::warning::dependency install attempt $attempt did not complete"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          exit 1
 
       - name: Run pip-audit
-        run: uv run pip-audit
+        id: audit
+        env:
+          AUDIT: uv run pip-audit
+          SYNC_OUTCOME: ${{ steps.sync.outcome }}
+          SIMULATE_UNREACHABLE: ${{ inputs.simulate_unreachable_index }}
+          UV_NO_SYNC: "1"
+        run: |
+          # THREE OUTCOMES, GRADED APART (operator ruling 2026-09-25). pip-audit exits 1 BOTH when it finds a
+          # vulnerability AND when it cannot reach its index, so its exit code cannot grade it. Its JSON report
+          # is written only by an audit that COMPLETED — that is what separates them:
+          #   found          the report lists a vulnerability → THIS job fails (a finding)
+          #   clean          the report lists none → pass
+          #   could-not-run  no report after 3 attempts, or the install never completed → this job passes and
+          #                  `pip-audit-could-not-run` fails instead: surfaced, never graded as a finding
+          set -u
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          if [ "$SYNC_OUTCOME" != "success" ]; then
+            out result could-not-run; out reason "the dependency install did not complete in 3 attempts"; exit 0
+          fi
+          if [ "$SIMULATE_UNREACHABLE" = "true" ]; then
+            echo "::notice title=Fault injection::audit routed through a dead proxy; this run MUST grade could-not-run"
+            export HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9
+          fi
+          n=""; rc=0
+          for attempt in 1 2 3; do
+            rm -f audit.json
+            $AUDIT --format json --output audit.json --progress-spinner off 2> audit.err; rc=$?
+            n=$(python3 -c 'import json; d = json.load(open("audit.json")); print(sum(len(x.get("vulns", [])) for x in d["dependencies"]))' 2>/dev/null) && break
+            n=""
+            echo "::warning::pip-audit attempt $attempt did not complete (exit $rc): $(grep -v '^[[:space:]]*$' audit.err | tail -n 1 | cut -c1-200)"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 30))
+          done
+          if [ -z "$n" ]; then
+            out result could-not-run
+            out reason "pip-audit did not complete in 3 attempts: $(grep -v '^[[:space:]]*$' audit.err | tail -n 1 | cut -c1-200)"
+            exit 0
+          fi
+          python3 -c 'import json
+          d = json.load(open("audit.json"))
+          for x in d["dependencies"]:
+              for v in x.get("vulns", []):
+                  print(x["name"], x["version"], v["id"], "fix:", ", ".join(v.get("fix_versions", [])) or "none published")'
+          if [ "$n" -gt 0 ]; then
+            out result found; echo "::error title=pip-audit found $n known vulnerabilities::listed above"; exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            out result could-not-run; out reason "pip-audit exited $rc but its report lists no vulnerability"; exit 0
+          fi
+          out result clean
+
+  pip-audit-could-not-run:
+    # Fails ONLY when the audit could not complete (or its job died before grading), so a red run says WHICH
+    # of the two it is. It is not a finding: nothing was found, because nothing could be checked. Re-run it.
+    needs: pip-audit
+    if: always() && needs.pip-audit.outputs.result != 'found' && needs.pip-audit.outputs.result != 'clean'
+    runs-on: ubuntu-latest
+    steps:
+      - name: The dependency audit could not run (this is NOT a finding)
+        env:
+          REASON: ${{ needs.pip-audit.outputs.reason }}
+        run: |
+          echo "::error title=Security audit could not run::${REASON:-the pip-audit job ended without grading (setup or runner failure)}. Nothing was found, because nothing could be checked. Re-run this workflow."
+          exit 1
