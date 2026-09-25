@@ -84,6 +84,10 @@ jobs:
           #   clean          the report lists none → pass
           #   could-not-run  no report after 3 attempts, or the install never completed → this job passes and
           #                  `pip-audit-could-not-run` fails instead: surfaced, never graded as a finding
+          # The runner starts `run:` blocks as `bash -e`: the first command that exits non-zero ends the
+          # script, and pip-audit exits 1 on BOTH outcomes this block exists to tell apart. With errexit on,
+          # the grading below never runs (it did not, on the first runner test, 2026-09-25) — so it is off.
+          set +e
           set -u
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           if [ "$SYNC_OUTCOME" != "success" ]; then
