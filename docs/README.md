@@ -59,6 +59,7 @@ streams are public-readable (api-key-gated).
 |-----|----------------|
 | [`operations/bring-up.md`](operations/bring-up.md) | Bring-up order, the compose configs (public / +Liberator / +Streaming Pro overlay), the schema prerequisite, health checks, tear-down |
 | [`operations/configuration.md`](operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — name / type / default / effect / SecretStr |
+| [`operations/deploy.md`](operations/deploy.md) | Deploying on HOME and AWS through `scripts/deploy.sh`, which refuses an image whose architecture is not the node's; rollback; exit codes |
 | [`operations/kill-switch.md`](operations/kill-switch.md) | Engage / disengage procedures, the stage-flip rule, the breaker relationship |
 | [`operations/troubleshooting.md`](operations/troubleshooting.md) | Common failure modes: breaker tripped, stuck pendings, duplicate-burst, DB/Redis down, gateway 5xx |
 | [`operations/liberator-session-self-heal.md`](operations/liberator-session-self-heal.md) | The bundled Liberator auto-relogin monitor (enabled): the self-heal loop, the iPhone-OTP dependency, the fail-loud alert + response, config surface, enable/disable, the two live gotchas |
