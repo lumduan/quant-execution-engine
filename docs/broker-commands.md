@@ -489,15 +489,29 @@ The router rejects an unsupported combination up front with `capability_unsuppor
 > keeps being believed, and it is believed *instead of* the code.
 
 ```
-GET /accounts/{account}?broker=<broker>            ->  AccountInfo (balance / buying power)
-GET /accounts/{account}/positions?broker=<broker>  ->  { positions: [ {account, market, symbol, net_qty, side} ] }
-GET /accounts/{account}/open-orders?broker=<broker> ->  venue-truth resting orders
+GET /accounts/{account}?broker=<broker>              ->  AccountInfo (balance / buying power)
+GET /accounts/{account}/positions?broker=<broker>    ->  { positions: [ Position, ... ] }
+GET /accounts/{account}/open-orders?broker=<broker>  ->  venue-truth resting orders
+GET /accounts/{account}/orders?broker=<broker>       ->  this engine's own order store, paged (2026-09-29)
+GET /accounts/{account}/venue-orders?broker=<broker> ->  the venue's own order list (2026-09-29)
 ```
+
+`Position` is `{account, market, symbol, net_qty, side}` **plus** `cost_amount`, `avg_price`,
+`market_price`, `market_value`, `unrealized_pl` — each `Decimal | None`, where `None` means *"this
+venue did not report it"*. ↻ *Corrected 2026-09-29: this block showed only the first five fields,
+which stopped being the whole shape when the five value fields landed (see §2's positions note).*
+The two order-history routes, and what each **cannot** contain: [`api/accounts.md`](api/accounts.md).
 
 ✅ **`/positions` is proxied by the gateway and DEPLOYED** — `a0d750f` (PR #37, [[TK-0479]]), HOME
 gateway rebuilt 2026-09-01, image `44ea7f7f1c32` → `b97b841f8562`, verified end-to-end (no key → the
 engine's own 401; with key → 200; engine-direct and via-gateway byte-identical).
 
+> ➡️ **SUPERSEDED 2026-09-03 by `ab4834b` (#59) — this fall-through no longer happens.** A `paper`
+> read of a real broker with no runtime constructed is now **refused** (403 `stage_rejected`), not
+> answered by the sim adapter; §8 has the detail. Measured on HOME 2026-09-29: `/capabilities` reads
+> `adapter_installed=false` for both real brokers, and a positions read for either is refused. The
+> block below is kept as the record of what the old behaviour did.
+>
 > 🔴 **AND ON A `paper` NODE THE ANSWER IS NOT A VENUE ANSWER — [[TK-0488]], found while verifying
 > the above.** At `paper`, a read reaches the real adapter **only if one was constructed**. With no
 > credentials (`adapter_installed=false`) it **falls through to the sim adapter**, which answers
