@@ -559,7 +559,8 @@ class OrderRouter:
     # ⚠️ Deliberately NO ``breaker.guard()``. A tripped breaker refuses placements;
     # a read is exactly what an operator wants DURING a trip, to see venue state.
     # Guarding would remove visibility at the moment it is most needed. A genuinely
-    # dead session still surfaces as a transport error -> 503.
+    # dead session surfaces as a transport error, which has no typed handler, so the
+    # caller gets a bare 500, not a 503 (TK-0553, measured in the pre-open window).
 
     async def get_account(self, broker: Broker, account: str) -> AccountInfo:
         """Normalized balance/buying-power for one account, from venue truth.

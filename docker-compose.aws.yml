@@ -86,9 +86,10 @@ services:
     # ⚠️ This block used to add "No broker credential: at STAGE=sim no broker runtime is
     # ever constructed." Both halves are now false: .env carries
     # EXECUTION_ENGINE_STREAMING_PRO_API_KEY (the BRIDGE api-key — not a broker
-    # credential; login/session/PIN stay in the bridge, D10), and this node runs
-    # STAGE=paper, so a Streaming Pro runtime IS constructed. Placements are still
-    # intercepted to SimAdapter at paper and reach no venue.
+    # credential; login/session/PIN stay in the bridge, D10), and a Streaming Pro runtime
+    # IS constructed. ↻ Corrected 2026-09-29: this said the node runs STAGE=paper, where
+    # placements are intercepted to sim. It has run STAGE=micro_live since 2026-08-25:
+    # placements reach the real venue, with real money.
     env_file: .env
     environment:
       EXECUTION_ENGINE_PG_DSN: "postgresql://quant:quant@execution-postgres:5432/db_execution"
