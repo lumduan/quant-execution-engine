@@ -419,6 +419,7 @@ gated; no secrets (SecretStr examples use `<your-value-here>`).
 |------|---------|
 | [`docs/operations/bring-up.md`](docs/operations/bring-up.md) | Three compose configs, schema prerequisite, health, tear-down, fresh-clone gotcha |
 | [`docs/operations/configuration.md`](docs/operations/configuration.md) | Every `EXECUTION_ENGINE_*` env var — type / default / effect / SecretStr |
+| [`docs/operations/deploy.md`](docs/operations/deploy.md) | Deploy on either node via `scripts/deploy.sh` — refuses an image whose architecture is not the node's (2026-09-29) |
 | [`docs/operations/kill-switch.md`](docs/operations/kill-switch.md) | Engage/disengage, the stage-flip rule, the breaker relationship |
 | [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md) | Breaker tripped, stuck pendings, burst guard, DB/Redis down, gateway 5xx |
 | [`docs/operations/liberator-session-self-heal.md`](docs/operations/liberator-session-self-heal.md) | The bundled Liberator auto-relogin monitor (**enabled**) — self-heal loop, iPhone-OTP dependency, fail-loud response, config surface, the two live gotchas |
