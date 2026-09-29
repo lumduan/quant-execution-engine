@@ -62,12 +62,21 @@ via [`GET /orders/{client_order_id}`](orders-get.md).
 |---|---|---|
 | `real_routing_not_authorized` | 409 | this node is not declared for that account (EH6 — applies to reads too) |
 | `liberator_account_not_found` | 404 | the venue refused the account. **Never rendered as a zero balance** |
-| `liberator_positions_uncaptured` | 501 | positions are not implementable yet — [[TK-0396]] |
+| `liberator_positions_uncaptured` | 501 | a position row whose schema has never been observed — refused rather than guessed |
+| `read_key_forbidden` | 403 | the read-only key reached a route outside the account reads (never these routes) |
 | `public_mode` | 403 | owner mode only; these expose real account financials |
 
-## Not served here
+## Credentials
 
-**Positions.** `get_positions` raises 501: `POST /va/portfolio` answers `result.{list, stock}` and
-**neither array has ever been observed non-empty**, so the element schema has never been captured.
-Adding a route would not fix it — the parse would have to invent field names, which is how the
-`buying_power=0` bug was made. Tracked on [[TK-0396]].
+These routes accept **either** the full `EXECUTION_ENGINE_API_KEY` **or** the optional read-only
+`EXECUTION_ENGINE_READ_API_KEY` ([[TK-0442]] engine layer, GH #395). The read key is accepted
+**nowhere else**: every order write and the kill-switch answer 403 `read_key_forbidden` to it. A
+monitor should hold only the read key.
+
+## ➡️ Positions ARE served — this section used to say otherwise
+
+↻ *This section was headed "Not served here" and said `get_positions` raises 501. That stopped being
+true when positions shipped ([[TK-0396]], then the money block in [[TK-0480]]).* `GET
+/accounts/{account}/positions` is served for both brokers. The 501 survives only for a row whose
+schema has never been observed — e.g. a Streaming Pro TFEX account that actually holds something —
+where the engine refuses rather than inventing field names.

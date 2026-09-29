@@ -43,8 +43,16 @@ class Settings(BaseSettings):
     pg_pool_min_size: int = 1
     pg_pool_max_size: int = 10
 
-    # Optional shared key for X-API-Key (hmac-compared; warn when unset)
+    # The FULL key for X-API-Key (hmac-compared). ↻ This comment said "warn when unset"; that has
+    # been false since [[TK-0462]] — an unset key now fails CLOSED with 503 on every guarded route.
     api_key: str | None = None
+
+    # 🔑 An OPTIONAL read-only key ([[TK-0442]] engine layer, GH #395). It is accepted ONLY on the
+    # account-read allowlist (``api/deps.py::READ_KEY_ROUTES``); every other guarded route — every
+    # order write and the kill-switch included — refuses it with a typed 403 ``read_key_forbidden``.
+    # Unset ⇒ nothing changes: it ADDS a credential and revokes none. It must differ from
+    # ``api_key`` (validated below), because a "read" key equal to the full key is a full key.
+    read_api_key: str | None = None
 
     # PTRM caps (D11) — pre-trade risk gate
     risk_max_order_qty: int = 1000

@@ -37,6 +37,16 @@ class PublicModeRejected(OrderRejectedError):
     code: ClassVar[str] = "public_mode"
 
 
+class ReadKeyForbidden(OrderRejectedError):
+    """The read-only key was presented on a route outside the account-read allowlist.
+
+    A typed 403 rather than a 401 on purpose: "wrong key" and "right key, wrong scope" must stay
+    distinguishable in logs and to the caller ([[TK-0442]] engine layer, GH #395).
+    """
+
+    code: ClassVar[str] = "read_key_forbidden"
+
+
 class KillSwitchEngagedError(OrderRejectedError):
     """Global kill-switch engaged — all new submits rejected (hard rule 3)."""
 

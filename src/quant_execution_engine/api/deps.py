@@ -19,7 +19,7 @@ from src.quant_execution_engine.adapters.sim_pricing import get_sim_pricer
 from src.quant_execution_engine.adapters.streaming_pro.runtime import get_streaming_pro_adapter
 from src.quant_execution_engine.cache.redis_client import get_redis
 from src.quant_execution_engine.config.settings import Settings, get_settings
-from src.quant_execution_engine.contracts.errors import PublicModeRejected
+from src.quant_execution_engine.contracts.errors import PublicModeRejected, ReadKeyForbidden
 from src.quant_execution_engine.core.router import OrderRouter
 from src.quant_execution_engine.db.postgres import get_pool
 
@@ -113,8 +113,77 @@ async def require_api_key(
             detail="API key authentication is not configured on the server",
         )
     provided = request.headers.get("X-API-Key", "")
-    if not hmac.compare_digest(provided, settings.api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
+    if hmac.compare_digest(provided, settings.api_key):
+        return
+    if _is_read_key(provided, settings):
+        # The read key reached a route that is NOT on the allowlist — which is every route except
+        # the account reads, including every order write and the kill-switch. Refused by DEFAULT:
+        # a route added later carries this guard unless someone deliberately opts it into
+        # ``require_read_or_full_key``, so forgetting to classify a new route fails SAFE.
+        raise ReadKeyForbidden(
+            "the read-only key is accepted only on the account-read routes; this route needs "
+            "the full key",
+            detail={"allowlist": sorted(f"{m} {p}" for m, p in READ_KEY_ROUTES)},
+        )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
+
+
+# 🔑 The ONLY routes the read-only key may call ([[TK-0442]] engine layer, GH #395, operator ruling
+# 2026-09-29). Native paths; the gateway alias re-mounts the same route objects, so the same guard
+# applies there. This set is PINNED by ``tests/test_api_read_key.py``, which walks every mounted
+# route: a route that accepts the read key without being listed here fails CI, and so does a
+# listed route that does not accept it.
+READ_KEY_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/accounts/{account}"),
+        ("GET", "/accounts/{account}/positions"),
+        ("GET", "/accounts/{account}/open-orders"),
+    }
+)
+
+
+def _is_read_key(provided: str, settings: Settings) -> bool:
+    """True only for a configured read key that DIFFERS from the full key and matches.
+
+    A read key equal to the full key would not be scoped at all — presenting it passes the full
+    guard first — so it is never treated as a read key, and the collision is logged loudly. The
+    full key's holders are unaffected either way.
+    """
+    read_key = settings.read_api_key
+    if not read_key:
+        return False
+    if settings.api_key is not None and hmac.compare_digest(read_key, settings.api_key):
+        logger.error(
+            "EXECUTION_ENGINE_READ_API_KEY equals EXECUTION_ENGINE_API_KEY — it is NOT a scoped "
+            "key, so it is ignored as one. Generate a distinct value."
+        )
+        return False
+    return hmac.compare_digest(provided, read_key)
+
+
+async def require_read_or_full_key(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> None:
+    """Accept the full key OR the read-only key. Used ONLY on :data:`READ_KEY_ROUTES`.
+
+    Fails closed exactly like :func:`require_api_key` when no full key is configured (503): a node
+    that lost its full key is misconfigured, and serving reads on the read key alone would make
+    that state look healthy.
+    """
+    if settings.api_key is None:
+        logger.error(
+            "EXECUTION_ENGINE_API_KEY is not configured — refusing every guarded request "
+            "(fail-closed, TK-0462), the read-only routes included."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API key authentication is not configured on the server",
+        )
+    provided = request.headers.get("X-API-Key", "")
+    if hmac.compare_digest(provided, settings.api_key) or _is_read_key(provided, settings):
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
 
 
 async def require_owner_mode(
