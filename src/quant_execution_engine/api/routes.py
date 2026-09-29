@@ -28,6 +28,7 @@ from src.quant_execution_engine.api.deps import (
     get_strategy_id,
     require_api_key,
     require_owner_mode,
+    require_read_or_full_key,
 )
 from src.quant_execution_engine.api.schemas import (
     AmendOrderRequest,
@@ -205,7 +206,7 @@ async def get_order(client_order_id: str, order_router: RouterDep) -> JSONRespon
 
 @router.get(
     "/accounts/{account}",
-    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
     summary="Normalized account balance / buying power (venue truth)",
 )
 async def get_account(
@@ -233,7 +234,7 @@ async def get_account(
 
 @router.get(
     "/accounts/{account}/positions",
-    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
     summary="VENUE-TRUTH holdings for one account",
 )
 async def get_positions(
@@ -272,7 +273,7 @@ async def get_positions(
 
 @router.get(
     "/accounts/{account}/open-orders",
-    dependencies=[Depends(require_api_key), Depends(require_owner_mode)],
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
     summary="VENUE-TRUTH resting orders for one account (not the durable store)",
 )
 async def get_open_orders(

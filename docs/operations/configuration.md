@@ -35,7 +35,8 @@ There is **no** `API_HOST` / `API_PORT` — the container always serves on `:800
 
 | Env var | Type | Default | SecretStr | Effect |
 |---------|------|---------|:---:|--------|
-| `EXECUTION_ENGINE_API_KEY` | str \| None | `None` | — | Shared `X-API-Key` (constant-time compared). When unset, a startup WARNING logs and api-key-gated reads are open |
+| `EXECUTION_ENGINE_API_KEY` | str \| None | `None` | — | The FULL `X-API-Key` (constant-time compared). **When unset, every guarded route answers 503** — fail-closed since [[TK-0462]]. ↻ *This row said an unset key logs a warning and leaves reads open; that stopped being true with TK-0462.* |
+| `EXECUTION_ENGINE_READ_API_KEY` | str \| None | `None` | — | **Optional read-only key** ([[TK-0442]] engine layer, GH #395). Accepted **only** on the account reads listed in `api/deps.py::READ_KEY_ROUTES`; **every other guarded route — every order write and the kill-switch included — answers 403 `read_key_forbidden`**. Unset ⇒ no change. Must differ from the full key; if equal it is ignored as a read key and an error is logged. |
 
 ## PTRM pre-trade risk gate
 
