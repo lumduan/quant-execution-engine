@@ -66,6 +66,48 @@ via [`GET /orders/{client_order_id}`](orders-get.md).
 | `read_key_forbidden` | 403 | the read-only key reached a route outside the account reads (never these routes) |
 | `public_mode` | 403 | owner mode only; these expose real account financials |
 
+## Order history — two routes, two questions (GH #398)
+
+Neither is "complete order history", and each **says what it cannot contain in its own
+`coverage` block**, so a consumer cannot mistake one for the other.
+
+### `GET /accounts/{account}/orders?broker=…` — the engine's store
+
+Every order **this engine** routed for the account, newest first, with fills.
+
+| param | meaning |
+|---|---|
+| `broker` | required, as on every account route |
+| `since`, `until` | ISO timestamps **with an offset** — a naive timestamp is **refused (422)**, never assumed UTC |
+| `limit` | 1-500, default 100 |
+| `cursor` | pass back `next_cursor` unchanged. It is opaque and URL-safe |
+
+`coverage.cannot_contain` names what is missing: orders placed **by hand** or by any other
+application, and orders routed by the **other node**. `coverage.complete_since` is this node's
+first stored order. Every row carries `broker` — **a `sim` row is not a real order**.
+
+### `GET /accounts/{account}/venue-orders?broker=…` — the venue's own list
+
+Every row the broker lists for the account, in **any state** and from **any origin**. The venue
+lists by account, not by client, so this is the one route that can show an order the engine did
+not send. Unlike `/open-orders` it keeps filled and cancelled rows. None is dropped: a field the
+engine cannot map is `null`, and the venue's own `venue_status` / `venue_status_code` /
+`placed_at` are always carried verbatim.
+
+`state` is resting · partially_filled · filled · cancelled · rejected · expired · unknown. It is
+derived from the venue's terminal words **plus** the matched and remaining counters, because the
+reconciler's coarse classifier calls a fully matched order "resting".
+
+**Day scope differs by broker, and `coverage` says which, with its evidence:**
+
+| broker | `day_scope` | evidence |
+|---|---|---|
+| liberator | `today_only` | **OBSERVED** — the venue keeps no order history (umbrella `docs/reference/liberator-account-reads.md` §9.3) |
+| streaming_pro | `not_established` | **NOT MEASURED** ([[TK-0459]]) — treat as today only until it is |
+
+Both routes are gated exactly like the other account reads (stage ladder + EH6), and both accept
+the read-only key.
+
 ## Credentials
 
 These routes accept **either** the full `EXECUTION_ENGINE_API_KEY` **or** the optional read-only

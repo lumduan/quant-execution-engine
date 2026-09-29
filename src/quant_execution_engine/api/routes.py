@@ -11,11 +11,13 @@ read surface (order-book snapshots/SSE + ``GET /orders/stream``) lives in
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from src.quant_execution_engine import __version__
@@ -42,7 +44,7 @@ from src.quant_execution_engine.api.schemas import (
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
-from src.quant_execution_engine.contracts.enums import Broker
+from src.quant_execution_engine.contracts.enums import Broker, to_public_status
 from src.quant_execution_engine.contracts.errors import KillSwitchNotEngagedError
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
@@ -296,6 +298,168 @@ async def get_open_orders(
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"orders": [o.model_dump(mode="json") for o in orders]},
+    )
+
+
+# ── Order history (GH #398, operator ruling 2026-09-29) ───────────────────────────────────
+# Each response says what it CANNOT contain, in the payload itself, so a consumer cannot mistake
+# either route for complete history. The two sources are different questions, not two views of
+# one answer: the store is complete for what THIS ENGINE routed; the venue list covers every
+# origin, but only for the span the venue keeps.
+
+_STORE_COVERAGE: dict[str, object] = {
+    "source": "engine_store",
+    "contains": "orders submitted THROUGH THIS ENGINE on THIS node, with their fills",
+    "cannot_contain": [
+        "orders placed outside this engine — by hand in the broker's app, or by any other "
+        "application",
+        "orders routed by the other node's engine",
+    ],
+}
+
+# Evidence level stated per broker, because it differs: Liberator's day scope is OBSERVED,
+# Streaming Pro's has never been measured, and treating the second like the first would be a guess.
+_VENUE_SCOPE: dict[Broker, dict[str, object]] = {
+    Broker.LIBERATOR: {
+        "day_scope": "today_only",
+        "day_scope_evidence": "OBSERVED — the venue's order list is scoped to the current day; "
+        "it keeps no order history (umbrella docs/reference/liberator-account-reads.md §9.3)",
+        "cannot_contain": ["any order from a previous trading day"],
+    },
+    Broker.STREAMING_PRO: {
+        "day_scope": "not_established",
+        "day_scope_evidence": "NOT MEASURED — whether this venue's order list is day-scoped has "
+        "not been established (TK-0459). Treat it as today only until it is.",
+        "cannot_contain": ["possibly any order from a previous trading day"],
+    },
+}
+_SIM_SCOPE: dict[str, object] = {
+    "day_scope": "simulated",
+    "day_scope_evidence": "sim has no venue; this list is always empty",
+    "cannot_contain": ["anything real"],
+}
+
+
+def _aware(value: datetime | None, name: str, default: datetime) -> datetime:
+    """A naive timestamp is refused, never assumed UTC — a wrong zone raises nothing later."""
+    if value is None:
+        return default
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{name!r} must carry a timezone offset (e.g. 2026-09-29T00:00:00+07:00)",
+        )
+    return value
+
+
+def _encode_cursor(created_at: datetime, client_order_id: str) -> str:
+    """Opaque and URL-SAFE: a raw ISO offset carries ``+``, which a query decodes as a space."""
+    raw = f"{created_at.isoformat()}|{client_order_id}".encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _parse_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    if not cursor:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        ts, sep, cid = raw.partition("|")
+        parsed: datetime | None = datetime.fromisoformat(ts)
+    except (ValueError, UnicodeDecodeError):
+        parsed, sep, cid = None, "", ""
+    if not sep or not cid or parsed is None or parsed.tzinfo is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="malformed cursor — pass back the next_cursor value unchanged",
+        )
+    return parsed, cid
+
+
+@router.get(
+    "/accounts/{account}/orders",
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
+    summary="Order HISTORY for one account from the engine's store — engine-routed orders only",
+)
+async def get_order_history(
+    account: str,
+    broker: Broker,
+    order_router: RouterDep,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: str | None = None,
+) -> JSONResponse:
+    """Every order THIS ENGINE routed for the account, newest first, with fills. Paginated.
+
+    ⚠️ Complete only for what went through this engine. An order placed by hand is NEVER here —
+    ``core/router.py``'s submit path is the store's only insert. ``coverage`` says so in the
+    response, and ``complete_since`` gives the store's first order on this node.
+    """
+    lo = _aware(since, "since", datetime(1970, 1, 1, tzinfo=UTC))
+    hi = _aware(until, "until", datetime.now(UTC))
+    rows, fills, first_at = await order_router.get_order_history(
+        broker, account, since=lo, until=hi, before=_parse_cursor(cursor), limit=limit + 1
+    )
+    page, more = rows[:limit], len(rows) > limit
+    orders = []
+    for row in page:
+        body = row.model_dump(mode="json")
+        body["public_status"] = to_public_status(row.status, row.filled_qty).value
+        body["fills"] = [
+            f.model_dump(mode="json", include={"broker_fill_id", "price", "quantity", "exec_ts"})
+            for f in fills.get(row.client_order_id, [])
+        ]
+        orders.append(body)
+    last = page[-1] if (more and page) else None
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "account": account,
+            "broker": broker.value,
+            "coverage": {
+                **_STORE_COVERAGE,
+                "complete_since": first_at.isoformat() if first_at else None,
+                "window": {"since": lo.isoformat(), "until": hi.isoformat()},
+            },
+            "orders": orders,
+            "next_cursor": _encode_cursor(last.created_at, last.client_order_id) if last else None,
+        },
+    )
+
+
+@router.get(
+    "/accounts/{account}/venue-orders",
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
+    summary="The venue's OWN order list for one account — every state, every origin",
+)
+async def get_venue_orders(
+    account: str,
+    broker: Broker,
+    order_router: RouterDep,
+) -> JSONResponse:
+    """Every row the broker lists for the account, including orders placed by hand.
+
+    The venue lists by ACCOUNT, not by client — so this is the only engine route that can show an
+    order the engine did not send. Unlike ``/open-orders`` it keeps filled and cancelled rows. Its
+    day scope differs by broker and is stated, with its evidence level, in ``coverage``.
+    """
+    views = await order_router.get_venue_orders(broker, account)
+    scope = _VENUE_SCOPE.get(broker, _SIM_SCOPE)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "account": account,
+            "broker": broker.value,
+            "coverage": {
+                "source": "venue_order_list",
+                "contains": "every order the broker lists for this account, in ANY state and "
+                "from ANY origin — the list is per account, not per client, so orders placed "
+                "by hand are expected here too (inferred; not yet observed)",
+                **scope,
+            },
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "orders": [v.model_dump(mode="json") for v in views],
+        },
     )
 
 

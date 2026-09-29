@@ -15,6 +15,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import urlencode
 
+from src.quant_execution_engine.adapters.base import VenueOrderView, display_state
 from src.quant_execution_engine.adapters.streaming_pro.errors import StreamingProMappingError
 from src.quant_execution_engine.adapters.streaming_pro.models import VenueOrderRow
 from src.quant_execution_engine.contracts.enums import (
@@ -226,3 +227,28 @@ def classify_venue_state(row: VenueOrderRow) -> VenueOrderState:
     if row.cancelled > 0 and row.balance == 0 and row.matched < row.volume:
         return VenueOrderState.CANCELLED
     return VenueOrderState.RESTING
+
+
+def venue_row_to_view(row: VenueOrderRow, *, market: Market) -> VenueOrderView:
+    """ANY venue row → a display view (GH #398). Never ``None``: every row is shown.
+
+    ``market`` is the front the row was read from — the caller queried that front by name.
+    """
+    classified = classify_venue_state(row)
+    return VenueOrderView(
+        venue_order_id=row.order_no,
+        market=market,
+        symbol=row.symbol,
+        side=from_venue_side(row.side),
+        quantity=row.volume,
+        price=row.price,
+        matched_qty=row.matched,
+        remaining_qty=row.balance,
+        cancelled_qty=row.cancelled,
+        state=display_state(
+            classified.value, quantity=row.volume, matched=row.matched, remaining=row.balance
+        ),
+        venue_status=row.status,
+        venue_status_code=row.status_show,
+        placed_at=row.entry_time.isoformat() if row.entry_time is not None else None,
+    )

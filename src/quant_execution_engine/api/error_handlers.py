@@ -16,6 +16,7 @@ from src.quant_execution_engine.contracts.errors import OrderRejectedError, Risk
 _STATUS_BY_CODE: dict[str, int] = {
     "public_mode": status.HTTP_403_FORBIDDEN,
     "read_key_forbidden": status.HTTP_403_FORBIDDEN,
+    "venue_orders_unavailable": status.HTTP_501_NOT_IMPLEMENTED,
     "kill_switch_engaged": status.HTTP_503_SERVICE_UNAVAILABLE,
     "kill_switch_env_pinned": status.HTTP_409_CONFLICT,
     "kill_switch_not_engaged": status.HTTP_409_CONFLICT,

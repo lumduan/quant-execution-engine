@@ -31,6 +31,7 @@ from src.quant_execution_engine.adapters.base import (
     CancelAck,
     PlaceAck,
     Position,
+    VenueOrderView,
 )
 from src.quant_execution_engine.adapters.liberator import mapping
 from src.quant_execution_engine.adapters.liberator.errors import (
@@ -363,6 +364,15 @@ class LiberatorAdapter(BrokerAdapter):
         """Raw venue order rows — the reconciler's polling source (ADR §B)."""
         body = await self._transport.get_json(mapping.orders_path(account))
         return parse_order_items(body)
+
+    async def get_venue_orders(self, account: str) -> list[VenueOrderView]:
+        """The venue's whole day list for ``account``, every state and origin (GH #398).
+
+        One venue call (``/orders/{account}``). ``/va/order`` is scoped to the CURRENT DAY,
+        as observed by ``session:lib-research`` — umbrella
+        ``docs/reference/liberator-account-reads.md`` §9.3.
+        """
+        return [mapping.venue_item_to_view(item) for item in await self.fetch_venue_orders(account)]
 
     async def get_open_orders(self, account: str) -> list[NormalizedOrder]:
         """Venue-truth open orders as a read-only normalized view.

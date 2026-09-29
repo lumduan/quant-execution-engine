@@ -47,6 +47,12 @@ class ReadKeyForbidden(OrderRejectedError):
     code: ClassVar[str] = "read_key_forbidden"
 
 
+class VenueOrdersUnavailable(OrderRejectedError):
+    """This adapter has no venue order list to read (GH #398)."""
+
+    code: ClassVar[str] = "venue_orders_unavailable"
+
+
 class KillSwitchEngagedError(OrderRejectedError):
     """Global kill-switch engaged — all new submits rejected (hard rule 3)."""
 

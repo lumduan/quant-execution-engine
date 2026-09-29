@@ -29,6 +29,7 @@ from src.quant_execution_engine.adapters.base import (
     CancelAck,
     PlaceAck,
     Position,
+    VenueOrderView,
 )
 from src.quant_execution_engine.adapters.rate_limit import TokenBucket
 from src.quant_execution_engine.adapters.session import SessionCircuitBreaker
@@ -198,6 +199,18 @@ class StreamingProAdapter(BrokerAdapter):
         """Raw venue order rows for one market — the reconciler's polling source (ADR §B)."""
         body = await self._transport.get_json(mapping.orders_path(account, market))
         return parse_order_rows(body)
+
+    async def get_venue_orders(self, account: str) -> list[VenueOrderView]:
+        """The venue's order list for ``account`` on BOTH fronts, every state and origin (GH #398).
+
+        Two venue calls, SET then TFEX — the same pair ``get_open_orders`` makes. ⚠️ Whether this
+        list is day-scoped has NOT been established ([[TK-0459]]); the route says so.
+        """
+        views: list[VenueOrderView] = []
+        for market in (Market.SET, Market.TFEX):
+            rows = await self.fetch_venue_orders(account, market)
+            views.extend(mapping.venue_row_to_view(row, market=market) for row in rows)
+        return views
 
     async def get_open_orders(self, account: str) -> list[NormalizedOrder]:
         """Venue-truth open orders (both markets) as a read-only normalized view."""

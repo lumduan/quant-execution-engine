@@ -50,7 +50,9 @@ def test_alias_mirrors_every_non_admin_native_route() -> None:
     # added (the alias is derived, so it mirrored them automatically). 9 -> 11 for those two,
     # and 11 -> 12 when GET /accounts/{account}/positions landed 2026-08-28 — again without
     # touching this file's production code, which is the property being asserted.
-    assert len(aliased) == 12, f"expected the 12 gateway-proxied routes, got {len(aliased)}"
+    # ... and 12 -> 14 on 2026-09-29, when GET /accounts/{account}/orders and /venue-orders
+    # landed (GH #398). Moved deliberately, with the routes it counts named here.
+    assert len(aliased) == 14, f"expected the 14 gateway-proxied routes, got {len(aliased)}"
 
 
 def test_admin_is_absent_under_the_alias_but_present_natively() -> None:

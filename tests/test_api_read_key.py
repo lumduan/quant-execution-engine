@@ -65,6 +65,8 @@ ALLOWLIST_PATHS = [
     "/accounts/ACCT?broker=sim",
     "/accounts/ACCT/positions?broker=sim",
     "/accounts/ACCT/open-orders?broker=sim",
+    "/accounts/ACCT/orders?broker=sim",
+    "/accounts/ACCT/venue-orders?broker=sim",
 ]
 
 

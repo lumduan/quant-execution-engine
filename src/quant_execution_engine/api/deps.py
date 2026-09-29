@@ -138,6 +138,9 @@ READ_KEY_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/accounts/{account}"),
         ("GET", "/accounts/{account}/positions"),
         ("GET", "/accounts/{account}/open-orders"),
+        # GH #398, operator ruling 2026-09-29: the history routes join the allowlist.
+        ("GET", "/accounts/{account}/orders"),
+        ("GET", "/accounts/{account}/venue-orders"),
     }
 )
 
