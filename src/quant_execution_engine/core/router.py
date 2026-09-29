@@ -23,6 +23,7 @@ from src.quant_execution_engine.adapters.base import (
     AmendAck,
     BrokerAdapter,
     Position,
+    VenueOrderView,
 )
 from src.quant_execution_engine.adapters.errors import AdapterError
 from src.quant_execution_engine.adapters.market_data import MarketDataClient
@@ -52,7 +53,7 @@ from src.quant_execution_engine.core.routing_authority import assert_may_route_r
 from src.quant_execution_engine.core.stage import AdapterIntent, resolve_adapter
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
-from src.quant_execution_engine.db.models import OrderResultRow, OrderRow
+from src.quant_execution_engine.db.models import FillRow, OrderResultRow, OrderRow
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +603,46 @@ class OrderRouter:
         """
         adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
         return await adapter.get_positions(account)
+
+    async def get_venue_orders(self, broker: Broker, account: str) -> list[VenueOrderView]:
+        """The venue's OWN order list for one account — any state, any origin (GH #398).
+
+        The one place an order placed by hand appears: the venue lists by account, not by client.
+        Resolved exactly like the other broker reads (stage ladder + EH6).
+        """
+        adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        return await adapter.get_venue_orders(account)
+
+    async def get_order_history(
+        self,
+        broker: Broker,
+        account: str,
+        *,
+        since: datetime,
+        until: datetime,
+        before: tuple[datetime, str] | None,
+        limit: int,
+    ) -> tuple[list[OrderResultRow], dict[str, list[FillRow]], datetime | None]:
+        """One page of the account's orders FROM THE STORE — engine-routed only (GH #398).
+
+        🔑 The adapter is resolved and then NOT used. That is deliberate: it applies the SAME
+        gating as every other account read (stage ladder + EH6), so this route cannot show an
+        account the node could not otherwise read. The store itself is never a venue call.
+        """
+        self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        rows = await repositories.fetch_account_orders(
+            self._pool,
+            account=account,
+            broker=broker,
+            since=since,
+            until=until,
+            before=before,
+            limit=limit,
+        )
+        fills = await repositories.fetch_fills_for_orders(
+            self._pool, [r.client_order_id for r in rows]
+        )
+        return rows, fills, await repositories.fetch_first_order_at(self._pool)
 
     def _to_result(self, row: OrderResultRow) -> NormalizedOrderResult:
         return NormalizedOrderResult(

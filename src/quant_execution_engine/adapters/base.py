@@ -203,6 +203,71 @@ class AccountInfo(BaseModel):
         return self
 
 
+class VenueDisplayState(StrEnum):
+    """What a row on the venue's own order list IS, for a reader — not the reconciler's view.
+
+    The adapters' ``classify_venue_state`` is deliberately coarse (resting / cancelled / rejected /
+    expired) because fills are derived from the ``matched`` counter, never from a status. Shown to a
+    person, that coarse state would call a fully matched order "resting". So the display state
+    combines the classification with the counters — see :func:`display_state`.
+    """
+
+    RESTING = "resting"
+    PARTIALLY_FILLED = "partially_filled"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
+
+
+def display_state(
+    classified: str, *, quantity: int, matched: int, remaining: int
+) -> VenueDisplayState:
+    """Classification first for the terminal words; counters decide everything else.
+
+    ``unknown`` is returned rather than guessed when the counters cannot say — nothing matched,
+    nothing remaining, and no terminal word from the venue.
+    """
+    if classified in ("cancelled", "rejected", "expired"):
+        return VenueDisplayState(classified)
+    if matched > 0 and remaining <= 0 and quantity > 0 and matched >= quantity:
+        return VenueDisplayState.FILLED
+    if matched > 0 and remaining > 0:
+        return VenueDisplayState.PARTIALLY_FILLED
+    if remaining > 0:
+        return VenueDisplayState.RESTING
+    return VenueDisplayState.UNKNOWN
+
+
+class VenueOrderView(BaseModel):
+    """One row of the venue's OWN order list for an account — any state, any origin (GH #398).
+
+    Every row the venue returns becomes one of these; none is dropped. A field the engine cannot
+    map is ``None`` rather than guessed, and the venue's own words are always carried verbatim in
+    ``venue_status`` / ``venue_status_code`` / ``placed_at``, so a reader never depends on the
+    engine's interpretation alone.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    venue_order_id: str
+    market: Market | None
+    symbol: str
+    side: Side | None
+    quantity: int
+    price: WireDecimal | None
+    matched_qty: int
+    remaining_qty: int
+    cancelled_qty: int
+    state: VenueDisplayState
+    venue_status: str
+    venue_status_code: str
+    placed_at: str | None = Field(
+        default=None, description="the venue's own entry date/time, VERBATIM — never parsed"
+    )
+
+
 class BrokerAdapter(ABC):
     """Frozen interface — exactly these seven methods (§D)."""
 
@@ -235,6 +300,16 @@ class BrokerAdapter(ABC):
     @abstractmethod
     async def get_positions(self, account: str) -> list[Position]:
         """Normalized positions."""
+
+    async def get_venue_orders(self, account: str) -> list[VenueOrderView]:
+        """The venue's own order list for ``account``, every state (GH #398).
+
+        Not abstract, on purpose: an adapter with no venue order list answers a typed 501 rather
+        than an empty list, because an empty list would read as "no orders today".
+        """
+        from src.quant_execution_engine.contracts.errors import VenueOrdersUnavailable
+
+        raise VenueOrdersUnavailable(f"{type(self).__name__} has no venue order list to read")
 
     @abstractmethod
     async def get_account(self, account: str) -> AccountInfo:

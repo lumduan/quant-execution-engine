@@ -79,6 +79,11 @@ class FillRow(BaseModel):
     exec_ts: datetime
     created_at: datetime
 
+    @classmethod
+    def from_record(cls, record: Any) -> Self:
+        """Build from an asyncpg ``Record`` (or any mapping)."""
+        return cls(**{name: record[name] for name in cls.model_fields})
+
 
 class OrderEventRow(BaseModel):
     """One ``execution.order_events`` audit row (Phase 6 / E1 read side).

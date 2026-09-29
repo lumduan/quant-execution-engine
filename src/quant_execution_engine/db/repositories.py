@@ -28,7 +28,7 @@ from src.quant_execution_engine.contracts.errors import IllegalTransition, Store
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal, RepositoryError
-from src.quant_execution_engine.db.models import OrderEventRow, OrderResultRow, OrderRow
+from src.quant_execution_engine.db.models import FillRow, OrderEventRow, OrderResultRow, OrderRow
 from src.quant_execution_engine.events.hub import get_event_hub
 from src.quant_execution_engine.events.models import FillEvent
 
@@ -426,3 +426,61 @@ async def stream_order_events(
                 "strategy_id": record["strategy_id"],
                 "created_at": ts.isoformat() if ts is not None else None,
             }
+
+
+# ── Order history (GH #398) ───────────────────────────────────────────────────────────────
+# Newest first, keyset-paginated on (created_at, client_order_id) so a page boundary never skips
+# or repeats a row when two orders share a timestamp. ``$5`` NULL means "first page".
+_SELECT_ACCOUNT_ORDERS = (
+    "SELECT o.*, COALESCE(SUM(f.quantity), 0)::bigint AS filled_qty, "
+    "SUM(f.price * f.quantity) AS fill_notional "
+    "FROM execution.orders o "
+    "LEFT JOIN execution.fills f USING (client_order_id) "
+    "WHERE o.account = $1 AND o.broker = $2 AND o.created_at >= $3 AND o.created_at < $4 "
+    "AND ($5::timestamptz IS NULL OR (o.created_at, o.client_order_id) < ($5, $6)) "
+    "GROUP BY o.client_order_id "
+    "ORDER BY o.created_at DESC, o.client_order_id DESC "
+    "LIMIT $7"
+)
+_SELECT_FILLS_FOR = (
+    "SELECT * FROM execution.fills WHERE client_order_id = ANY($1::text[]) "
+    "ORDER BY exec_ts, fill_id"
+)
+_SELECT_FIRST_ORDER_AT = "SELECT min(created_at) FROM execution.orders"
+
+
+async def fetch_account_orders(
+    pool: asyncpg.Pool,
+    *,
+    account: str,
+    broker: Broker,
+    since: datetime,
+    until: datetime,
+    before: tuple[datetime, str] | None,
+    limit: int,
+) -> list[OrderResultRow]:
+    """One page of an account's orders AS STORED — only what this engine routed (GH #398)."""
+    before_ts, before_id = before if before is not None else (None, None)
+    records = await pool.fetch(
+        _SELECT_ACCOUNT_ORDERS, account, broker.value, since, until, before_ts, before_id, limit
+    )
+    return [OrderResultRow.from_record(r) for r in records]
+
+
+async def fetch_fills_for_orders(
+    pool: asyncpg.Pool, client_order_ids: list[str]
+) -> dict[str, list[FillRow]]:
+    """Every fill for the given orders, grouped by order, in execution order."""
+    if not client_order_ids:
+        return {}
+    out: dict[str, list[FillRow]] = {cid: [] for cid in client_order_ids}
+    for record in await pool.fetch(_SELECT_FILLS_FOR, client_order_ids):
+        row = FillRow.from_record(record)
+        out.setdefault(row.client_order_id, []).append(row)
+    return out
+
+
+async def fetch_first_order_at(pool: asyncpg.Pool) -> datetime | None:
+    """When this node's store begins — the honest lower bound of "complete" history."""
+    value = await pool.fetchval(_SELECT_FIRST_ORDER_AT)
+    return value if isinstance(value, datetime) else None

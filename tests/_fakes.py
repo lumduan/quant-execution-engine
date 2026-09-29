@@ -31,7 +31,7 @@ from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core import state_machine
 from src.quant_execution_engine.db import repositories
 from src.quant_execution_engine.db.errors import DuplicateOrderSignal
-from src.quant_execution_engine.db.models import OrderEventRow, OrderResultRow, OrderRow
+from src.quant_execution_engine.db.models import FillRow, OrderEventRow, OrderResultRow, OrderRow
 from src.quant_execution_engine.events.hub import get_event_hub
 from src.quant_execution_engine.events.models import FillEvent
 
@@ -371,6 +371,60 @@ class MemStore:
         notional = sum((f["price"] * f["quantity"] for f in fills), Decimal(0)) if fills else None
         return OrderResultRow(**row, filled_qty=filled, fill_notional=notional)
 
+    # ── order history (GH #398) — mirrors db.repositories' keyset semantics exactly ──────────
+    async def fetch_account_orders(
+        self,
+        pool: Any,
+        *,
+        account: str,
+        broker: Any,
+        since: datetime,
+        until: datetime,
+        before: tuple[datetime, str] | None,
+        limit: int,
+    ) -> list[OrderResultRow]:
+        rows = [
+            r
+            for r in self.orders.values()
+            if r["account"] == account
+            and r["broker"] == broker
+            and since <= r["created_at"] < until
+        ]
+        rows.sort(key=lambda r: (r["created_at"], r["client_order_id"]), reverse=True)
+        if before is not None:
+            rows = [r for r in rows if (r["created_at"], r["client_order_id"]) < before]
+        out: list[OrderResultRow] = []
+        for r in rows[:limit]:
+            fills = self.fills.get(r["client_order_id"], [])
+            filled = sum(f["quantity"] for f in fills)
+            notional = (
+                sum((f["price"] * f["quantity"] for f in fills), Decimal(0)) if fills else None
+            )
+            out.append(OrderResultRow(**r, filled_qty=filled, fill_notional=notional))
+        return out
+
+    async def fetch_fills_for_orders(
+        self, pool: Any, client_order_ids: list[str]
+    ) -> dict[str, list[FillRow]]:
+        return {
+            cid: [
+                FillRow(
+                    fill_id=i + 1,
+                    client_order_id=cid,
+                    broker_fill_id=f["broker_fill_id"],
+                    price=f["price"],
+                    quantity=f["quantity"],
+                    exec_ts=f["exec_ts"],
+                    created_at=f["exec_ts"],
+                )
+                for i, f in enumerate(self.fills.get(cid, []))
+            ]
+            for cid in client_order_ids
+        }
+
+    async def fetch_first_order_at(self, pool: Any) -> datetime | None:
+        return min((r["created_at"] for r in self.orders.values()), default=None)
+
     async def ack_order(self, pool: Any, client_order_id: str, broker_order_id: str) -> None:
         row = self.orders.get(client_order_id)
         if row is None or row["status"] is not OrderState.PENDING_NEW:
@@ -578,6 +632,9 @@ _REPO_FUNCTIONS = (
     "fetch_client_order_ids_for_strategy",
     "fetch_order_events",
     "stream_order_events",
+    "fetch_account_orders",
+    "fetch_fills_for_orders",
+    "fetch_first_order_at",
 )
 
 

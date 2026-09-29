@@ -21,6 +21,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+from src.quant_execution_engine.adapters.base import VenueOrderView, display_state
 from src.quant_execution_engine.adapters.liberator.errors import LiberatorMappingError
 from src.quant_execution_engine.adapters.liberator.models import VenueOrderItem
 from src.quant_execution_engine.contracts.enums import (
@@ -373,3 +374,29 @@ def classify_venue_state(item: VenueOrderItem) -> VenueOrderState:
     if item.cancelled > 0 and item.balance == 0 and item.matched < item.volume:
         return VenueOrderState.CANCELLED
     return VenueOrderState.RESTING
+
+
+def venue_item_to_view(item: VenueOrderItem) -> VenueOrderView:
+    """ANY venue row → a display view (GH #398). Never ``None``: every row is shown.
+
+    Market follows the same rule as :func:`venue_item_to_normalized` — a TFEX row carries a
+    ``position`` — and an unmappable side is ``None`` rather than guessed.
+    """
+    classified = classify_venue_state(item)
+    return VenueOrderView(
+        venue_order_id=item.order_no,
+        market=Market.TFEX if (item.position or "").strip() else Market.SET,
+        symbol=item.symbol,
+        side=from_venue_side(item.side),
+        quantity=item.volume,
+        price=item.price,
+        matched_qty=item.matched,
+        remaining_qty=item.balance,
+        cancelled_qty=item.cancelled,
+        state=display_state(
+            classified.value, quantity=item.volume, matched=item.matched, remaining=item.balance
+        ),
+        venue_status=item.status,
+        venue_status_code=item.status_show,
+        placed_at=item.entry_time.isoformat() if item.entry_time is not None else None,
+    )

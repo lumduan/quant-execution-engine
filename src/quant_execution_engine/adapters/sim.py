@@ -29,6 +29,7 @@ from src.quant_execution_engine.adapters.base import (
     FillReport,
     PlaceAck,
     Position,
+    VenueOrderView,
 )
 from src.quant_execution_engine.contracts.capabilities import (
     CAPABILITY_MATRIX,
@@ -144,6 +145,10 @@ class SimAdapter(BrokerAdapter):
 
     async def get_open_orders(self, account: str) -> list[NormalizedOrder]:
         """Sim holds no venue book — the durable store is the truth."""
+        return []
+
+    async def get_venue_orders(self, account: str) -> list[VenueOrderView]:
+        """Sim has no venue, so no venue order list — empty, and the route labels it ``sim``."""
         return []
 
     async def get_positions(self, account: str) -> list[Position]:
