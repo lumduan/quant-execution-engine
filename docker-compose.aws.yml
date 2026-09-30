@@ -44,10 +44,23 @@
 # and the remap would silently not happen — the engine would come up on a network
 # the bridges are not on, and every route to a venue would fail at DNS with the
 # file looking correct. Verified against `docker compose config`, not by reading.
+#
+# ─── ⑤ execution-read-aws — the Portfolio page's AWS read path ──────────────
+# GH #400, operator-approved 2026-09-29, agreed with session:observability. Exactly
+# two members: this engine, and quant-monitor-aws, which declares the network
+# `external: true` in its own compose. `internal: true`: nothing leaves the box
+# through it; both containers keep their other networks for egress. The monitor
+# holds only the read-only key (EXECUTION_ENGINE_READ_API_KEY), which the engine
+# refuses on every route except the account reads. It is deliberately NOT
+# capture-redundancy-aws: that network also carries both broker bridges, which the
+# monitor has no business reaching.
 networks:
   default:
     name: capture-redundancy-aws
     external: true
+  execution-read:
+    name: execution-read-aws
+    internal: true
 
 services:
   execution-engine:
@@ -97,6 +110,11 @@ services:
     depends_on:
       execution-postgres:
         condition: service_healthy
+    # `default` must stay listed: naming any network here replaces the implicit one,
+    # and without it the engine would lose the bridges, its Postgres and its Redis (④).
+    networks:
+      - default
+      - execution-read
     mem_limit: 256m
     memswap_limit: 256m
     oom_score_adj: 800
