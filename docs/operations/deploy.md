@@ -19,7 +19,7 @@ The check is what makes that mistake loud.
 | Architecture | amd64 | arm64 |
 | Compose files | `docker-compose.yml` + `docker-compose.override.yml` | `docker-compose.yml` + `docker-compose.private.yml` + `docker-compose.aws.yml` |
 | Image the compose files run | `quant-execution-engine-execution-engine` (build-only service, compose default name) | `quant-execution-engine:aws-arm64` |
-| Where the image comes from | `docker compose build execution-engine` on HOME | built on HOME under a distinct tag `quant-execution-engine:aws-arm64-<sha>`, shipped with `docker save \| gzip \| ssh … docker load` |
+| Where the image comes from | built on HOME under its own tag, `quant-execution-engine-execution-engine:<sha>` (see below) | built on HOME under a distinct tag `quant-execution-engine:aws-arm64-<sha>`, shipped with `docker save \| gzip \| ssh … docker load` |
 
 The script reads the compose file set from the **running container's own compose labels**, so a
 deploy recreates the container with exactly the files it was created with. It never builds and
@@ -31,10 +31,27 @@ never pulls (`--no-build --pull never`).
 scripts/deploy.sh --candidate <image> --dry-run   # every check, no change
 scripts/deploy.sh --candidate <image>             # deploy <image>
 scripts/deploy.sh                                 # recreate from what the compose files resolve
+scripts/deploy.sh ... --rollback <image>          # name the rollback when none can be tagged
 ```
 
-HOME, after a build: `scripts/deploy.sh` (the build moved the compose name to the new image).
-AWS, after `docker load`: `scripts/deploy.sh --candidate quant-execution-engine:aws-arm64-<sha>`.
+**Both nodes deploy with `--candidate`, the new image built under its own tag:**
+
+```bash
+# HOME
+docker buildx build --builder default --load -t quant-execution-engine-execution-engine:<sha> .
+scripts/deploy.sh --candidate quant-execution-engine-execution-engine:<sha>
+# AWS, after `docker load` of the image built on HOME
+scripts/deploy.sh --candidate quant-execution-engine:aws-arm64-<sha>
+```
+
+⚠️ **On HOME, never `docker compose build` before a deploy.** ↻ *Corrected 2026-11-02: this
+page said "HOME, after a build: `scripts/deploy.sh`".* HOME's Docker uses the containerd image
+store, where an image that loses its last name is gone, even by ID. A compose build moves the
+compose name to the new image, so the running image can no longer be tagged for rollback. The
+script now refuses that case before changing anything (exit 2). The `--candidate` flow keeps the
+running image's name until the script has tagged it. If the running image is already
+unaddressable, build a rollback image from the running commit and pass it with `--rollback`.
+`--builder default` matters too: HOME's default buildx builder is `armbuilder`.
 
 What a deploy does, in order:
 

@@ -12,6 +12,8 @@
 #   scripts/deploy.sh                       recreate from the image the compose files resolve
 #   scripts/deploy.sh --candidate <image>   point the compose image at <image>, then recreate
 #   scripts/deploy.sh ... --dry-run         run every check, change nothing
+#   scripts/deploy.sh ... --rollback <image> name an existing image as the rollback, for when
+#                                           the running image can no longer be tagged
 #
 # The compose file set is read from the running container's own compose labels, so a deploy
 # recreates the container with exactly the files it was created with (HOME: base + override;
@@ -19,7 +21,8 @@
 #
 # Exit codes:
 #   0  deployed (or, with --dry-run, every check passed)
-#   2  usage or precondition failure (no container, image absent, compose file missing)
+#   2  usage or precondition failure (no container, image absent, compose file missing, or
+#      no rollback reference: see "the running image must still be addressable" below)
 #   3  REFUSED: an image's architecture is not this node's. The first check runs before any
 #      tag moves, so a refusal there changes nothing
 #   4  the recreate or the post-deploy check failed; the rollback command is printed
@@ -35,15 +38,21 @@ die() {
   printf 'deploy: %s\n' "$*" >&2
   exit "$code"
 }
-usage() { sed -n '11,14p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '11,16p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CANDIDATE=""
+ROLLBACK_REF=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --candidate)
       [ $# -ge 2 ] || die 2 "--candidate needs an image reference"
       CANDIDATE=$2
+      shift 2
+      ;;
+    --rollback)
+      [ $# -ge 2 ] || die 2 "--rollback needs an image reference"
+      ROLLBACK_REF=$2
       shift 2
       ;;
     --dry-run)
@@ -141,11 +150,27 @@ else
   TARGET_ID=$(image_id "$REF")
 fi
 
+# The running image must still be addressable, or nothing can roll back to it. On a containerd
+# image store (HOME, 2026-11-02) an image that loses its last name is gone: a `docker compose
+# build` moves the compose name to the new image, and the running one can no longer be tagged.
+# Checked here, before anything changes. Build under a candidate tag instead, or name an image
+# to roll back to with --rollback.
 ROLLBACK_TAG=""
+ROLLBACK_TO=""
 if [ "$TARGET_ID" = "$CUR_ID" ]; then
   say "NOTE: the target is the image already running — this recreates for configuration, not code"
-else
+elif [ -n "$ROLLBACK_REF" ]; then
+  assert_arch "$ROLLBACK_REF" rollback
+  ROLLBACK_TO=$ROLLBACK_REF
+  say "rollback reference given: $ROLLBACK_REF -> $(image_id "$ROLLBACK_REF" | cut -c8-19)"
+elif [ -n "$(image_id "$CUR_ID")" ]; then
   ROLLBACK_TAG="${REF%:*}:rollback-$(date -u +%Y%m%dT%H%M%SZ)"
+  ROLLBACK_TO=$ROLLBACK_TAG
+else
+  die 2 "the running image ${CUR_ID:7:12} is no longer addressable, so no rollback tag can be made. \
+Nothing was changed. This happens on a containerd image store when a build moved the compose name. \
+Build the new image under its own tag and pass it with --candidate, or name an image to roll back \
+to with --rollback <image>."
 fi
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -162,7 +187,7 @@ if [ -n "$ROLLBACK_TAG" ]; then
   docker tag "$CUR_ID" "$ROLLBACK_TAG"
   say "rollback tag: $ROLLBACK_TAG -> ${CUR_ID:7:12}"
 fi
-ROLLBACK_CMD="scripts/deploy.sh --candidate ${ROLLBACK_TAG:-<the previous image>}"
+ROLLBACK_CMD="scripts/deploy.sh --candidate ${ROLLBACK_TO:-<the previous image>}"
 if [ -n "$CANDIDATE" ] && [ "$(image_id "$REF")" != "$TARGET_ID" ]; then
   docker tag "$CANDIDATE" "$REF"
   say "tagged $CANDIDATE as $REF"
