@@ -42,6 +42,9 @@ def resolve(ref):
     if ref in st["tags"]:
         return st["tags"][ref]
     if ref in st["images"]:
+        # containerd image store: an image with no name left is gone, even by ID
+        if st.get("id_needs_name") and ref not in st["tags"].values():
+            return None
         return ref
     return None
 
@@ -77,7 +80,11 @@ elif args[:1] == ["inspect"]:
         key = fmt.split('"')[1]
         print(c["labels"].get(key, ""))
 elif args[:1] == ["tag"]:
-    st["tags"][args[2]] = resolve(args[1])
+    src = resolve(args[1])
+    if src is None:
+        sys.stderr.write(f"Error response from daemon: No such image: {args[1]}\n")
+        sys.exit(1)
+    st["tags"][args[2]] = src
     save()
 elif args[:1] == ["compose"]:
     if "config" in args:
@@ -333,3 +340,75 @@ def test_the_post_check_catches_a_container_on_the_wrong_image(home: Node) -> No
     r = home.run("--candidate", "quant-execution-engine-execution-engine:new")
     assert r.returncode == 4
     assert "is not the target" in r.stderr
+
+
+# ---- the running image must stay addressable (HOME, 2026-11-02) ------------------------------
+# On a containerd image store an image that loses its last name is gone. `docker compose build`
+# moved HOME's compose name to the new image, the running image could no longer be tagged, and
+# the first version of this script stopped at `docker tag` with a raw daemon error.
+
+
+@pytest.fixture
+def home_containerd(home: Node) -> Node:
+    """HOME after `docker compose build`: the compose name moved to the new image, and the
+    running image has no name left."""
+    home.state["id_needs_name"] = True
+    home.state["tags"][home.ref] = AMD_NEW
+    return home
+
+
+def test_a_running_image_with_no_name_left_is_refused_before_any_change(
+    home_containerd: Node,
+) -> None:
+    r = home_containerd.run()
+    assert r.returncode == 2, r.stderr
+    assert "no longer addressable" in r.stderr and "Nothing was changed" in r.stderr
+    assert home_containerd.mutating_calls() == []
+    assert home_containerd.load()["containers"][0]["image"] == AMD
+
+
+def test_the_dry_run_reports_it_too(home_containerd: Node) -> None:
+    r = home_containerd.run("--dry-run")
+    assert r.returncode == 2
+    assert "no longer addressable" in r.stderr
+
+
+def test_rollback_names_an_existing_image_and_the_deploy_proceeds(home_containerd: Node) -> None:
+    home_containerd.state["tags"]["quant-execution-engine-execution-engine:rollback-6404463"] = AMD
+    r = home_containerd.run(
+        "--rollback", "quant-execution-engine-execution-engine:rollback-6404463"
+    )
+    assert r.returncode == 0, r.stderr
+    after = home_containerd.load()
+    assert after["containers"][0]["image"] == AMD_NEW
+    assert not [t for t in after["tags"] if ":rollback-2" in t], "no new rollback tag is made"
+    assert (
+        "rollback: scripts/deploy.sh --candidate "
+        "quant-execution-engine-execution-engine:rollback-6404463" in r.stdout
+    )
+
+
+def test_a_rollback_reference_that_does_not_exist_is_refused(home_containerd: Node) -> None:
+    r = home_containerd.run("--rollback", "nope:1")
+    assert r.returncode == 2
+    assert home_containerd.mutating_calls() == []
+
+
+def test_a_rollback_reference_of_the_wrong_architecture_is_refused(home_containerd: Node) -> None:
+    home_containerd.state["tags"]["odd:arm"] = ARM
+    r = home_containerd.run("--rollback", "odd:arm")
+    assert r.returncode == 3
+    assert home_containerd.mutating_calls() == []
+
+
+def test_the_candidate_flow_keeps_a_rollback_on_a_containerd_store(home: Node) -> None:
+    """The documented HOME flow: build under its own tag, so the running image keeps its name
+    until this script tags it for rollback and only then moves the compose name."""
+    home.state["id_needs_name"] = True
+    home.state["tags"]["quant-execution-engine-execution-engine:ca55a0f"] = AMD_NEW
+    r = home.run("--candidate", "quant-execution-engine-execution-engine:ca55a0f")
+    assert r.returncode == 0, r.stderr
+    after = home.load()
+    rollback = [t for t in after["tags"] if ":rollback-" in t]
+    assert len(rollback) == 1 and after["tags"][rollback[0]] == AMD
+    assert after["containers"][0]["image"] == AMD_NEW
