@@ -180,6 +180,9 @@ def _probe_text(value: object) -> str:
 # so a merge or a pin bump deploys nothing. Pinned by tests/test_api_order_path.py.
 _SESSION_REFUSED_MARK = "SESSION was refused"
 _EDGE_BLOCK = "edge_block"
+_UNREADABLE_VENUE_ANSWER = frozenset(
+    {"json_parse_error", "validation_error", "upstream_response_invalid"}
+)
 
 
 def _session_refused(body: dict[str, Any] | None) -> bool:
@@ -214,7 +217,8 @@ def _classify_probe(status: int, body: dict[str, Any] | None) -> OrderPathProbe:
     * **200** only when the venue's calculation succeeded (``errorCode == 0`` and no ``errMsg``);
     * **400** for ANY ``success: false``: the venue declining the calculation; the endpoint
       refusing our body (``error: validation_error``); or the service unable to read the venue's
-      answer (``error_code: json_parse_error | validation_error``);
+      answer (``error_code: json_parse_error | validation_error``, the latter proposed to be
+      renamed ``upstream_response_invalid``);
     * **401** for an ``AuthenticationError``. Before ``3b7632d`` a refused session landed here
       too, as ``"Authentication failed: HTTP 403"`` (AWS, 2026-11-24/25);
     * **503** for a ``NetworkError``. From ``3b7632d`` a refused session lands here, and the
@@ -246,8 +250,11 @@ def _classify_probe(status: int, body: dict[str, Any] | None) -> OrderPathProbe:
         if body.get("error") == "validation_error":
             return probe(OrderPathOutcome.INPUT_REJECTED)
         # The SERVICE's codes for a venue answer it could not read: not JSON, or not the shape it
-        # expects. Distinct from the ENDPOINT's `error: validation_error` above, which is our body.
-        if body.get("error_code") in ("json_parse_error", "validation_error"):
+        # expects. Distinct from the ENDPOINT's `error: validation_error` above, which is our body:
+        # one word under two keys. session:lib-research proposed renaming the service's to
+        # `upstream_response_invalid` (2026-11-25), so both names are accepted; a node on an older
+        # image keeps emitting the old one.
+        if body.get("error_code") in _UNREADABLE_VENUE_ANSWER:
             return probe(OrderPathOutcome.UNEXPECTED)
         return probe(OrderPathOutcome.VENUE_REJECTED)
     return probe(OrderPathOutcome.UNEXPECTED)

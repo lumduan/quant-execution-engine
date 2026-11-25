@@ -190,6 +190,15 @@ async def test_a_refused_probe_never_feeds_the_breaker() -> None:
             },
             OrderPathOutcome.UNEXPECTED,
         ),
+        (
+            400,
+            {
+                "success": False,
+                "message": "Invalid response structure from API: 1 validation error",
+                "error_code": "upstream_response_invalid",
+            },
+            OrderPathOutcome.UNEXPECTED,
+        ),
         (404, {"detail": "Not Found"}, OrderPathOutcome.UNEXPECTED),
         (
             200,
@@ -205,6 +214,7 @@ async def test_a_refused_probe_never_feeds_the_breaker() -> None:
         "400-venue-declined",
         "400-json-parse",
         "400-venue-answer-unreadable",
+        "400-venue-answer-unreadable-renamed",
         "404",
         "200-nonzero-code",
     ],

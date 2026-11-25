@@ -146,7 +146,7 @@ its contract month. Pick a price the venue will calculate for, normally near the
 | `venue_rejected` | the venue answered and declined this order | 400 "calculation failed", or 200 with a non-zero `errorCode` |
 | `input_rejected` | the body was refused before the venue saw it | 422, 400 with `error: validation_error`, or a price the wire cannot carry |
 | `unreachable` | no connection to the bridge, or the bridge could not reach the venue | a connection failure, 500, or any other 503 |
-| `unexpected` | an answer none of the above describes | anything else, including 400 with `error_code` `json_parse_error` or `validation_error` (the bridge could not read the venue's answer) |
+| `unexpected` | an answer none of the above describes | anything else, including 400 with `error_code` `json_parse_error`, `validation_error` or `upstream_response_invalid` (the bridge could not read the venue's answer; the last is a proposed rename of the second) |
 | `unsupported` | this broker has no call on its order path that places nothing | — (Streaming Pro, sim) |
 
 ⚠️ **`ok` means the fee calculation was accepted. It does not prove a place would be.** The
