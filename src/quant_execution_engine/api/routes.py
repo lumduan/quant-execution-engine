@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -44,7 +45,7 @@ from src.quant_execution_engine.api.schemas import (
 from src.quant_execution_engine.cache.errors import CacheError
 from src.quant_execution_engine.config.settings import Settings
 from src.quant_execution_engine.contracts.capabilities import CAPABILITY_MATRIX
-from src.quant_execution_engine.contracts.enums import Broker, to_public_status
+from src.quant_execution_engine.contracts.enums import Broker, Market, to_public_status
 from src.quant_execution_engine.contracts.errors import KillSwitchNotEngagedError
 from src.quant_execution_engine.contracts.orders import NormalizedOrder
 from src.quant_execution_engine.core.router import OrderRouter
@@ -459,6 +460,50 @@ async def get_venue_orders(
             },
             "retrieved_at": datetime.now(UTC).isoformat(),
             "orders": [v.model_dump(mode="json") for v in views],
+        },
+    )
+
+
+@router.get(
+    "/accounts/{account}/order-path",
+    dependencies=[Depends(require_read_or_full_key), Depends(require_owner_mode)],
+    summary="Probe the venue's ORDER path for one account without placing an order",
+)
+async def probe_order_path(
+    account: str,
+    broker: Broker,
+    market: Market,
+    order_router: RouterDep,
+    symbol: str = Query(min_length=1, max_length=32, pattern=r"^[A-Z0-9.\-]+$"),
+    price: Decimal = Query(gt=0),
+) -> JSONResponse:
+    """One no-order call on the venue's order path, and what it found (GH #468).
+
+    Asks the venue's order path, without placing anything, whether it is open to this node. On
+    2026-11-24 the AWS Liberator bridge refused TFEX places with HTTP 403 while the engine's
+    session heartbeat and every read stayed healthy; this route answers ``refused`` for that.
+    ``ok`` means the venue accepted the fee calculation for this body; it is not proof that a
+    place would be accepted (see ``LiberatorAdapter.probe_order_path``).
+    Always HTTP 200 when it ran: the finding is in ``outcome``, and ``ok`` is ``outcome == "ok"``.
+    ``symbol`` and ``price`` are the caller's, because a probe instrument hard-coded here would
+    expire with its contract month.
+    """
+    result = await order_router.probe_order_path(broker, account, market, symbol, price)
+    probe = result.probe
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "broker": broker.value,
+            "market": market.value,
+            "symbol": symbol,
+            "price": format(price, "f"),
+            "ok": probe.ok,
+            "outcome": probe.outcome.value,
+            "bridge_status": probe.bridge_status,
+            "message": probe.message,
+            "places_no_order": True,
+            "checked_at": result.checked_at.isoformat(),
+            "cached": result.cached,
         },
     )
 

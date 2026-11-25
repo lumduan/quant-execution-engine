@@ -108,6 +108,82 @@ reconciler's coarse classifier calls a fully matched order "resting".
 Both routes are gated exactly like the other account reads (stage ladder + EH6), and both accept
 the read-only key.
 
+## `GET /accounts/{account}/order-path?broker=&market=&symbol=&price=` — is the order path open? (GH #468)
+
+One **no-order** call on the venue's order path, and what it found. It exists because on
+2026-11-24 the AWS Liberator bridge refused TFEX places with HTTP 403 while the engine's session
+heartbeat and every read stayed healthy. Nothing the engine served could tell
+"the session is alive" from "the venue will take an order".
+
+```bash
+curl "http://localhost:8400/accounts/70000007/order-path?broker=liberator&market=TFEX&symbol=S50Z26&price=700" \
+  -H "X-API-Key: <key>"
+```
+
+```json
+{
+  "broker": "liberator", "market": "TFEX", "symbol": "S50Z26", "price": "700",
+  "ok": true, "outcome": "ok", "bridge_status": 200,
+  "message": "TFEX order pre-place calculation completed successfully",
+  "places_no_order": true, "checked_at": "2026-11-25T09:30:00.123456+00:00", "cached": false
+}
+```
+
+**What it calls.** The engine builds a real `NormalizedOrder` (BUY · LIMIT · DAY; 100 shares on
+SET, one contract `OPEN` on TFEX) and sends **the exact body a place would send** to the bridge's
+fee calculation, `POST order/pre-place/{set|tfex}`. That call places nothing. It goes through the
+same cached bridge session as a place (liberator-trading-api `3b7632d`,
+`tfex_order_service.pre_place_order` and `place_order` both use `_get_session()`).
+`symbol` and `price` are the caller's: an instrument hard-coded in the engine would expire with
+its contract month. Pick a price the venue will calculate for, normally near the market.
+
+**HTTP 200 whenever it ran. The finding is `outcome`**, and `ok` is `outcome == "ok"`:
+
+| `outcome` | means | the bridge said |
+|---|---|---|
+| `ok` | the venue calculated this order | 200, `errorCode` 0 |
+| `refused` | the venue or its edge refused **this node's session** | 401/403; or (from `3b7632d`) a 503 marked as a refused session |
+| `venue_rejected` | the venue answered and declined this order | 400 "calculation failed", or 200 with a non-zero `errorCode` |
+| `input_rejected` | the body was refused before the venue saw it | 422, 400 with `error: validation_error`, or a price the wire cannot carry |
+| `unreachable` | no connection to the bridge, or the bridge could not reach the venue | a connection failure, 500, or any other 503 |
+| `unexpected` | an answer none of the above describes | anything else, including 400 with `error_code` `json_parse_error` or `validation_error` (the bridge could not read the venue's answer) |
+| `unsupported` | this broker has no call on its order path that places nothing | — (Streaming Pro, sim) |
+
+⚠️ **`ok` means the fee calculation was accepted. It does not prove a place would be.** The
+evidence is one incident on AWS, 2026-11-25: pre-place answered 401 at 10:04:05 BKK while places
+were refused, and 200 after the 10:04:34 bridge restart (GH #468). A refused pre-place tracked a
+refused place. Whether an accepted pre-place means an accepted place had not been shown by a real
+order when this was written.
+
+⚠️ **On a bridge at `3b7632d` or later, a refused probe also REPAIRS the session.** The bridge retires
+a session the venue refused, so the next call (probe or order) builds a fresh one. A second probe
+after the window below is therefore the "is a fresh session refused too?" test. For a refused
+fresh session, the bridge's own message says to suspect the account being logged in elsewhere,
+which needs a re-login and the operator told.
+
+🔶 **How a refused session is recognised on a 503 is temporary.** At `3b7632d` the bridge's endpoints
+drop the exception's `details`, so the engine matches the bridge's sentence *"SESSION was
+refused"*. liberator-trading-api PR #65 (opened 2026-11-25) carries `details.classification`
+through. The engine already accepts `classification == "edge_block"`, so no engine change is
+needed when it ships. The sentence match stays until #65 is **running** on every node: a merge or
+a pin bump deploys nothing on a containerised bridge.
+
+**Bounded.** At most **one venue call per `(broker, account, market)` per
+`EXECUTION_ENGINE_ORDER_PATH_PROBE_MIN_INTERVAL_SECONDS`** (default 30). A repeat inside the window
+gets the last answer with `cached: true` and the original `checked_at`, whatever its `symbol` or
+`price`. Concurrent callers share one call. The bound is per process.
+
+**Never touches the breaker.** A refused probe is a finding to report, and three breaker failures
+mass-cancel. It is never retried, so the venue sees one call.
+
+Gated exactly like the other account reads (stage ladder + EH6), so an undeclared account is
+refused before any venue call. It accepts the read-only key. The answer does not echo the account,
+and digit runs of six or more in a venue message are masked.
+
+**Not proxied by the gateway.** The gateway proxies an explicit list of execution routes, and this
+route, like the two order-history routes above, is not on it. Call the engine directly: on HOME
+`:8400`, on AWS over the internal `execution-read-aws` network.
+
 ## Credentials
 
 These routes accept **either** the full `EXECUTION_ENGINE_API_KEY` **or** the optional read-only

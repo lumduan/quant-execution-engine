@@ -268,6 +268,38 @@ class VenueOrderView(BaseModel):
     )
 
 
+class OrderPathOutcome(StrEnum):
+    """What a no-order probe of the venue's ORDER path found (GH #468).
+
+    A session that reads fine can still be refused on the order path: on 2026-11-24 TFEX
+    pre-place and place on AWS got HTTP 403 while balance reads and SET orders worked (GH #468).
+    These outcomes keep "the path is refused" apart from "the probe itself was wrong". Each
+    adapter maps its bridge's answers; Liberator's mapping is ``_classify_probe``.
+    """
+
+    OK = "ok"  # the venue accepted the no-order calculation
+    REFUSED = "refused"  # the venue or its edge refused THIS NODE'S SESSION
+    VENUE_REJECTED = "venue_rejected"  # the venue answered, and declined this order
+    INPUT_REJECTED = "input_rejected"  # the body was refused before the venue saw it
+    UNREACHABLE = "unreachable"  # no connection, or the bridge could not reach the venue
+    UNEXPECTED = "unexpected"  # an answer none of the above describes
+    UNSUPPORTED = "unsupported"  # this broker's bridge has no call that places nothing
+
+
+class OrderPathProbe(BaseModel):
+    """The result of one no-order call on a venue's order path. It never places an order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: OrderPathOutcome
+    bridge_status: int | None = None
+    message: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome is OrderPathOutcome.OK
+
+
 class BrokerAdapter(ABC):
     """Frozen interface — exactly these seven methods (§D)."""
 
@@ -310,6 +342,17 @@ class BrokerAdapter(ABC):
         from src.quant_execution_engine.contracts.errors import VenueOrdersUnavailable
 
         raise VenueOrdersUnavailable(f"{type(self).__name__} has no venue order list to read")
+
+    async def probe_order_path(self, order: NormalizedOrder) -> OrderPathProbe:
+        """Exercise the venue's order path for ``order`` WITHOUT placing it (GH #468).
+
+        Not abstract, on purpose: a bridge with no call that places nothing answers
+        ``unsupported``, which keeps "cannot be checked" apart from "checked and refused".
+        """
+        return OrderPathProbe(
+            outcome=OrderPathOutcome.UNSUPPORTED,
+            message=f"{type(self).__name__}: no order-path call on this bridge places nothing",
+        )
 
     @abstractmethod
     async def get_account(self, account: str) -> AccountInfo:

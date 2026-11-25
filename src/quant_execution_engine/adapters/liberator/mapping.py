@@ -73,6 +73,11 @@ def place_path(market: Market) -> str:
     return "order/place/set" if market is Market.SET else "order/place/tfex"
 
 
+def pre_place_path(market: Market) -> str:
+    """The bridge's fee calculation for a would-be order. It places nothing (GH #468)."""
+    return "order/pre-place/set" if market is Market.SET else "order/pre-place/tfex"
+
+
 def cancel_path(market: Market) -> str:
     return "order/cancelled/set" if market is Market.SET else "order/cancelled/tfex"
 
