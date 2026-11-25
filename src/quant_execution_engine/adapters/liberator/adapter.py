@@ -19,6 +19,7 @@ Boundaries the adapter keeps:
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -29,6 +30,8 @@ from src.quant_execution_engine.adapters.base import (
     AmendAck,
     BrokerAdapter,
     CancelAck,
+    OrderPathOutcome,
+    OrderPathProbe,
     PlaceAck,
     Position,
     VenueOrderView,
@@ -158,6 +161,112 @@ def _position(account: str, market: Market, raw: dict[str, Any]) -> Position:
         market_value=_opt_decimal(raw, "marketVal"),
         unrealized_pl=_opt_decimal(raw, "unrealizedPL"),
     )
+
+
+_LONG_DIGITS = re.compile(r"\d{6,}")  # account numbers and order ids, never echoed onward
+
+
+def _probe_text(value: object) -> str:
+    """A bridge or venue message, safe to return: long digit runs masked, length capped."""
+    return _LONG_DIGITS.sub("****", str(value))[:200]
+
+
+# 🔶 TEMPORARY. The bridge's TransportBlockedError text (liberator-trading-api 3b7632d, GH #468).
+# At 3b7632d its endpoints answer it as a 503 whose `details` DROP the `edge_block`
+# classification, so this sentence is the only thing separating "this session was refused" from a
+# real outage. liberator-trading-api PR #65 (2026-11-25, unmerged when this was written) carries
+# `e.details` through, making `details.classification == "edge_block"` the contract. 🔴 Remove this
+# match only once #65 is RUNNING on every node, not when it merges: the bridge is containerised,
+# so a merge or a pin bump deploys nothing. Pinned by tests/test_api_order_path.py.
+_SESSION_REFUSED_MARK = "SESSION was refused"
+_EDGE_BLOCK = "edge_block"
+_UNREADABLE_VENUE_ANSWER = frozenset(
+    {"json_parse_error", "validation_error", "upstream_response_invalid"}
+)
+
+
+def _bridge_retired_session(status: int, body: dict[str, Any] | None) -> bool:
+    """True when the bridge says it DISCARDED this session: a 503 marking it refused (3b7632d+).
+
+    Only a bridge at ``3b7632d`` or later retires a refused session, and it answers that with a
+    503. A 401/403 (any older bridge) means the same session is still cached.
+    """
+    return status == 503 and _session_refused(body)
+
+
+def _session_refused(body: dict[str, Any] | None) -> bool:
+    """True when a bridge 503 says THIS SESSION was refused, not that the venue is unreachable."""
+    if body is None:
+        return False
+    details = body.get("details")
+    if isinstance(details, dict) and details.get("classification") == _EDGE_BLOCK:
+        return True
+    texts = [body.get("message")]
+    if isinstance(details, dict):
+        texts.append(details.get("network_error"))
+    return any(isinstance(t, str) and _SESSION_REFUSED_MARK in t for t in texts)
+
+
+def _probe_message(body: dict[str, Any]) -> str | None:
+    """The most specific human text in a bridge body: the venue's errMsg, then the bridge's own."""
+    data = body.get("data")
+    if isinstance(data, dict) and data.get("errMsg"):
+        return _probe_text(data["errMsg"])
+    for key in ("message", "detail"):
+        if isinstance(body.get(key), str) and body[key]:
+            return _probe_text(body[key])
+    return None
+
+
+def _classify_probe(status: int, body: dict[str, Any] | None) -> OrderPathProbe:
+    """Map one bridge pre-place answer onto an :class:`OrderPathOutcome` (GH #468).
+
+    The bridge's pre-place endpoints (both markets, read at liberator-trading-api ``3b7632d``):
+
+    * **200** only when the venue's calculation succeeded (``errorCode == 0`` and no ``errMsg``);
+    * **400** for ANY ``success: false``: the venue declining the calculation; the endpoint
+      refusing our body (``error: validation_error``); or the service unable to read the venue's
+      answer (``error_code: json_parse_error | validation_error``, the latter proposed to be
+      renamed ``upstream_response_invalid``);
+    * **401** for an ``AuthenticationError``. Before ``3b7632d`` a refused session landed here
+      too, as ``"Authentication failed: HTTP 403"`` (AWS, 2026-11-24/25);
+    * **503** for a ``NetworkError``. From ``3b7632d`` a refused session lands here, and the
+      bridge RETIRES it, so the next call (probe or order) builds a fresh one. Told apart from
+      a real outage by :func:`_session_refused`;
+    * **500** for anything else; **422** when FastAPI rejects our body.
+    """
+    message = _probe_message(body) if body is not None else None
+
+    def probe(outcome: OrderPathOutcome) -> OrderPathProbe:
+        return OrderPathProbe(outcome=outcome, bridge_status=status, message=message)
+
+    if status in (401, 403):
+        return probe(OrderPathOutcome.REFUSED)
+    if status >= 500:
+        refused = _bridge_retired_session(status, body)
+        return probe(OrderPathOutcome.REFUSED if refused else OrderPathOutcome.UNREACHABLE)
+    if status == 422:
+        return probe(OrderPathOutcome.INPUT_REJECTED)
+    if body is None:
+        return probe(OrderPathOutcome.UNEXPECTED)
+    if status == 200:
+        data = body.get("data")
+        code = data.get("errorCode") if isinstance(data, dict) else None
+        if body.get("success") is True and code in (None, 0):
+            return probe(OrderPathOutcome.OK)
+        return probe(OrderPathOutcome.VENUE_REJECTED)
+    if status == 400 and body.get("success") is False:
+        if body.get("error") == "validation_error":
+            return probe(OrderPathOutcome.INPUT_REJECTED)
+        # The SERVICE's codes for a venue answer it could not read: not JSON, or not the shape it
+        # expects. Distinct from the ENDPOINT's `error: validation_error` above, which is our body:
+        # one word under two keys. session:lib-research proposed renaming the service's to
+        # `upstream_response_invalid` (2026-11-25), so both names are accepted; a node on an older
+        # image keeps emitting the old one.
+        if body.get("error_code") in _UNREADABLE_VENUE_ANSWER:
+            return probe(OrderPathOutcome.UNEXPECTED)
+        return probe(OrderPathOutcome.VENUE_REJECTED)
+    return probe(OrderPathOutcome.UNEXPECTED)
 
 
 def _venue_result(body: Any, *, what: str) -> dict[str, Any]:
@@ -358,6 +467,57 @@ class LiberatorAdapter(BrokerAdapter):
                 "orchestration with a new client_order_id"
             ),
         )
+
+    # ------------------------------------------------------------------ order-path probe
+    async def probe_order_path(self, order: NormalizedOrder) -> OrderPathProbe:
+        """One NO-ORDER call on the venue's order path for ``order`` (GH #468).
+
+        ``POST order/pre-place/{set|tfex}`` is the bridge's fee calculation: it takes the same
+        body as a place and places nothing, through the same cached bridge session as a place.
+        On AWS 2026-11-25 it answered 401 "Authentication failed: HTTP 403" at 10:04:05 BKK and
+        200 after the 10:04:34 bridge restart, while the engine's session heartbeat read healthy
+        throughout (GH #468). ⚠️ That is ONE incident: a refused pre-place tracked a refused place,
+        but "pre-place ok ⇒ a place would be accepted" had not been shown by a real order when
+        this was written.
+
+        Never touches the breaker: a refused probe is a finding to report, and a breaker trip
+        would mass-cancel.
+
+        🔑 **Retried AT MOST ONCE, and only when the bridge says it DISCARDED a refused session**
+        (:func:`_bridge_retired_session`). That bridge's message says "RETRY THE CALL FIRST", and
+        after the HOME bridge deploy of 2026-11-25 ~18:04 BKK the FIRST venue call of two separate
+        bridge services (one of them this pre-place) was refused on a new session and the rebuilt
+        session worked, 2 of 2 (GH #468). Without the retry a healthy bridge reads ``refused``
+        just after a restart. The answer carries ``retried`` and the first outcome, so "recovered
+        by itself" stays distinct from "refused twice". It reports WHAT happened, never a cause.
+        A 401/403 is NOT retried: an older bridge discards nothing, so the same session would be
+        asked again. Retrying is safe only because pre-place places nothing; no place path retries.
+        """
+        try:
+            payload = mapping.to_place_payload(order)  # identical body to a real place
+        except LiberatorMappingError as exc:
+            return OrderPathProbe(outcome=OrderPathOutcome.INPUT_REJECTED, message=_probe_text(exc))
+        path = mapping.pre_place_path(order.market)
+        first, retired = await self._probe_once(path, payload)
+        if not retired:
+            return first
+        second, _ = await self._probe_once(path, payload)  # once: never a third call
+        return second.model_copy(
+            update={
+                "retried": True,
+                "first_outcome": first.outcome,
+                "first_bridge_status": first.bridge_status,
+            }
+        )
+
+    async def _probe_once(self, path: str, payload: dict[str, Any]) -> tuple[OrderPathProbe, bool]:
+        """One pre-place call: its outcome, and whether the bridge discarded the session."""
+        try:
+            status, body = await self._transport.probe_post(path, payload)
+        except LiberatorTransportError as exc:
+            probe = OrderPathProbe(outcome=OrderPathOutcome.UNREACHABLE, message=_probe_text(exc))
+            return probe, False
+        return _classify_probe(status, body), _bridge_retired_session(status, body)
 
     # ------------------------------------------------------------------ reads
     async def fetch_venue_orders(self, account: str) -> list[VenueOrderItem]:

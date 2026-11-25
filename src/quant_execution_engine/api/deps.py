@@ -141,6 +141,10 @@ READ_KEY_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # GH #398, operator ruling 2026-09-29: the history routes join the allowlist.
         ("GET", "/accounts/{account}/orders"),
         ("GET", "/accounts/{account}/venue-orders"),
+        # GH #468, operator go 2026-11-25: the order-path probe places nothing, and runs at most
+        # one probe (at most two venue calls) per (broker, account, market) per window, so a
+        # read-key holder cannot use it to drive the venue's order edge.
+        ("GET", "/accounts/{account}/order-path"),
     }
 )
 

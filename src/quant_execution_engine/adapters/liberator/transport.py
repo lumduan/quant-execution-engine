@@ -79,6 +79,29 @@ class LiberatorTransport:
             )
         return self._parse_envelope(path, response)
 
+    async def probe_post(
+        self, path: str, payload: dict[str, Any]
+    ) -> tuple[int, dict[str, Any] | None]:
+        """POST one JSON body and return ``(HTTP status, JSON object body or None)`` (GH #468).
+
+        Unlike :meth:`post`, every status is RETURNED, not raised, and the body is not forced
+        through :class:`LiberatorEnvelope`: the order-path probe classifies the bridge's own error
+        bodies, which carry keys the envelope does not model. Only a connection failure raises
+        :class:`LiberatorTransportError`.
+        """
+        logger.debug("liberator probe POST %s payload=%s", path, redact_payload(payload))
+        try:
+            response = await self._client.post(
+                self._url(path), json=payload, headers=self._headers()
+            )
+        except httpx.HTTPError as exc:
+            raise LiberatorTransportError(f"liberator POST {path} failed: {exc!r}") from exc
+        try:
+            body = response.json()
+        except ValueError:
+            return response.status_code, None
+        return response.status_code, body if isinstance(body, dict) else None
+
     async def get_json(self, path: str) -> dict[str, Any]:
         """GET one JSON document (orders query, health probes)."""
         logger.debug("liberator GET %s", path)

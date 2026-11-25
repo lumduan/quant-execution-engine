@@ -11,17 +11,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
+from pydantic import ValidationError
 
 from src.quant_execution_engine.adapters.base import (
     AccountInfo,
     AmendAck,
     BrokerAdapter,
+    OrderPathOutcome,
+    OrderPathProbe,
     Position,
     VenueOrderView,
 )
@@ -34,7 +39,12 @@ from src.quant_execution_engine.contracts import capabilities
 from src.quant_execution_engine.contracts.enums import (
     Broker,
     HandleResolution,
+    Market,
     OrderState,
+    OrderType,
+    PositionEffect,
+    Side,
+    Tif,
     to_public_status,
 )
 from src.quant_execution_engine.contracts.errors import (
@@ -56,6 +66,10 @@ from src.quant_execution_engine.db.errors import DuplicateOrderSignal
 from src.quant_execution_engine.db.models import FillRow, OrderResultRow, OrderRow
 
 logger = logging.getLogger(__name__)
+
+# The order-path probe's clock (GH #468). A module-level name so a test can move it without
+# touching time.monotonic, which the event loop also reads.
+_monotonic = time.monotonic
 
 _POLL_INTERVAL_SECONDS = 0.05
 
@@ -107,6 +121,15 @@ def _amended_order(
     )
 
 
+@dataclass(frozen=True)
+class OrderPathResult:
+    """One order-path probe answer, and whether it came from the rate-bound window (GH #468)."""
+
+    probe: OrderPathProbe
+    checked_at: datetime
+    cached: bool
+
+
 class OrderRouter:
     """Per-request orchestrator (cheap to build; backed by process singletons)."""
 
@@ -143,6 +166,12 @@ class OrderRouter:
             settings, market_data_client or MarketDataClient(None, None)
         )
         self.kill_switch = KillSwitch(settings, redis)
+        # GH #468: the last order-path probe per (broker, account, market), and a lock per key
+        # so concurrent callers share one venue call instead of racing.
+        self._probe_last: dict[
+            tuple[Broker, str, Market], tuple[float, OrderPathProbe, datetime]
+        ] = {}
+        self._probe_locks: dict[tuple[Broker, str, Market], asyncio.Lock] = {}
 
     def _resolve_adapter(
         self,
@@ -613,6 +642,55 @@ class OrderRouter:
         """
         adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
         return await adapter.get_venue_orders(account)
+
+    async def probe_order_path(
+        self, broker: Broker, account: str, market: Market, symbol: str, price: Decimal
+    ) -> OrderPathResult:
+        """Probe the venue's ORDER path for one account WITHOUT placing an order (GH #468).
+
+        Resolved exactly like the broker reads (stage ladder + EH6), because it makes no order.
+        A real, valid :class:`NormalizedOrder` is built (BUY LIMIT DAY; 100 shares on SET, one
+        contract OPEN on TFEX) so the venue sees the body a real place would send. At most one
+        probe per ``(broker, account, market)`` per ``order_path_probe_min_interval_seconds``, and
+        a probe is at most two venue calls (the adapter's one retry after the bridge discards a
+        refused session); a repeat inside the window gets the last answer, marked cached. No
+        ``breaker.guard()`` and no breaker feed: a refused probe is a finding, and a breaker trip
+        would mass-cancel.
+        """
+        adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
+        try:
+            order = NormalizedOrder(
+                client_order_id=str(uuid4()),
+                broker=broker,
+                account=account,
+                market=market,
+                symbol=symbol,
+                side=Side.BUY,
+                order_type=OrderType.LIMIT,
+                price=price,
+                quantity=100 if market is Market.SET else 1,
+                tif=Tif.DAY,
+                position_effect=PositionEffect.OPEN if market is Market.TFEX else None,
+            )
+        except ValidationError as exc:
+            # The route's own query validation makes this unreachable from HTTP today; kept so a
+            # direct caller gets a finding, not a 500. No venue call, so nothing is cached.
+            probe = OrderPathProbe(
+                outcome=OrderPathOutcome.INPUT_REJECTED,
+                message=f"not a valid order: {exc.errors()[0].get('msg', 'invalid')}"[:200],
+            )
+            return OrderPathResult(probe=probe, checked_at=datetime.now(UTC), cached=False)
+        key = (broker, account, market)
+        async with self._probe_locks.setdefault(key, asyncio.Lock()):
+            last = self._probe_last.get(key)
+            now = _monotonic()
+            window = self._settings.order_path_probe_min_interval_seconds
+            if last is not None and now - last[0] < window:
+                return OrderPathResult(probe=last[1], checked_at=last[2], cached=True)
+            probe = await adapter.probe_order_path(order)
+            checked_at = datetime.now(UTC)
+            self._probe_last[key] = (now, probe, checked_at)
+        return OrderPathResult(probe=probe, checked_at=checked_at, cached=False)
 
     async def get_order_history(
         self,

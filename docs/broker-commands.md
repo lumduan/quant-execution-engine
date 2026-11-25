@@ -494,6 +494,8 @@ GET /accounts/{account}/positions?broker=<broker>    ->  { positions: [ Position
 GET /accounts/{account}/open-orders?broker=<broker>  ->  venue-truth resting orders
 GET /accounts/{account}/orders?broker=<broker>       ->  this engine's own order store, paged (2026-09-29)
 GET /accounts/{account}/venue-orders?broker=<broker> ->  the venue's own order list (2026-09-29)
+GET /accounts/{account}/order-path?broker=&market=&symbol=&price=
+                                                     ->  a NO-ORDER probe of the venue's order path (GH #468)
 ```
 
 `Position` is `{account, market, symbol, net_qty, side}` **plus** `cost_amount`, `avg_price`,
