@@ -145,8 +145,8 @@ async def test_the_468_signature_is_refused_before_and_after_the_bridge_fix(
 
 
 # ---- the one retry: only after the bridge says it DISCARDED a refused session -----------------
-# HOME 2026-11-25 ~18:04 BKK: the first pre-place on a 3.5-second-old session after the bridge
-# deploy answered 503 (refused); the bridge retired it and the next call answered 200 (GH #468).
+# After the HOME bridge deploy of 2026-11-25 ~18:04 BKK, the first venue call of two separate
+# bridge services (one a pre-place) was refused on a new session; the rebuilt one worked (GH #468).
 
 
 @pytest.mark.parametrize(

@@ -163,15 +163,16 @@ order when this was written.
 
 🔑 **One retry, only after the bridge DISCARDS a refused session.** A bridge at `3b7632d` or later
 answers a refused session with a 503 and retires it, so the next call builds a fresh one; its
-message says *"RETRY THE CALL FIRST"*. The probe does exactly that, once. On HOME 2026-11-25 ~18:04
-BKK, the first pre-place on a 3.5-second-old session after the bridge deploy was refused, and the
-next answered 200 (GH #468): a single call would have read `refused` on a healthy bridge.
+message says *"RETRY THE CALL FIRST"*. The probe does exactly that, once. After the HOME bridge
+deploy of 2026-11-25 ~18:04 BKK, the first venue call of two separate bridge services (one of them
+this pre-place) was refused on a new session and the rebuilt session worked, 2 of 2 (GH #468): a
+single call would have read `refused` on a healthy bridge.
 
 | answer | what it means |
 |---|---|
 | `ok`, `retried: false` | the order path was open |
 | `ok`, `retried: true`, `first_outcome: "refused"` | the bridge discarded a refused session and a fresh one was accepted: it recovered by itself |
-| `refused`, `retried: true` | a FRESH session was refused too. The bridge's own message says to suspect the account being logged in elsewhere, which needs a re-login and the operator told |
+| `refused`, `retried: true` | refused twice: the session the bridge discarded, and the fresh one. This says WHAT happened, not why. 🔴 Do not read a cause into it: first calls on new sessions were refused 2 of 2 times after the 2026-11-25 HOME restart, so two refusals in a row is not rare. The bridge's own message offers one hypothesis (the account logged in elsewhere) as a hypothesis. A re-login fires a real SMS OTP, so read the bridge's log before choosing a remedy |
 | `refused`, `retried: false` | a 401/403. An older bridge (before `3b7632d`) discards nothing, so asking again would hit the same session; no retry |
 
 Retrying is safe only because pre-place places nothing. Nothing on a place path retries.

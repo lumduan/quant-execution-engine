@@ -485,12 +485,13 @@ class LiberatorAdapter(BrokerAdapter):
 
         🔑 **Retried AT MOST ONCE, and only when the bridge says it DISCARDED a refused session**
         (:func:`_bridge_retired_session`). That bridge's message says "RETRY THE CALL FIRST", and
-        on HOME 2026-11-25 ~18:04 BKK the first pre-place on a 3.5-second-old session after the
-        bridge deploy was refused (503) and the next answered 200 (GH #468). Without the retry a
-        healthy bridge reads ``refused`` just after a restart. The answer carries ``retried`` and
-        the first outcome, so "recovered by itself" stays distinct from "refused twice". A 401/403
-        is NOT retried: an older bridge discards nothing, so the same session would be asked
-        again. Retrying is safe only because pre-place places nothing; no place path retries.
+        after the HOME bridge deploy of 2026-11-25 ~18:04 BKK the FIRST venue call of two separate
+        bridge services (one of them this pre-place) was refused on a new session and the rebuilt
+        session worked, 2 of 2 (GH #468). Without the retry a healthy bridge reads ``refused``
+        just after a restart. The answer carries ``retried`` and the first outcome, so "recovered
+        by itself" stays distinct from "refused twice". It reports WHAT happened, never a cause.
+        A 401/403 is NOT retried: an older bridge discards nothing, so the same session would be
+        asked again. Retrying is safe only because pre-place places nothing; no place path retries.
         """
         try:
             payload = mapping.to_place_payload(order)  # identical body to a real place
