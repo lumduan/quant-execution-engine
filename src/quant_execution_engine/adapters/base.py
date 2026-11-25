@@ -294,6 +294,11 @@ class OrderPathProbe(BaseModel):
     outcome: OrderPathOutcome
     bridge_status: int | None = None
     message: str | None = None
+    # Set when the bridge DISCARDED a refused session and the probe asked once more (GH #468):
+    # `outcome` is then the second answer, and the first is kept here, never hidden.
+    retried: bool = False
+    first_outcome: OrderPathOutcome | None = None
+    first_bridge_status: int | None = None
 
     @property
     def ok(self) -> bool:

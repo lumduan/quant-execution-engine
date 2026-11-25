@@ -125,6 +125,7 @@ curl "http://localhost:8400/accounts/70000007/order-path?broker=liberator&market
   "broker": "liberator", "market": "TFEX", "symbol": "S50Z26", "price": "700",
   "ok": true, "outcome": "ok", "bridge_status": 200,
   "message": "TFEX order pre-place calculation completed successfully",
+  "retried": false, "first_outcome": null, "first_bridge_status": null,
   "places_no_order": true, "checked_at": "2026-11-25T09:30:00.123456+00:00", "cached": false
 }
 ```
@@ -136,6 +137,11 @@ same cached bridge session as a place (liberator-trading-api `3b7632d`,
 `tfex_order_service.pre_place_order` and `place_order` both use `_get_session()`).
 `symbol` and `price` are the caller's: an instrument hard-coded in the engine would expire with
 its contract month. Pick a price the venue will calculate for, normally near the market.
+
+**Probe the market the node actually holds an account for.** The nodes are not symmetric: HOME has
+no derivatives account at all, only a SET cash account (umbrella `CLAUDE.md`, one broker account
+per node). A TFEX probe on HOME can never answer `ok`, and that is not a fault. Probe SET there,
+and TFEX on AWS.
 
 **HTTP 200 whenever it ran. The finding is `outcome`**, and `ok` is `outcome == "ok"`:
 
@@ -155,11 +161,20 @@ were refused, and 200 after the 10:04:34 bridge restart (GH #468). A refused pre
 refused place. Whether an accepted pre-place means an accepted place had not been shown by a real
 order when this was written.
 
-⚠️ **On a bridge at `3b7632d` or later, a refused probe also REPAIRS the session.** The bridge retires
-a session the venue refused, so the next call (probe or order) builds a fresh one. A second probe
-after the window below is therefore the "is a fresh session refused too?" test. For a refused
-fresh session, the bridge's own message says to suspect the account being logged in elsewhere,
-which needs a re-login and the operator told.
+🔑 **One retry, only after the bridge DISCARDS a refused session.** A bridge at `3b7632d` or later
+answers a refused session with a 503 and retires it, so the next call builds a fresh one; its
+message says *"RETRY THE CALL FIRST"*. The probe does exactly that, once. On HOME 2026-11-25 ~18:04
+BKK, the first pre-place on a 3.5-second-old session after the bridge deploy was refused, and the
+next answered 200 (GH #468): a single call would have read `refused` on a healthy bridge.
+
+| answer | what it means |
+|---|---|
+| `ok`, `retried: false` | the order path was open |
+| `ok`, `retried: true`, `first_outcome: "refused"` | the bridge discarded a refused session and a fresh one was accepted: it recovered by itself |
+| `refused`, `retried: true` | a FRESH session was refused too. The bridge's own message says to suspect the account being logged in elsewhere, which needs a re-login and the operator told |
+| `refused`, `retried: false` | a 401/403. An older bridge (before `3b7632d`) discards nothing, so asking again would hit the same session; no retry |
+
+Retrying is safe only because pre-place places nothing. Nothing on a place path retries.
 
 🔶 **How a refused session is recognised on a 503 is temporary.** At `3b7632d` the bridge's endpoints
 drop the exception's `details`, so the engine matches the bridge's sentence *"SESSION was
@@ -168,13 +183,14 @@ through. The engine already accepts `classification == "edge_block"`, so no engi
 needed when it ships. The sentence match stays until #65 is **running** on every node: a merge or
 a pin bump deploys nothing on a containerised bridge.
 
-**Bounded.** At most **one venue call per `(broker, account, market)` per
-`EXECUTION_ENGINE_ORDER_PATH_PROBE_MIN_INTERVAL_SECONDS`** (default 30). A repeat inside the window
-gets the last answer with `cached: true` and the original `checked_at`, whatever its `symbol` or
-`price`. Concurrent callers share one call. The bound is per process.
+**Bounded.** At most **one probe per `(broker, account, market)` per
+`EXECUTION_ENGINE_ORDER_PATH_PROBE_MIN_INTERVAL_SECONDS`** (default 30), and one probe is at most
+**two** venue calls (the retry above). A repeat inside the window gets the last answer with
+`cached: true` and the original `checked_at`, whatever its `symbol` or `price`. Concurrent callers
+share one probe. The bound is per process.
 
 **Never touches the breaker.** A refused probe is a finding to report, and three breaker failures
-mass-cancel. It is never retried, so the venue sees one call.
+mass-cancel.
 
 Gated exactly like the other account reads (stage ladder + EH6), so an undeclared account is
 refused before any venue call. It accepts the read-only key. The answer does not echo the account,

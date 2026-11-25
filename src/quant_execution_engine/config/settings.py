@@ -78,9 +78,10 @@ class Settings(BaseSettings):
     # the former.
     real_routing_accounts: list[str] = Field(default_factory=list)
 
-    # GH #468: the order-path probe (GET /accounts/{account}/order-path) makes at most ONE venue
-    # call per (broker, account, market) in this many seconds; a repeat inside the window gets the
-    # last answer, marked cached. It bounds how hard any caller can drive the venue's order edge.
+    # GH #468: the order-path probe (GET /accounts/{account}/order-path) runs at most ONE probe per
+    # (broker, account, market) in this many seconds, and a probe is at most two venue calls (one
+    # retry after the bridge discards a refused session); a repeat inside the window gets the last
+    # answer, marked cached. It bounds how hard any caller can drive the venue's order edge.
     order_path_probe_min_interval_seconds: float = Field(default=30.0, ge=1.0)
 
     # Price-band advisory pre-trade check (Phase 6 / A2). When enabled AND a

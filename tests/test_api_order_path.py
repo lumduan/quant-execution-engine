@@ -144,6 +144,52 @@ async def test_the_468_signature_is_refused_before_and_after_the_bridge_fix(
     assert probe.bridge_status == status and not probe.ok
 
 
+# ---- the one retry: only after the bridge says it DISCARDED a refused session -----------------
+# HOME 2026-11-25 ~18:04 BKK: the first pre-place on a 3.5-second-old session after the bridge
+# deploy answered 503 (refused); the bridge retired it and the next call answered 200 (GH #468).
+
+
+@pytest.mark.parametrize(
+    "refused", [_EDGE_BLOCK_503, _EDGE_BLOCK_503_FUTURE], ids=["prose", "details"]
+)
+@respx.mock
+async def test_a_retired_session_is_retried_once_and_a_recovery_reads_ok(
+    refused: dict[str, Any],
+) -> None:
+    place = _no_place_route()
+    pre = respx.post(_PRE_TFEX).mock(
+        side_effect=[httpx.Response(503, json=refused), httpx.Response(200, json=_ok())]
+    )
+    probe = await make_adapter().probe_order_path(_order())
+    assert probe.outcome is OrderPathOutcome.OK and probe.ok and probe.bridge_status == 200
+    assert probe.retried is True
+    assert probe.first_outcome is OrderPathOutcome.REFUSED and probe.first_bridge_status == 503
+    assert pre.call_count == 2 and place.call_count == 0
+
+
+@respx.mock
+async def test_a_fresh_session_refused_too_is_refused_after_exactly_two_calls() -> None:
+    pre = respx.post(_PRE_TFEX).respond(status_code=503, json=_EDGE_BLOCK_503_FUTURE)
+    probe = await make_adapter().probe_order_path(_order())
+    assert probe.outcome is OrderPathOutcome.REFUSED and probe.retried is True
+    assert pre.call_count == 2, "one retry, never a third call"
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(401, _AUTH_401), (403, _AUTH_401), (503, _OUTAGE_503)],
+    ids=["401-old-bridge-keeps-the-session", "403", "503-outage"],
+)
+@respx.mock
+async def test_no_retry_unless_the_bridge_discarded_the_session(
+    status: int, body: dict[str, Any]
+) -> None:
+    pre = respx.post(_PRE_TFEX).respond(status_code=status, json=body)
+    probe = await make_adapter().probe_order_path(_order())
+    assert probe.retried is False and probe.first_outcome is None
+    assert pre.call_count == 1
+
+
 @respx.mock
 async def test_a_refused_probe_never_feeds_the_breaker() -> None:
     """A breaker trip mass-cancels: a probe must report, never trip."""
@@ -316,6 +362,7 @@ def test_route_reports_ok_and_never_places(monkeypatch: pytest.MonkeyPatch) -> N
     body = r.json()
     assert body["ok"] is True and body["outcome"] == "ok" and body["places_no_order"] is True
     assert body["cached"] is False and body["bridge_status"] == 200
+    assert body["retried"] is False and body["first_outcome"] is None
     assert _TFEX not in r.text  # the account is in the URL; the answer does not echo it
     assert place.call_count == 0
 
@@ -415,3 +462,13 @@ async def test_an_order_the_contract_refuses_is_input_rejected_with_no_call_and_
         assert result.probe.outcome is OrderPathOutcome.INPUT_REJECTED and not result.cached
         assert anything.call_count == 0
     assert order_router._probe_last == {}
+
+
+@respx.mock
+def test_route_reports_the_retry_and_the_first_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    respx.post(_PRE_TFEX).mock(
+        side_effect=[httpx.Response(503, json=_EDGE_BLOCK_503), httpx.Response(200, json=_ok())]
+    )
+    body = _client(monkeypatch).get(f"/accounts/{_TFEX}/order-path?{_Q}").json()
+    assert body["ok"] is True and body["retried"] is True
+    assert body["first_outcome"] == "refused" and body["first_bridge_status"] == 503

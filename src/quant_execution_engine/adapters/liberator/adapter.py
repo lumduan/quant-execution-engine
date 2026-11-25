@@ -185,6 +185,15 @@ _UNREADABLE_VENUE_ANSWER = frozenset(
 )
 
 
+def _bridge_retired_session(status: int, body: dict[str, Any] | None) -> bool:
+    """True when the bridge says it DISCARDED this session: a 503 marking it refused (3b7632d+).
+
+    Only a bridge at ``3b7632d`` or later retires a refused session, and it answers that with a
+    503. A 401/403 (any older bridge) means the same session is still cached.
+    """
+    return status == 503 and _session_refused(body)
+
+
 def _session_refused(body: dict[str, Any] | None) -> bool:
     """True when a bridge 503 says THIS SESSION was refused, not that the venue is unreachable."""
     if body is None:
@@ -234,7 +243,7 @@ def _classify_probe(status: int, body: dict[str, Any] | None) -> OrderPathProbe:
     if status in (401, 403):
         return probe(OrderPathOutcome.REFUSED)
     if status >= 500:
-        refused = status == 503 and _session_refused(body)
+        refused = _bridge_retired_session(status, body)
         return probe(OrderPathOutcome.REFUSED if refused else OrderPathOutcome.UNREACHABLE)
     if status == 422:
         return probe(OrderPathOutcome.INPUT_REJECTED)
@@ -472,19 +481,42 @@ class LiberatorAdapter(BrokerAdapter):
         this was written.
 
         Never touches the breaker: a refused probe is a finding to report, and a breaker trip
-        would mass-cancel. Never retried, so the venue sees one call.
+        would mass-cancel.
+
+        🔑 **Retried AT MOST ONCE, and only when the bridge says it DISCARDED a refused session**
+        (:func:`_bridge_retired_session`). That bridge's message says "RETRY THE CALL FIRST", and
+        on HOME 2026-11-25 ~18:04 BKK the first pre-place on a 3.5-second-old session after the
+        bridge deploy was refused (503) and the next answered 200 (GH #468). Without the retry a
+        healthy bridge reads ``refused`` just after a restart. The answer carries ``retried`` and
+        the first outcome, so "recovered by itself" stays distinct from "refused twice". A 401/403
+        is NOT retried: an older bridge discards nothing, so the same session would be asked
+        again. Retrying is safe only because pre-place places nothing; no place path retries.
         """
         try:
             payload = mapping.to_place_payload(order)  # identical body to a real place
         except LiberatorMappingError as exc:
             return OrderPathProbe(outcome=OrderPathOutcome.INPUT_REJECTED, message=_probe_text(exc))
+        path = mapping.pre_place_path(order.market)
+        first, retired = await self._probe_once(path, payload)
+        if not retired:
+            return first
+        second, _ = await self._probe_once(path, payload)  # once: never a third call
+        return second.model_copy(
+            update={
+                "retried": True,
+                "first_outcome": first.outcome,
+                "first_bridge_status": first.bridge_status,
+            }
+        )
+
+    async def _probe_once(self, path: str, payload: dict[str, Any]) -> tuple[OrderPathProbe, bool]:
+        """One pre-place call: its outcome, and whether the bridge discarded the session."""
         try:
-            status, body = await self._transport.probe_post(
-                mapping.pre_place_path(order.market), payload
-            )
+            status, body = await self._transport.probe_post(path, payload)
         except LiberatorTransportError as exc:
-            return OrderPathProbe(outcome=OrderPathOutcome.UNREACHABLE, message=_probe_text(exc))
-        return _classify_probe(status, body)
+            probe = OrderPathProbe(outcome=OrderPathOutcome.UNREACHABLE, message=_probe_text(exc))
+            return probe, False
+        return _classify_probe(status, body), _bridge_retired_session(status, body)
 
     # ------------------------------------------------------------------ reads
     async def fetch_venue_orders(self, account: str) -> list[VenueOrderItem]:

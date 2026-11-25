@@ -21,8 +21,8 @@ Source: `src/quant_execution_engine/adapters/base.py`. Seven methods (frozen Pha
 
 `probe_order_path(order)` → `OrderPathProbe` is **not** one of the frozen seven. It is a
 non-abstract default answering `unsupported`, so an adapter opts in by overriding it. Only
-`LiberatorAdapter` does (GH #468): one no-order `pre-place` call, never retried, never fed to the
-breaker. See [`../api/accounts.md`](../api/accounts.md).
+`LiberatorAdapter` does (GH #468): one no-order `pre-place` call, retried at most once and only
+after the bridge says it discarded a refused session, never fed to the breaker. See [`../api/accounts.md`](../api/accounts.md).
 
 Each real adapter additionally runs a session **heartbeat** + **circuit breaker** and a
 **reconciliation loop** (not part of the frozen seven — an adapter-runtime concern). The breaker

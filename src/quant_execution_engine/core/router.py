@@ -651,10 +651,11 @@ class OrderRouter:
         Resolved exactly like the broker reads (stage ladder + EH6), because it makes no order.
         A real, valid :class:`NormalizedOrder` is built (BUY LIMIT DAY; 100 shares on SET, one
         contract OPEN on TFEX) so the venue sees the body a real place would send. At most one
-        venue call per ``(broker, account, market)`` per
-        ``order_path_probe_min_interval_seconds``; a repeat inside the window gets the last answer,
-        marked cached. No ``breaker.guard()`` and no breaker feed: a refused probe is a finding,
-        and a breaker trip would mass-cancel.
+        probe per ``(broker, account, market)`` per ``order_path_probe_min_interval_seconds``, and
+        a probe is at most two venue calls (the adapter's one retry after the bridge discards a
+        refused session); a repeat inside the window gets the last answer, marked cached. No
+        ``breaker.guard()`` and no breaker feed: a refused probe is a finding, and a breaker trip
+        would mass-cancel.
         """
         adapter = self._resolve_adapter(broker, account=account, intent=AdapterIntent.READ)
         try:
