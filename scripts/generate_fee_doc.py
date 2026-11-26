@@ -27,7 +27,9 @@ _CANON = "quant-execution-engine/src/quant_execution_engine/reference/fee_schedu
 _KIND = {
     "operator_supplied": "🗣️ operator-supplied",
     "venue_fetched": "🏛️ venue-fetched",
+    "broker_published": "📄 broker-published",
     "derived": "🧮 derived",
+    "observed_adopted": "📈 observed-adopted",
 }
 
 
@@ -81,10 +83,15 @@ def render(s: FeeSchedule) -> str:
     a("| marker | meaning |")
     a("|---|---|")
     a(
-        "| 🗣️ operator-supplied | Stated by the operator. "
-        "**No published source, no in-tree corroboration.** |"
+        "| 🗣️ operator-supplied | Stated by the operator, with no published source. "
+        "**`corroborated` says whether anything independent confirms it.** |"
     )
     a("| 🏛️ venue-fetched | Read from the venue's own published page, quoted verbatim below. |")
+    a(
+        "| 📄 broker-published | Read from the BROKER's own published schedule, quoted verbatim "
+        "below. The broker sets the commission; the venue does not. |"
+    )
+    a("| 📈 observed-adopted | Appended automatically when a billed rate exceeded the basis. |")
     a("| 🧮 derived | Computed from other entries in this file; the arithmetic is test-pinned. |")
     a("")
     a("**`corroborated: no` is not a defect** — it is the honest state of a figure only one")
@@ -120,7 +127,8 @@ def render(s: FeeSchedule) -> str:
                 a(f"**`{fk}`** — {e.source}")
                 if e.verbatim:
                     a("")
-                    a(f"> venue, verbatim: `{e.verbatim}`")
+                    who = "broker" if e.source_kind == "broker_published" else "venue"
+                    a(f"> {who}, verbatim: `{e.verbatim}`")
                 if e.note:
                     a("")
                     for line in e.note.splitlines():

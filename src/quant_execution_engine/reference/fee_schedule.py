@@ -30,8 +30,11 @@ from typing import Any, Final
 
 _SCHEDULE_PATH: Final[Path] = Path(__file__).with_name("fee_schedule.toml")
 
+# `broker_published` (2026-11-26): the BROKER's own published schedule. Kept apart from
+# `venue_fetched` because the broker sets the commission and the venue does not; a reader must
+# be able to tell whose document a figure came from.
 _SOURCE_KINDS: Final[frozenset[str]] = frozenset(
-    {"operator_supplied", "venue_fetched", "derived", "observed_adopted"}
+    {"operator_supplied", "venue_fetched", "broker_published", "derived", "observed_adopted"}
 )
 
 
