@@ -8,7 +8,7 @@ that it parses.
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +20,8 @@ from src.quant_execution_engine.reference.fee_schedule import (
 )
 
 _NOW = datetime(2026, 9, 4, tzinfo=UTC)
+# The SET-equities entries were recorded 2026-11-26; read them inside their window.
+_NOW_EQ = datetime(2026, 11, 26, 13, tzinfo=UTC)
 
 
 def test_the_all_in_arithmetic_is_EXACT_in_Decimal() -> None:
@@ -49,6 +51,7 @@ def test_every_entry_carries_provenance_and_a_staleness_rule() -> None:
                 assert e.source_kind in {
                     "operator_supplied",
                     "venue_fetched",
+                    "broker_published",
                     "derived",
                     "observed_adopted",
                 }
@@ -74,12 +77,15 @@ def test_operator_supplied_figures_are_LABELLED_as_uncorroborated() -> None:
 
 
 def test_venue_fetched_figures_carry_a_VERBATIM_quote_and_a_url() -> None:
-    """A 'fetched' figure with no quote is indistinguishable from a remembered one."""
+    """A 'fetched' figure with no quote is indistinguishable from a remembered one.
+
+    Binds a broker's published schedule the same way as a venue's page (2026-11-26).
+    """
     s = load_fee_schedule()
     for inst in s.instruments.values():
         for key, entries in inst.series.items():
             for e in entries:
-                if e.source_kind == "venue_fetched":
+                if e.source_kind in ("venue_fetched", "broker_published"):
                     assert e.source.startswith("https://"), f"{key}: source is not a URL"
                     assert e.verbatim, f"{key}: venue-fetched but quotes nothing"
 
@@ -164,10 +170,16 @@ def test_the_loader_exposes_no_cost_LOGIC() -> None:
 
 
 def test_the_gaps_are_recorded_rather_than_filled() -> None:
-    """SSF and SET equities must stay OUT of the canonical entries."""
+    """SSF must stay OUT of the canonical entries.
+
+    SET equities LEFT the gaps on 2026-11-26, when both of the gap's own exit criteria were met
+    (the broker's published schedule, and a billed actual reconciling to it). A gap leaves this
+    set only by such a recorded closure, never by an edit to this line alone.
+    """
     s = load_fee_schedule()
-    assert {g.instrument for g in s.gaps} == {"single_stock_futures", "set_equities"}
+    assert {g.instrument for g in s.gaps} == {"single_stock_futures"}
     assert "single_stock_futures" not in s.instruments
+    assert "set_equities" in s.instruments
     for g in s.gaps:
         assert g.what_would_close_it.strip(), f"{g.instrument}: gap with no exit criterion"
 
@@ -177,3 +189,54 @@ def test_asking_for_a_gap_says_so_rather_than_raising_a_bare_KeyError() -> None:
     s = load_fee_schedule()
     with pytest.raises(KeyError, match="deliberately NOT canonical"):
         s.get("single_stock_futures", "commission", now=_NOW)
+
+
+# ---- SET equities: closed from a gap 2026-11-26 (Liberator Announcement 016/2568, #452) ------
+
+
+def test_set_equities_all_in_is_EXACT_in_Decimal() -> None:
+    """(0.000499 + 0.00007) x 1.07 == 0.00060883, exactly, so editing a component fails."""
+    s = load_fee_schedule()
+    on = date(2026, 11, 26)
+    c = s.resolve("set_equities", "commission", on=on, now=_NOW_EQ).value
+    o = s.resolve("set_equities", "other_fees", on=on, now=_NOW_EQ).value
+    v = s.resolve("set_equities", "vat_rate", on=on, now=_NOW_EQ).value
+    allin = s.resolve("set_equities", "all_in_per_side", on=on, now=_NOW_EQ).value
+    assert (c + o) * (Decimal("1") + v) == allin == Decimal("0.00060883")
+
+
+def test_set_equities_values_match_the_broker_quotes_they_cite() -> None:
+    """The first tier is pinned, and each parsed value agrees with its verbatim percentage."""
+    s = load_fee_schedule()
+    on = date(2026, 11, 26)
+    c = s.resolve("set_equities", "commission", on=on, now=_NOW_EQ)
+    o = s.resolve("set_equities", "other_fees", on=on, now=_NOW_EQ)
+    assert c.source_kind == o.source_kind == "broker_published"
+    assert c.value == Decimal("0.0499") / 100 and "0.0499%" in c.verbatim
+    assert "ไม่เกิน 1,000,000" in c.verbatim, "the basis must be the FIRST tier"
+    assert o.value == Decimal("0.007") / 100 and "0.007%" in o.verbatim
+
+
+def test_set_equities_reproduces_the_billed_SPALI_confirmation() -> None:
+    """The basis reproduces a real billed fill to the satang (operator-supplied, 2026-11-26).
+
+    SPALI BUY 1,000 @ 14.55: commission 7.26, fee 1.02, VAT 0.58, net 14,558.86.
+    """
+    s = load_fee_schedule()
+    on = date(2026, 11, 26)
+    amount = Decimal("1000") * Decimal("14.55")
+    c = s.resolve("set_equities", "commission", on=on, now=_NOW_EQ).value
+    o = s.resolve("set_equities", "other_fees", on=on, now=_NOW_EQ).value
+    v = s.resolve("set_equities", "vat_rate", on=on, now=_NOW_EQ).value
+    commission = (amount * c).quantize(Decimal("0.01"))
+    fee = (amount * o).quantize(Decimal("0.01"))
+    vat = ((commission + fee) * v).quantize(Decimal("0.01"))
+    assert (commission, fee, vat) == (Decimal("7.26"), Decimal("1.02"), Decimal("0.58"))
+    assert amount + commission + fee + vat == Decimal("14558.86")
+
+
+def test_set_equities_has_no_entry_before_the_schedule_took_effect() -> None:
+    """Before 2025-10-01 the rate was another announcement's, unknown here: refuse, not guess."""
+    s = load_fee_schedule()
+    with pytest.raises(LookupError, match="no entry effective on or before"):
+        s.resolve("set_equities", "commission", on=date(2025, 9, 30), now=_NOW_EQ)

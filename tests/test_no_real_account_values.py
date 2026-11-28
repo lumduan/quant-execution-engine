@@ -88,6 +88,10 @@ _NOT_ACCOUNTS = {
         "fixture and the comments explaining it — a broker order reference, not an account"
     ),
     "100000000": "a round 100,000,000 risk cap in test_core_risk, not an account",
+    "00060883": (
+        "the digits of 0.00060883, the SET-equity all-in fee fraction per side pinned in "
+        "test_fee_schedule (2026-11-26) — a fee rate, not an account"
+    ),
 }
 
 # ⚠️ `.claude` and the repo-root markdown are scanned because omitting them is exactly how
